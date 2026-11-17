@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.database import ensure_schema
 from app.core.redis import close_redis
 from app.models import *  # noqa: F401,F403 - register all models
 from app.api import auth, admin, organizer, auction, events
@@ -15,6 +16,7 @@ from app.ws.manager import manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    await ensure_schema()
     await manager.startup()
     yield
     await manager.shutdown()

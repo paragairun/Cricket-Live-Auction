@@ -22,6 +22,8 @@ export default function AuctioneerPage() {
   const [playerPhotos, setPlayerPhotos] = useState<Record<number, string>>({});
   const [teamRosters, setTeamRosters] = useState<Record<number, { player_id: number; sold_price: number }[]>>({});
   const [viewerCount, setViewerCount] = useState<number>(0);
+  const [reAuctionAllLoading, setReAuctionAllLoading] = useState(false);
+  const [noTimer, setNoTimer] = useState(false);
 
   const syncState = useCallback(async () => {
     const [{ data }, teamRes, viewerStatsRes] = await Promise.all([
@@ -39,6 +41,7 @@ export default function AuctioneerPage() {
     });
     setStatus(data.status);
     setScheduledAt(data.scheduled_at || null);
+    setNoTimer(!!data.no_timer);
     if (teamRes.data) {
       const map: Record<number, { player_id: number; sold_price: number }[]> = {};
       teamRes.data.forEach((t: { id: number; players: { player_id: number; sold_price: number }[] }) => {
@@ -113,8 +116,10 @@ export default function AuctioneerPage() {
         store.markPlayerSold(msg.auction_player_id as number, msg.sold_to_captain_id as number, msg.sold_price as number);
       if (msg.type === "player_unsold")
         store.markPlayerUnsold(msg.auction_player_id as number);
-      if (msg.type === "player_up")
+      if (msg.type === "player_up") {
         store.setActivePlayer(msg.auction_player_id as number, msg.base_price as number);
+        if (msg.no_timer === true) setNoTimer(true);
+      }
       if (msg.type === "auction_paused") setStatus("paused");
       if (msg.type === "auction_resumed") setStatus("active");
       if (msg.type === "auction_completed") setStatus("completed");
@@ -184,6 +189,18 @@ export default function AuctioneerPage() {
     api.post(`/auction/events/${eid}/next-player`, { player_id: playerId || null }).catch((e) =>
       alert(e.response?.data?.detail || "Error")
     );
+  const reAuctionAllUnsold = async () => {
+    if (!confirm("Return all unsold players to the pool for re-auctioning?")) return;
+    setReAuctionAllLoading(true);
+    try {
+      await api.post(`/auction/events/${eid}/re-auction-all-unsold`);
+      await syncState();
+    } catch (e: any) {
+      alert(e.response?.data?.detail || "Error re-auctioning unsold players");
+    } finally {
+      setReAuctionAllLoading(false);
+    }
+  };
   const hammer = async () => {
     if (!displayActiveAP) return;
     const isMidTimer = store.timer > 0 && store.timer < 60;
@@ -315,9 +332,9 @@ export default function AuctioneerPage() {
           <div className="lg:col-span-2 space-y-6">
             {displayActiveAP ? (
               <AuctionPlayerCard
-              playerName={playerNames[displayActiveAP.player_id] || `Player #${displayActiveAP.player_id}`}
-              playerPhoto={playerPhotos[displayActiveAP.player_id]}
-              basePrice={displayActiveAP.base_price}
+                playerName={playerNames[displayActiveAP.player_id] || `Player #${displayActiveAP.player_id}`}
+                playerPhoto={playerPhotos[displayActiveAP.player_id]}
+                basePrice={displayActiveAP.base_price}
                 currentBid={displayActiveAP.current_bid}
                 currentBidderName={
                   displayActiveAP.current_bidder_id
@@ -326,6 +343,7 @@ export default function AuctioneerPage() {
                 }
                 timer={store.timer}
                 status={displayActiveAP.status}
+                noTimer={noTimer}
               />
             ) : (
               <div className="card text-center py-16 text-gray-500">
@@ -439,8 +457,18 @@ export default function AuctioneerPage() {
             </div>
 
             <div>
-              <h3 className="text-sm font-semibold text-gray-400 uppercase mb-2">
+              <h3 className="text-sm font-semibold text-gray-400 uppercase mb-2 flex items-center justify-between gap-3">
                 Unsold ({unsoldPlayers.length})
+                {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && (
+                  <button
+                    className="text-xs btn-secondary py-1 px-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    onClick={reAuctionAllUnsold}
+                    disabled={reAuctionAllLoading}
+                    title="Return all unsold players to the pool"
+                  >
+                    {reAuctionAllLoading ? "Re-auctioning..." : "Re-auction all unsold"}
+                  </button>
+                )}
               </h3>
               <div className="space-y-2 max-h-52 overflow-y-auto pr-1 custom-scrollbar my-3 shadow-md shadow-black/40 rounded-lg">
                 {unsoldPlayers.length === 0 ? (

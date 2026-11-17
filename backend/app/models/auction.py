@@ -1,10 +1,11 @@
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Enum, Integer, ForeignKey, Float, DateTime, ARRAY, Text
+from sqlalchemy import String, Enum, Integer, ForeignKey, Float, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.core.types import StringList
 
 
 class AuctionStatus(str, enum.Enum):
@@ -34,7 +35,7 @@ class AuctionEvent(Base):
     auctioneer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     status: Mapped[AuctionStatus] = mapped_column(Enum(AuctionStatus, name="auctionstatus", create_type=False), default=AuctionStatus.draft)
-    allowed_domains: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    allowed_domains: Mapped[list[str]] = mapped_column(StringList, default=list)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     
     # Global budget and max players per team
@@ -43,7 +44,10 @@ class AuctionEvent(Base):
     
     # Global player base price (minimum 1000)
     player_base_price: Mapped[int] = mapped_column(Integer, default=1000)
-    
+
+    # If True, no countdown timer runs — auctioneer hammers manually
+    no_timer: Mapped[bool] = mapped_column(default=False)
+
     # Final viewer count (persisted when event completes)
     total_viewers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     
@@ -94,12 +98,14 @@ class AuctionPlayer(Base):
     event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id"))
     player_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     base_price: Mapped[int] = mapped_column(Integer, default=1000)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("player_categories.id"), nullable=True)
     current_bid: Mapped[int] = mapped_column(Integer, default=0)
     current_bidder_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     status: Mapped[PlayerAuctionStatus] = mapped_column(Enum(PlayerAuctionStatus, name="playerauctionstatus", create_type=False), default=PlayerAuctionStatus.pending)
     auction_order: Mapped[int] = mapped_column(Integer, default=0)
 
     event: Mapped["AuctionEvent"] = relationship("AuctionEvent", back_populates="auction_players")
+    category: Mapped["PlayerCategory | None"] = relationship("PlayerCategory")
 
 
 class Bid(Base):
@@ -113,3 +119,29 @@ class Bid(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+class BidSlab(Base):
+    __tablename__ = "bid_slabs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id"), index=True)
+    min_value: Mapped[int] = mapped_column(Integer, default=0)  # inclusive lower bound
+    max_value: Mapped[int] = mapped_column(Integer, default=0)  # exclusive upper bound (0 = no limit)
+    increment: Mapped[int] = mapped_column(Integer, default=1000)  # minimum bid increment
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    event: Mapped["AuctionEvent"] = relationship("AuctionEvent")
+
+
+class PlayerCategory(Base):
+    __tablename__ = "player_categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    base_price: Mapped[int] = mapped_column(Integer, default=1000)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)  # order for first-auction categories
+    auction_first: Mapped[bool] = mapped_column(default=False)  # if True, auctioned before random pool
+
+    event: Mapped["AuctionEvent"] = relationship("AuctionEvent")

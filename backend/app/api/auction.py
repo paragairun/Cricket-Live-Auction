@@ -248,6 +248,49 @@ async def hammer(
     return {"detail": "hammered"}
 
 
+@router.post("/events/{event_id}/re-auction-all-unsold")
+async def re_auction_all_unsold(
+    event_id: int,
+    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return all unsold players to the pending pool so they can be
+    re-auctioned via 'Random Next' or picked individually.
+    """
+    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if event.status != AuctionStatus.active:
+        raise HTTPException(status_code=400, detail="Auction is not active")
+
+    # Don't re-auction while a player is currently being bid on
+    active_player = await _get_active_player(event_id, db)
+    if active_player:
+        raise HTTPException(status_code=400, detail="Cannot re-auction while a player is active")
+
+    # Reset all unsold players to pending
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.unsold,
+        )
+    )
+    unsold = result.scalars().all()
+
+    count = len(unsold)
+    for ap in unsold:
+        ap.status = PlayerAuctionStatus.pending
+
+    await db.commit()
+
+    return {
+        "detail": f"{count} unsold player(s) returned to the pool",
+        "count": count,
+    }
+
+
 # WebSocket endpoint
 @router.websocket("/ws/{event_id}")
 async def websocket_endpoint(event_id: int, websocket: WebSocket, token: str = ""):

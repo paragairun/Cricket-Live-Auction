@@ -8,16 +8,20 @@ class Settings(BaseSettings):
     GODMODE_SECRET: str = "GODMODE_CHANGEME"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24h
-    UPLOAD_DIR: str = "/app/uploads"
+    UPLOAD_DIR: str = "./uploads"
     
     # Site URL for email links (no trailing slash)
     SITE_URL: str = "http://localhost"
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://auction:auction@db:5432/auction"
+    # Local development: SQLite file (no PostgreSQL/Docker required).
+    # Override with DATABASE_URL env var for PostgreSQL/MySQL/etc.
+    DATABASE_URL: str = "sqlite+aiosqlite:///./auction.db"
 
     # Redis
-    REDIS_URL: str = "redis://redis:6379"
+    # Local development: no Redis server required — the app falls back to an
+    # in-memory fakeredis substitute when no Redis is reachable.
+    REDIS_URL: str = "redis://localhost:6379"
 
     # AWS SES
     AWS_MAIL_ACCESS_KEY_ID: Optional[str] = None

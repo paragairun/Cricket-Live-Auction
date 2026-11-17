@@ -18,7 +18,12 @@ _pool = None
 async def get_queue():
     global _pool
     if _pool is None:
-        _pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        try:
+            _pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        except Exception:
+            # No Redis server available — background jobs are simply skipped
+            # (they are fire-and-forget; emails are disabled locally anyway).
+            _pool = None
     return _pool
 
 

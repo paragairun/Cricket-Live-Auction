@@ -36,7 +36,7 @@ function PasswordInput({ value, onChange }: { value: string; onChange: (v: strin
 export default function SignupPage() {
   const router = useRouter();
   const setAuth = useAuthStore((s) => s.setAuth);
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", phone: "", age: "", batting_rating: "5.0", bowling_rating: "5.0", fielding_rating: "5.0" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -45,7 +45,16 @@ export default function SignupPage() {
     setLoading(true);
     setError("");
     try {
-      const { data } = await api.post("/auth/register", form);
+      const { data } = await api.post("/auth/register", {
+        name: form.name,
+        email: form.email,
+        password: form.password,
+        phone: form.phone || undefined,
+        age: form.age ? Number(form.age) : undefined,
+        batting_rating: Number(form.batting_rating),
+        bowling_rating: Number(form.bowling_rating),
+        fielding_rating: Number(form.fielding_rating),
+      });
       setAuth(data.user, data.access_token);
       // New users always complete onboarding first
       router.push("/onboarding");
@@ -87,7 +96,7 @@ export default function SignupPage() {
             />
           </div>
           <div>
-            <label className="label">Work Email</label>
+            <label className="label">Email</label>
             <input
               type="email"
               className="input"
@@ -98,8 +107,71 @@ export default function SignupPage() {
             />
           </div>
           <div>
+            <label className="label">Phone</label>
+            <input
+              type="tel"
+              className="input"
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              placeholder="+91 98765 43210"
+            />
+          </div>
+          <div>
+            <label className="label">Age</label>
+            <input
+              type="number"
+              className="input"
+              value={form.age}
+              onChange={(e) => setForm({ ...form, age: e.target.value })}
+              placeholder="25"
+              min={1}
+              max={100}
+            />
+          </div>
+          <div>
             <label className="label">Password</label>
             <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="label text-xs">Batting Rating (1-10)</label>
+              <input
+                type="number"
+                className="input"
+                value={form.batting_rating}
+                onChange={(e) => setForm({ ...form, batting_rating: e.target.value })}
+                placeholder="5.0"
+                min={1}
+                max={10}
+                step={0.5}
+              />
+            </div>
+            <div>
+              <label className="label text-xs">Bowling Rating (1-10)</label>
+              <input
+                type="number"
+                className="input"
+                value={form.bowling_rating}
+                onChange={(e) => setForm({ ...form, bowling_rating: e.target.value })}
+                placeholder="5.0"
+                min={1}
+                max={10}
+                step={0.5}
+              />
+            </div>
+            <div>
+              <label className="label text-xs">Fielding Rating (1-10)</label>
+              <input
+                type="number"
+                className="input"
+                value={form.fielding_rating}
+                onChange={(e) => setForm({ ...form, fielding_rating: e.target.value })}
+                placeholder="5.0"
+                min={1}
+                max={10}
+                step={0.5}
+              />
+            </div>
           </div>
           <button type="submit" className="btn-primary w-full" disabled={loading}>
             {loading ? "Creating account..." : "Create Account"}

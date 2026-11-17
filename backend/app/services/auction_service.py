@@ -14,6 +14,8 @@ from app.models.auction import (
     Bid,
     Team,
     TeamPlayer,
+    BidSlab,
+    PlayerCategory,
 )
 from app.core.redis import get_redis
 from app.ws.manager import manager
@@ -21,6 +23,21 @@ from app.services import email_service
 from app.core.queue import enqueue
 
 TIMER_KEY = "auction:{event_id}:timer"
+
+
+async def _get_bid_increment(db: AsyncSession, event_id: int, current_bid: int) -> int:
+    """Return the minimum bid increment based on bid slabs for this event."""
+    result = await db.execute(
+        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
+    )
+    slabs = result.scalars().all()
+    for slab in slabs:
+        in_range = current_bid >= slab.min_value
+        if slab.max_value > 0:
+            in_range = in_range and current_bid < slab.max_value
+        if in_range:
+            return slab.increment
+    return 1000  # default fallback
 ACTIVE_PLAYER_KEY = "auction:{event_id}:active_player"
 TIMER_SECONDS = 180
 
@@ -72,6 +89,7 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
         "scheduled_at": event.scheduled_at.isoformat() if event.scheduled_at else None,
         "timer": int(timer) if timer else 0,
         "active_player_id": int(active_player_id) if active_player_id else None,
+        "no_timer": event.no_timer,
         "teams": [
             {
                 "id": t.id,
@@ -89,6 +107,7 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
                 "id": p.id,
                 "player_id": p.player_id,
                 "base_price": p.base_price,
+                "category_id": p.category_id,
                 "current_bid": p.current_bid,
                 "current_bidder_id": p.current_bidder_id,
                 "status": p.status,
@@ -420,17 +439,40 @@ async def set_next_player(
     captain_ids = {t.captain_id for t in teams_result.scalars().all() if t.captain_id is not None}
 
     if player_id is None:
-        # Random pending player
-        result = await db.execute(
-            select(AuctionPlayer).where(
-                AuctionPlayer.event_id == event_id,
-                AuctionPlayer.status == PlayerAuctionStatus.pending,
-            )
+        # Category-aware selection: auction_first categories first (by sort_order),
+        # then random from remaining pending players in included categories
+        categories_result = await db.execute(
+            select(PlayerCategory).where(PlayerCategory.event_id == event_id)
         )
-        pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
-        if not pending:
-            raise ValueError("No pending players left")
-        ap = random.choice(pending)
+        categories = categories_result.scalars().all()
+        auction_first_cats = [c for c in categories if c.auction_first]
+        other_cats = [c for c in categories if not c.auction_first]
+
+        # Try auction-first categories in sort_order
+        for cat in sorted(auction_first_cats, key=lambda c: c.sort_order):
+            result = await db.execute(
+                select(AuctionPlayer).where(
+                    AuctionPlayer.event_id == event_id,
+                    AuctionPlayer.status == PlayerAuctionStatus.pending,
+                    AuctionPlayer.category_id == cat.id,
+                )
+            )
+            pending_in_cat = [p for p in result.scalars().all() if p.player_id not in captain_ids]
+            if pending_in_cat:
+                ap = random.choice(pending_in_cat)
+                break
+        else:
+            # No auction-first category players left — random from all pending (respecting other categories too)
+            result = await db.execute(
+                select(AuctionPlayer).where(
+                    AuctionPlayer.event_id == event_id,
+                    AuctionPlayer.status == PlayerAuctionStatus.pending,
+                )
+            )
+            pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
+            if not pending:
+                raise ValueError("No pending players left")
+            ap = random.choice(pending)
     else:
         result = await db.execute(
             select(AuctionPlayer).where(
@@ -453,11 +495,29 @@ async def set_next_player(
     await db.commit()
     await db.refresh(ap)
 
-    # Store active player in Redis and start timer
+    # Store active player in Redis and start timer (unless no_timer is set)
     # redis already fetched at start of function
     await redis.set(_active_key(event_id), ap.id)
     await redis.set(_timer_key(event_id), TIMER_SECONDS)
-    
+
+    # Check if this event runs without a timer
+    event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+    event = event_result.scalar_one_or_none()
+    if event and event.no_timer:
+        await manager.broadcast(
+            event_id,
+            {
+                "type": "player_up",
+                "event_id": event_id,
+                "auction_player_id": ap.id,
+                "player_id": ap.player_id,
+                "base_price": ap.base_price,
+                "current_bid": ap.current_bid,
+                "no_timer": True,
+            },
+        )
+        return ap
+
     # Start countdown in background on this worker
     task = asyncio.create_task(_run_timer(event_id, ap.id))
     _timer_tasks[event_id] = task
@@ -482,10 +542,19 @@ async def _run_timer(event_id: int, auction_player_id: int):
     Run the countdown timer. Uses Redis to coordinate across workers.
     Only the worker that owns the timer will run the countdown.
     """
+    from app.core.database import AsyncSessionLocal
+    from app.models.auction import AuctionEvent
+
+    async with AsyncSessionLocal() as db:
+        event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+        event = event_result.scalar_one_or_none()
+        if not event or event.no_timer:
+            return  # No timer for this event
+
     redis = await get_redis()
     worker_id = _get_worker_id()
     owner_key = _timer_owner_key(event_id)
-    
+
     try:
         for remaining in range(TIMER_SECONDS, -1, -1):
             # Check if we still own the timer (another worker may have taken over)
@@ -493,7 +562,7 @@ async def _run_timer(event_id: int, auction_player_id: int):
             if current_owner != worker_id:
                 # Another worker has taken over, stop this timer
                 return
-            
+
             await redis.set(_timer_key(event_id), remaining)
             await manager.broadcast(
                 event_id,
@@ -510,7 +579,6 @@ async def _run_timer(event_id: int, auction_player_id: int):
             # Delete ownership BEFORE hammering to prevent other workers from
             # thinking we still own it during the hammer operation
             await redis.delete(owner_key)
-            from app.core.database import AsyncSessionLocal
             async with AsyncSessionLocal() as db:
                 await hammer_player(event_id, auction_player_id, db)
     except asyncio.CancelledError:
@@ -545,19 +613,8 @@ async def place_bid(
     if amount <= ap.current_bid:
         raise ValueError(f"Bid must be higher than current bid ({ap.current_bid})")
 
-    # Tiered minimum bid increment based on current bid
-    # >= 100000 => step 10000
-    # >= 10000  => step 1000
-    # >= 1000   => step 100
-    # < 1000    => step 50
-    if ap.current_bid >= 100000:
-        min_step = 10000
-    elif ap.current_bid >= 10000:
-        min_step = 1000
-    elif ap.current_bid >= 1000:
-        min_step = 100
-    else:
-        min_step = 50
+    # Bid slab-based minimum increment
+    min_step = await _get_bid_increment(db, event_id, ap.current_bid)
 
     increment = amount - ap.current_bid
     is_first_bid = ap.current_bidder_id is None

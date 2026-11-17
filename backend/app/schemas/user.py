@@ -10,6 +10,11 @@ class UserRegister(BaseModel):
     name: str
     email: EmailStr
     password: str
+    phone: Optional[str] = None
+    age: Optional[int] = None
+    batting_rating: Optional[float] = 5.0
+    bowling_rating: Optional[float] = 5.0
+    fielding_rating: Optional[float] = 5.0
 
     @field_validator("email")
     @classmethod
@@ -51,6 +56,7 @@ class UserOut(BaseModel):
     name: str
     email: str
     phone: Optional[str]
+    age: Optional[int]
     roles: list[str]
     profile_photo: Optional[str]
     batting_rating: float
@@ -60,6 +66,41 @@ class UserOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Organizer-created player profile ──
+
+
+class OrganizerPlayerCreate(BaseModel):
+    name: str
+    email: EmailStr
+    phone: Optional[str] = None
+    age: Optional[int] = None
+    batting_rating: Optional[float] = 5.0
+    bowling_rating: Optional[float] = 5.0
+    fielding_rating: Optional[float] = 5.0
+    password: Optional[str] = None  # optional — player can set it later via magic code
+
+    @field_validator("email")
+    @classmethod
+    def lowercase_email(cls, v: str) -> str:
+        return v.lower()
+
+
+class OrganizerPlayerUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    age: Optional[int] = None
+    batting_rating: Optional[float] = None
+    bowling_rating: Optional[float] = None
+    fielding_rating: Optional[float] = None
+    category_id: Optional[int] = None  # assigned category on AuctionPlayer
+
+    @field_validator("email")
+    @classmethod
+    def lowercase_email(cls, v: str | None) -> str | None:
+        return v.lower() if v else v
 
 
 class TokenOut(BaseModel):

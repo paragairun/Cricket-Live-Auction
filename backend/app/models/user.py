@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, DateTime, ARRAY
+from sqlalchemy import String, Float, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.core.types import StringList
 
 # Role constants - used as string values stored in the roles array
 ROLE_ADMIN = "admin"
@@ -22,10 +23,11 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(100))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    age: Mapped[int | None] = mapped_column(nullable=True)  # Player age
     hashed_password: Mapped[str] = mapped_column(String(255))
 
     # Multiple roles: e.g. ["admin", "player"] or ["captain", "organizer", "player"]
-    roles: Mapped[list[str]] = mapped_column(ARRAY(String), default=lambda: [ROLE_PLAYER])
+    roles: Mapped[list[str]] = mapped_column(StringList, default=lambda: [ROLE_PLAYER])
 
     profile_photo: Mapped[str | None] = mapped_column(String(500), nullable=True)
 

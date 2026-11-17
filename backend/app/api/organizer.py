@@ -1,5 +1,7 @@
 import secrets
 import json
+import csv
+import io
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -10,8 +12,12 @@ from sqlalchemy import select, or_
 from app.core.database import get_db
 from app.core.deps import require_role
 from app.core.redis import get_redis
-from app.models.user import User, ROLE_ORGANIZER, ROLE_CAPTAIN, ROLE_AUCTIONEER
-from app.models.auction import AuctionEvent, Team, AuctionPlayer, AuctionStatus, TeamPlayer, PlayerAuctionStatus
+from app.core.security import hash_password
+from app.models.user import User, ROLE_ORGANIZER, ROLE_CAPTAIN, ROLE_AUCTIONEER, ROLE_PLAYER
+from app.models.auction import (
+    AuctionEvent, Team, AuctionPlayer, AuctionStatus, TeamPlayer, PlayerAuctionStatus,
+    BidSlab, PlayerCategory,
+)
 from app.schemas.auction import (
     AuctionPlayerCreate,
     AuctionPlayerOut,
@@ -19,8 +25,15 @@ from app.schemas.auction import (
     TeamUpdate,
     TeamOut,
     AuctionEventOut,
+    PlayerImportRow,
+    PlayerImportResult,
+    BidSlabCreate,
+    BidSlabOut,
+    PlayerCategoryCreate,
+    PlayerCategoryUpdate,
+    PlayerCategoryOut,
 )
-from app.schemas.user import UserOut
+from app.schemas.user import UserOut, AssignRolePayload, OrganizerPlayerCreate, OrganizerPlayerUpdate
 from app.services import email_service
 from app.services.s3_service import upload_file
 from app.core.queue import enqueue
@@ -51,6 +64,7 @@ class EventSettingsUpdatePayload(BaseModel):
     team_budget: int | None = Field(default=None, ge=1000)
     team_max_players: int | None = None
     player_base_price: int | None = Field(default=None, ge=100)
+    no_timer: bool | None = None
 
 router = APIRouter(prefix="/organizer", tags=["organizer"])
 
@@ -162,10 +176,22 @@ async def add_player(
     )
     count = len(count_result.scalars().all())
 
+    base_price = payload.base_price
+    if base_price is None and payload.category_id is not None:
+        cat_result = await db.execute(
+            select(PlayerCategory).where(PlayerCategory.id == payload.category_id, PlayerCategory.event_id == event_id)
+        )
+        cat = cat_result.scalar_one_or_none()
+        if cat:
+            base_price = cat.base_price
+    if base_price is None:
+        base_price = event.player_base_price
+
     ap = AuctionPlayer(
         event_id=event_id,
         player_id=payload.player_id,
-        base_price=event.player_base_price,
+        base_price=base_price,
+        category_id=payload.category_id,
         auction_order=count + 1,
     )
     db.add(ap)
@@ -173,6 +199,113 @@ async def add_player(
     await db.refresh(ap)
     # Emails are sent in bulk when organizer marks the event ready — not here
     return AuctionPlayerOut.model_validate(ap)
+
+
+@router.post("/events/{event_id}/players/create-profile", response_model=UserOut, status_code=201)
+async def create_player_profile(
+    event_id: int,
+    payload: OrganizerPlayerCreate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Organizer creates a player profile directly.
+    Creates a user account with player role. The player can log in later
+    using magic code or reset their password.
+    """
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot create player profiles after event is published")
+
+    # Check if email already exists
+    existing = await db.execute(
+        select(User).where(User.email == payload.email, User.deleted_at.is_(None))
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(
+        name=payload.name,
+        email=payload.email,
+        phone=payload.phone,
+        age=payload.age,
+        hashed_password=hash_password(payload.password or "password123"),
+        roles=[ROLE_PLAYER],
+        batting_rating=payload.batting_rating or 5.0,
+        bowling_rating=payload.bowling_rating or 5.0,
+        fielding_rating=payload.fielding_rating or 5.0,
+        onboarded=False,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return UserOut.model_validate(user)
+
+
+@router.patch("/events/{event_id}/players/{player_id}/profile", response_model=UserOut)
+async def edit_player_profile(
+    event_id: int,
+    player_id: int,
+    payload: OrganizerPlayerUpdate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Organizer edits a player's profile (name, email, phone, age, ratings, category).
+    Password is not editable here — players reset via magic code / reset password.
+    """
+    event = await _get_event_for_organizer(event_id, current_user, db)
+
+    # The player must be part of this event's pool
+    ap_result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.player_id == player_id,
+        )
+    )
+    ap = ap_result.scalar_one_or_none()
+    if not ap:
+        raise HTTPException(status_code=404, detail="Player not in this event")
+
+    user_result = await db.execute(select(User).where(User.id == player_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Player user not found")
+
+    # Email uniqueness check if changing email
+    if payload.email is not None and payload.email != user.email:
+        existing = await db.execute(
+            select(User).where(
+                User.email == payload.email,
+                User.deleted_at.is_(None),
+                User.id != player_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    category_id = update_data.pop("category_id", None)
+
+    # Validate category belongs to this event
+    if category_id is not None:
+        cat_result = await db.execute(
+            select(PlayerCategory).where(
+                PlayerCategory.id == category_id,
+                PlayerCategory.event_id == event_id,
+            )
+        )
+        if not cat_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Category not found in this event")
+        ap.category_id = category_id
+
+    for field, value in update_data.items():
+        setattr(user, field, value)
+
+    await db.commit()
+    await db.refresh(user)
+    await db.refresh(ap)
+    return UserOut.model_validate(user)
 
 
 @router.get("/events/{event_id}/players", response_model=list[AuctionPlayerOut])
@@ -480,6 +613,9 @@ async def update_settings(
     if payload.player_base_price is not None:
         event.player_base_price = payload.player_base_price
 
+    if payload.no_timer is not None:
+        event.no_timer = payload.no_timer
+
     # Also update all existing teams in this event
     if payload.team_budget is not None or payload.team_max_players is not None:
         teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
@@ -707,3 +843,301 @@ async def invite_player(
             "user": None,
             "message": f"Invitation sent to {payload.email}",
         }
+
+
+# ── Bid Slab endpoints ──
+
+
+@router.get("/events/{event_id}/bid-slabs", response_model=list[BidSlabOut])
+async def list_bid_slabs(
+    event_id: int,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_event_for_organizer(event_id, current_user, db)
+    result = await db.execute(
+        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
+    )
+    return [BidSlabOut.model_validate(s) for s in result.scalars().all()]
+
+
+@router.post("/events/{event_id}/bid-slabs", response_model=BidSlabOut, status_code=201)
+async def create_bid_slab(
+    event_id: int,
+    payload: BidSlabCreate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify bid slabs after event is published")
+    slab = BidSlab(
+        event_id=event_id,
+        min_value=payload.min_value,
+        max_value=payload.max_value,
+        increment=payload.increment,
+        sort_order=payload.sort_order,
+    )
+    db.add(slab)
+    await db.commit()
+    await db.refresh(slab)
+    return BidSlabOut.model_validate(slab)
+
+
+@router.patch("/events/{event_id}/bid-slabs/{slab_id}", response_model=BidSlabOut)
+async def update_bid_slab(
+    event_id: int,
+    slab_id: int,
+    payload: BidSlabCreate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify bid slabs after event is published")
+    result = await db.execute(select(BidSlab).where(BidSlab.id == slab_id, BidSlab.event_id == event_id))
+    slab = result.scalar_one_or_none()
+    if not slab:
+        raise HTTPException(status_code=404, detail="Bid slab not found")
+    slab.min_value = payload.min_value
+    slab.max_value = payload.max_value
+    slab.increment = payload.increment
+    slab.sort_order = payload.sort_order
+    await db.commit()
+    await db.refresh(slab)
+    return BidSlabOut.model_validate(slab)
+
+
+@router.delete("/events/{event_id}/bid-slabs/{slab_id}", status_code=204)
+async def delete_bid_slab(
+    event_id: int,
+    slab_id: int,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify bid slabs after event is published")
+    result = await db.execute(select(BidSlab).where(BidSlab.id == slab_id, BidSlab.event_id == event_id))
+    slab = result.scalar_one_or_none()
+    if not slab:
+        raise HTTPException(status_code=404, detail="Bid slab not found")
+    await db.delete(slab)
+    await db.commit()
+
+
+# ── Player Category endpoints ──
+
+
+@router.get("/events/{event_id}/categories", response_model=list[PlayerCategoryOut])
+async def list_player_categories(
+    event_id: int,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_event_for_organizer(event_id, current_user, db)
+    result = await db.execute(
+        select(PlayerCategory)
+        .where(PlayerCategory.event_id == event_id)
+        .order_by(PlayerCategory.auction_first.desc(), PlayerCategory.sort_order)
+    )
+    return [PlayerCategoryOut.model_validate(c) for c in result.scalars().all()]
+
+
+@router.post("/events/{event_id}/categories", response_model=PlayerCategoryOut, status_code=201)
+async def create_player_category(
+    event_id: int,
+    payload: PlayerCategoryCreate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify categories after event is published")
+    cat = PlayerCategory(
+        event_id=event_id,
+        name=payload.name,
+        base_price=payload.base_price,
+        sort_order=payload.sort_order,
+        auction_first=payload.auction_first,
+    )
+    db.add(cat)
+    await db.commit()
+    await db.refresh(cat)
+    return PlayerCategoryOut.model_validate(cat)
+
+
+@router.patch("/events/{event_id}/categories/{cat_id}", response_model=PlayerCategoryOut)
+async def update_player_category(
+    event_id: int,
+    cat_id: int,
+    payload: PlayerCategoryUpdate,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify categories after event is published")
+    result = await db.execute(select(PlayerCategory).where(PlayerCategory.id == cat_id, PlayerCategory.event_id == event_id))
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if payload.name is not None:
+        cat.name = payload.name
+    if payload.base_price is not None:
+        cat.base_price = payload.base_price
+    if payload.sort_order is not None:
+        cat.sort_order = payload.sort_order
+    if payload.auction_first is not None:
+        cat.auction_first = payload.auction_first
+    await db.commit()
+    await db.refresh(cat)
+    return PlayerCategoryOut.model_validate(cat)
+
+
+@router.delete("/events/{event_id}/categories/{cat_id}", status_code=204)
+async def delete_player_category(
+    event_id: int,
+    cat_id: int,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot modify categories after event is published")
+    result = await db.execute(select(PlayerCategory).where(PlayerCategory.id == cat_id, PlayerCategory.event_id == event_id))
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    await db.delete(cat)
+    await db.commit()
+
+
+@router.post("/events/{event_id}/import-players", response_model=PlayerImportResult)
+async def import_players_csv(
+    event_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bulk import players from a CSV file.
+
+    Expected CSV columns (header required):
+      name, email, password (optional), phone (optional),
+      batting_rating (optional), bowling_rating (optional), fielding_rating (optional)
+
+    Creates user accounts for any email not already registered, then adds them to
+    the event's player pool. Skips players already in the pool.
+    """
+    event = await _get_event_for_organizer(event_id, current_user, db)
+    if event.status != AuctionStatus.draft:
+        raise HTTPException(status_code=400, detail="Cannot import players after event is published")
+
+    content = await file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        required = {"name", "email"}
+        if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"CSV must have at least these columns: {', '.join(sorted(required))}",
+            )
+
+        imported = 0
+        skipped = 0
+        errors: list[str] = []
+
+        for row_num, raw_row in enumerate(reader, start=2):
+            row = {k: (v.strip() if isinstance(v, str) else v) for k, v in raw_row.items()}
+            name = row.get("name", "")
+            email = (row.get("email") or "").lower()
+            password = row.get("password") or "password123"
+            phone = row.get("phone") or None
+
+            try:
+                batting = float(row.get("batting_rating") or 5.0)
+                bowling = float(row.get("bowling_rating") or 5.0)
+                fielding = float(row.get("fielding_rating") or 5.0)
+            except ValueError:
+                batting = bowling = fielding = 5.0
+
+            if not name or not email:
+                skipped += 1
+                errors.append(f"Row {row_num}: name and email are required")
+                continue
+
+            # Domain validation
+            if event.allowed_domains:
+                domain = email.split("@")[1].lower() if "@" in email else ""
+                allowed = [d.lower().strip() for d in event.allowed_domains]
+                if domain not in allowed:
+                    skipped += 1
+                    errors.append(f"Row {row_num}: domain '{domain}' not allowed for {email}")
+                    continue
+
+            # Check existing user
+            user_result = await db.execute(
+                select(User).where(User.email == email, User.deleted_at.is_(None), User.is_active == True)
+            )
+            user = user_result.scalar_one_or_none()
+
+            if not user:
+                user = User(
+                    name=name,
+                    email=email,
+                    phone=phone,
+                    hashed_password=hash_password(password),
+                    roles=[ROLE_PLAYER],
+                    batting_rating=batting,
+                    bowling_rating=bowling,
+                    fielding_rating=fielding,
+                    onboarded=False,
+                )
+                db.add(user)
+                await db.flush()  # get user.id
+            else:
+                # Update ratings if provided in CSV
+                if row.get("batting_rating"):
+                    user.batting_rating = batting
+                if row.get("bowling_rating"):
+                    user.bowling_rating = bowling
+                if row.get("fielding_rating"):
+                    user.fielding_rating = fielding
+
+            # Check if already in player pool
+            existing_ap = await db.execute(
+                select(AuctionPlayer).where(
+                    AuctionPlayer.event_id == event_id,
+                    AuctionPlayer.player_id == user.id,
+                )
+            )
+            if existing_ap.scalar_one_or_none():
+                skipped += 1
+                errors.append(f"Row {row_num}: {email} already in player pool")
+                continue
+
+            count_result = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event_id))
+            count = len(count_result.scalars().all())
+
+            ap = AuctionPlayer(
+                event_id=event_id,
+                player_id=user.id,
+                base_price=event.player_base_price,
+                auction_order=count + 1,
+            )
+            db.add(ap)
+            imported += 1
+
+        await db.commit()
+        return PlayerImportResult(imported=imported, skipped=skipped, errors=errors)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(exc)}")

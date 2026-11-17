@@ -38,6 +38,7 @@ class AuctionEventOut(BaseModel):
     team_budget: int
     team_max_players: int
     player_base_price: int
+    no_timer: bool = False
     logo: Optional[str] = None
     created_at: datetime
 
@@ -92,6 +93,7 @@ class AuctionPlayerOut(BaseModel):
     event_id: int
     player_id: int
     base_price: int
+    category_id: Optional[int] = None
     current_bid: int
     current_bidder_id: Optional[int]
     status: PlayerAuctionStatus
@@ -113,6 +115,84 @@ class BidOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class NextPlayerRequest(BaseModel):
+    player_id: Optional[int] = None  # None = random
+
+
+class PlayerImportRow(BaseModel):
+    name: str
+    email: str
+    password: Optional[str] = None
+    phone: Optional[str] = None
+    batting_rating: Optional[float] = 5.0
+    bowling_rating: Optional[float] = 5.0
+    fielding_rating: Optional[float] = 5.0
+
+
+class PlayerImportResult(BaseModel):
+    imported: int
+    skipped: int
+    errors: list[str]
+
+
+# ── Bid Slab schemas ──
+
+
+class BidSlabBase(BaseModel):
+    min_value: int = 0
+    max_value: int = 0  # 0 means no upper limit
+    increment: int = 1000
+    sort_order: int = 0
+
+
+class BidSlabCreate(BidSlabBase):
+    pass
+
+
+class BidSlabOut(BidSlabBase):
+    id: int
+    event_id: int
+
+    model_config = {"from_attributes": True}
+
+
+# ── Player Category schemas ──
+
+
+class PlayerCategoryBase(BaseModel):
+    name: str
+    base_price: int = 1000
+    sort_order: int = 0
+    auction_first: bool = False
+
+
+class PlayerCategoryCreate(PlayerCategoryBase):
+    pass
+
+
+class PlayerCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    base_price: Optional[int] = None
+    sort_order: Optional[int] = None
+    auction_first: Optional[bool] = None
+
+
+class PlayerCategoryOut(PlayerCategoryBase):
+    id: int
+    event_id: int
+
+    model_config = {"from_attributes": True}
+
+
+# ── AuctionPlayer update with category ──
+
+
+class AuctionPlayerCreate(BaseModel):
+    player_id: int
+    base_price: int | None = None
+    category_id: int | None = None
 
 
 class NextPlayerRequest(BaseModel):

@@ -1,12 +1,14 @@
 """initial_schema
 
 Revision ID: a2de85309837
-Revises: 
+Revises:
 Create Date: 2026-03-12 19:17:54.313525
 
 """
 from alembic import op
 import sqlalchemy as sa
+
+from app.core.types import StringList  # SQLite-compatible replacement for ARRAY(String)
 
 
 revision = 'a2de85309837'
@@ -24,13 +26,13 @@ def upgrade() -> None:
         sa.Column("email", sa.String(length=255), nullable=False, unique=True, index=True),
         sa.Column("phone", sa.String(length=20), nullable=True),
         sa.Column("hashed_password", sa.String(length=255), nullable=False),
-        sa.Column("roles", sa.ARRAY(sa.String()), nullable=False, server_default=sa.text("ARRAY['player']::varchar[]")),
+        sa.Column("roles", StringList(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("profile_photo", sa.String(length=500), nullable=True),
         sa.Column("batting_rating", sa.Float(), nullable=False, server_default="5.0"),
         sa.Column("bowling_rating", sa.Float(), nullable=False, server_default="5.0"),
         sa.Column("fielding_rating", sa.Float(), nullable=False, server_default="5.0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("onboarded", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("onboarded", sa.Boolean(), nullable=False, server_default=sa.text("0")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
 
@@ -44,7 +46,7 @@ def upgrade() -> None:
         sa.Column("organizer_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("auctioneer_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("status", sa.String(length=50), nullable=False, server_default="draft"),
-        sa.Column("allowed_domains", sa.ARRAY(sa.String()), nullable=False, server_default=sa.text("ARRAY[]::varchar[]")),
+        sa.Column("allowed_domains", StringList(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )

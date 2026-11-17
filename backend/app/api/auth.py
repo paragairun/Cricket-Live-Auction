@@ -74,8 +74,13 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
     user = User(
         name=payload.name,
         email=payload.email,
+        phone=payload.phone,
+        age=payload.age,
         hashed_password=hash_password(payload.password),
         roles=[ROLE_PLAYER],
+        batting_rating=payload.batting_rating or 5.0,
+        bowling_rating=payload.bowling_rating or 5.0,
+        fielding_rating=payload.fielding_rating or 5.0,
     )
     db.add(user)
     await db.commit()

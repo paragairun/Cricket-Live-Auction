@@ -8,6 +8,7 @@ interface Props {
   currentBidderName?: string;
   timer: number;
   status: string;
+  noTimer?: boolean;
 }
 
 export default function AuctionPlayerCard({
@@ -43,10 +44,19 @@ export default function AuctionPlayerCard({
           </div>
           {status === "active" && (
             <div className="text-center">
-              <p className={`text-5xl font-mono font-bold ${timerColor}`}>
-                {timer.toString().padStart(2, "0")}
-              </p>
-              <p className="text-xs text-gray-500">seconds</p>
+              {noTimer ? (
+                <>
+                  <p className="text-2xl font-mono font-bold text-blue-400">∞</p>
+                  <p className="text-xs text-gray-500">no timer</p>
+                </>
+              ) : (
+                <>
+                  <p className={`text-5xl font-mono font-bold ${timerColor}`}>
+                    {timer.toString().padStart(2, "0")}
+                  </p>
+                  <p className="text-xs text-gray-500">seconds</p>
+                </>
+              )}
             </div>
           )}
         </div>

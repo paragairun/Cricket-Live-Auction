@@ -10,6 +10,8 @@ interface User {
   name: string;
   email: string;
   roles: string[];
+  phone: string | null;
+  age: number | null;
   batting_rating: number;
   bowling_rating: number;
   fielding_rating: number;
@@ -52,6 +54,24 @@ interface Readiness {
   teams_with_captain: number;
   players_count: number;
   auctioneer_id: number | null;
+}
+
+interface BidSlab {
+  id: number;
+  event_id: number;
+  min_value: number;
+  max_value: number;
+  increment: number;
+  sort_order: number;
+}
+
+interface PlayerCategory {
+  id: number;
+  event_id: number;
+  name: string;
+  base_price: number;
+  sort_order: number;
+  auction_first: boolean;
 }
 
 const CHECK_LABELS: Record<string, string> = {
@@ -436,22 +456,72 @@ function PlayersTab({
   onToast,
   editable,
   eventStatus,
+  categories,
+  createProfileOpen,
+  setCreateProfileOpen,
+  profileForm,
+  setProfileForm,
+  creatingProfile,
+  createPlayerProfile,
 }: {
   eventId: number;
   eligiblePlayers: User[];
   auctionPlayers: AuctionPlayer[];
-  onAdd: (id: number) => void;
+  onAdd: (id: number, categoryId?: number) => void;
   onRemove: (id: number) => void;
   onInvited: () => void;
   onToast: (type: "ok" | "err", text: string) => void;
   editable: boolean;
   eventStatus: string | undefined;
+  categories: PlayerCategory[];
+  createProfileOpen: boolean;
+  setCreateProfileOpen: (v: boolean) => void;
+  profileForm: {
+    name: string;
+    email: string;
+    phone: string;
+    age: string;
+    batting_rating: number;
+    bowling_rating: number;
+    fielding_rating: number;
+    password: string;
+  };
+  setProfileForm: (f: {
+    name: string;
+    email: string;
+    phone: string;
+    age: string;
+    batting_rating: number;
+    bowling_rating: number;
+    fielding_rating: number;
+    password: string;
+  }) => void;
+  creatingProfile: boolean;
+  createPlayerProfile: () => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [displayCount, setDisplayCount] = useState(15);
   const [filter, setFilter] = useState<"all" | "added" | "not_added">("all");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [pendingAdd, setPendingAdd] = useState<number | null>(null); // player waiting for category selection
+  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
+  const [editPlayerId, setEditPlayerId] = useState<number | null>(null);
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [editProfileForm, setEditProfileForm] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    age: "",
+    batting_rating: 5,
+    bowling_rating: 5,
+    fielding_rating: 5,
+    category_id: null as number | null,
+  });
+  const [editingProfile, setEditingProfile] = useState(false);
   const addedIds = new Set(auctionPlayers.map((ap) => ap.player_id));
 
   // If the event is completed, only show the players who were actually added to the auction
@@ -492,6 +562,78 @@ function PlayersTab({
     }
   };
 
+  const handleImportCsv = async () => {
+    if (!csvFile) return;
+    setImporting(true);
+    const formData = new FormData();
+    formData.append("file", csvFile);
+    try {
+      const { data } = await api.post(`/organizer/events/${eventId}/import-players`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      onToast("ok", `Imported ${data.imported} players${data.skipped ? ` (${data.skipped} skipped)` : ""}`);
+      if (data.errors.length) {
+        console.warn("Import warnings:", data.errors);
+      }
+      setImportOpen(false);
+      setCsvFile(null);
+      onInvited();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      onToast("err", msg || "Import failed");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const openEditProfile = (player: User) => {
+    const ap = auctionPlayers.find((a) => a.player_id === player.id);
+    setEditProfileForm({
+      name: player.name,
+      email: player.email,
+      phone: player.phone || "",
+      age: player.age ? String(player.age) : "",
+      batting_rating: player.batting_rating,
+      bowling_rating: player.bowling_rating,
+      fielding_rating: player.fielding_rating,
+      category_id: ap?.category_id ?? null,
+    });
+    setEditPlayerId(player.id);
+    setEditProfileOpen(true);
+  };
+
+  const editPlayerProfile = async () => {
+    if (!editPlayerId) return;
+    setEditingProfile(true);
+    try {
+      const payload: Record<string, unknown> = {};
+      if (editProfileForm.name) payload.name = editProfileForm.name;
+      if (editProfileForm.email) payload.email = editProfileForm.email;
+      if (editProfileForm.phone) payload.phone = editProfileForm.phone;
+      if (editProfileForm.age) payload.age = Number(editProfileForm.age);
+      payload.batting_rating = editProfileForm.batting_rating;
+      payload.bowling_rating = editProfileForm.bowling_rating;
+      payload.fielding_rating = editProfileForm.fielding_rating;
+      if (editProfileForm.category_id !== null && editProfileForm.category_id !== undefined) {
+        payload.category_id = editProfileForm.category_id;
+      }
+
+      const { data } = await api.patch(
+        `/organizer/events/${eventId}/players/${editPlayerId}/profile`,
+        payload
+      );
+      onToast("ok", `Updated ${data.name}`);
+      setEditProfileOpen(false);
+      setEditPlayerId(null);
+      onInvited();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      onToast("err", msg || "Failed to update profile");
+    } finally {
+      setEditingProfile(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Filters and Search */}
@@ -507,18 +649,47 @@ function PlayersTab({
         </div>
         
         {eventStatus !== "completed" && (
-          <select 
-            className="input w-full sm:w-40 text-sm bg-gray-900"
-            value={filter}
-            onChange={(e) => {
-              setFilter(e.target.value as "all" | "added" | "not_added");
-              setDisplayCount(15);
-            }}
-          >
-            <option value="all">All Players</option>
-            <option value="added">Added ({auctionPlayers.length})</option>
-            <option value="not_added">Not Added ({eligiblePlayers.length - auctionPlayers.length})</option>
-          </select>
+          <>
+            <select
+              className="input w-full sm:w-40 text-sm bg-gray-900"
+              value={filter}
+              onChange={(e) => {
+                setFilter(e.target.value as "all" | "added" | "not_added");
+                setDisplayCount(15);
+              }}
+            >
+              <option value="all">All Players</option>
+              <option value="added">Added ({auctionPlayers.length})</option>
+              <option value="not_added">Not Added ({eligiblePlayers.length - auctionPlayers.length})</option>
+            </select>
+            {editable && (
+              <>
+                <a
+                  href="/sample-players.csv"
+                  download
+                  className="btn-secondary text-sm px-4 py-2 shrink-0"
+                >
+                  📄 Download Sample CSV
+                </a>
+                <button
+                  type="button"
+                  className="btn-primary text-sm px-4 py-2 shrink-0"
+                  onClick={() => setImportOpen(true)}
+                  disabled={importing}
+                >
+                  {importing ? "Importing..." : "Import CSV"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary text-sm px-4 py-2 shrink-0 border-amber-500/30 hover:border-amber-500 hover:bg-amber-500/10"
+                  onClick={() => setCreateProfileOpen(true)}
+                  disabled={creatingProfile}
+                >
+                  {creatingProfile ? "Creating..." : "+ Create Player Profile"}
+                </button>
+              </>
+            )}
+          </>
         )}
       </div>
 
@@ -580,15 +751,31 @@ function PlayersTab({
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="badge-sold">Added ✓</span>
                       {editable && (
-                        <button
-                          className="text-gray-600 hover:text-red-400 transition-colors text-lg leading-none"
-                          onClick={() => onRemove(player.id)}
-                          title="Remove from event"
-                        >
-                          ×
-                        </button>
+                        <>
+                          <button
+                            className="text-blue-400 hover:text-blue-300 transition-colors text-lg leading-none"
+                            onClick={() => openEditProfile(player)}
+                            title="Edit profile"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            className="text-gray-600 hover:text-red-400 transition-colors text-lg leading-none"
+                            onClick={() => onRemove(player.id)}
+                            title="Remove from event"
+                          >
+                            ×
+                          </button>
+                        </>
                       )}
                     </div>
+                  ) : editable && categories.length > 0 ? (
+                    <button
+                      className="btn-primary text-xs px-3 py-1.5 shrink-0"
+                      onClick={() => { setPendingAdd(player.id); setSelectedCategory(null); }}
+                    >
+                      Add
+                    </button>
                   ) : editable ? (
                     <button
                       className="btn-primary text-xs px-3 py-1.5 shrink-0"
@@ -605,12 +792,64 @@ function PlayersTab({
           </div>
           {displayCount < filtered.length && (
             <div className="text-center mt-6">
-              <button 
+              <button
                 className="btn-secondary text-sm px-6 py-2"
                 onClick={() => setDisplayCount(v => v + 15)}
               >
                 Load More ({filtered.length - displayCount} remaining)
               </button>
+            </div>
+          )}
+
+          {/* Category selection dialog for adding a player */}
+          {pendingAdd && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+                <h3 className="text-lg font-bold text-white mb-1">Assign Category</h3>
+                <p className="text-sm text-gray-400 mb-4">
+                  Select a category for this player to set their base price.
+                </p>
+
+                <div className="space-y-3 mb-6">
+                  <label className="block text-xs font-medium text-gray-400 uppercase">Category</label>
+                  <select
+                    className="input w-full text-sm bg-gray-800 border-gray-700"
+                    value={selectedCategory || ""}
+                    onChange={(e) => setSelectedCategory(e.target.value ? Number(e.target.value) : null)}
+                  >
+                    <option value="">None (use event base price)</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} — ₹{c.base_price.toLocaleString()}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex justify-end gap-3">
+                  <button
+                    type="button"
+                    className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
+                    onClick={() => { setPendingAdd(null); setSelectedCategory(null); }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary px-6 py-2"
+                    disabled={selectedCategory === null}
+                    onClick={() => {
+                      if (pendingAdd) {
+                        onAdd(pendingAdd, selectedCategory || undefined);
+                        setPendingAdd(null);
+                        setSelectedCategory(null);
+                      }
+                    }}
+                  >
+                    Assign & Add
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </>
@@ -620,6 +859,196 @@ function PlayersTab({
       <p className="text-xs text-gray-600 text-right mt-4">
         {auctionPlayers.length} of {basePlayers.length} eligible players added
       </p>
+
+      {/* Edit Player Profile dialog */}
+      {editProfileOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <h3 className="text-lg font-bold text-white mb-1">Edit Player Profile</h3>
+            <p className="text-sm text-gray-400 mb-6">
+              Update the player's details. Email changes must be unique.
+            </p>
+
+            <form onSubmit={(e) => { e.preventDefault(); editPlayerProfile(); }} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Full Name</label>
+                <input
+                  type="text"
+                  className="input w-full text-sm"
+                  value={editProfileForm.name}
+                  onChange={(e) => setEditProfileForm({ ...editProfileForm, name: e.target.value })}
+                  placeholder="Virat Kohli"
+                  required
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Email</label>
+                <input
+                  type="email"
+                  className="input w-full text-sm"
+                  value={editProfileForm.email}
+                  onChange={(e) => setEditProfileForm({ ...editProfileForm, email: e.target.value })}
+                  placeholder="virat@example.com"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Phone</label>
+                <input
+                  type="tel"
+                  className="input w-full text-sm"
+                  value={editProfileForm.phone}
+                  onChange={(e) => setEditProfileForm({ ...editProfileForm, phone: e.target.value })}
+                  placeholder="+91 98765 43210"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Age</label>
+                <input
+                  type="number"
+                  className="input w-full text-sm"
+                  value={editProfileForm.age}
+                  onChange={(e) => setEditProfileForm({ ...editProfileForm, age: e.target.value })}
+                  placeholder="25"
+                  min={1}
+                  max={100}
+                />
+              </div>
+              {categories.length > 0 && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Category</label>
+                  <select
+                    className="input w-full text-sm bg-gray-800 border-gray-700"
+                    value={editProfileForm.category_id ?? ""}
+                    onChange={(e) =>
+                      setEditProfileForm({
+                        ...editProfileForm,
+                        category_id: e.target.value ? Number(e.target.value) : null,
+                      })
+                    }
+                  >
+                    <option value="">None</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} (₹{c.base_price.toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Batting Rating</label>
+                  <input
+                    type="number"
+                    className="input w-full text-sm"
+                    value={editProfileForm.batting_rating}
+                    onChange={(e) => setEditProfileForm({ ...editProfileForm, batting_rating: Number(e.target.value) || 5 })}
+                    min={1}
+                    max={10}
+                    step={0.5}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Bowling Rating</label>
+                  <input
+                    type="number"
+                    className="input w-full text-sm"
+                    value={editProfileForm.bowling_rating}
+                    onChange={(e) => setEditProfileForm({ ...editProfileForm, bowling_rating: Number(e.target.value) || 5 })}
+                    min={1}
+                    max={10}
+                    step={0.5}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Fielding Rating</label>
+                  <input
+                    type="number"
+                    className="input w-full text-sm"
+                    value={editProfileForm.fielding_rating}
+                    onChange={(e) => setEditProfileForm({ ...editProfileForm, fielding_rating: Number(e.target.value) || 5 })}
+                    min={1}
+                    max={10}
+                    step={0.5}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
+                  onClick={() => { setEditProfileOpen(false); setEditPlayerId(null); }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary px-6 py-2"
+                  disabled={editingProfile}
+                >
+                  {editingProfile ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CSV Import Dialog */}
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <h3 className="text-lg font-bold text-white mb-1">Import Players from CSV</h3>
+            <p className="text-sm text-gray-400 mb-4">
+              Upload a CSV with columns: <code className="text-gray-300">name,email,password,phone,batting_rating,bowling_rating,fielding_rating</code>
+              <br />
+              <span className="text-xs text-gray-500 block mt-1">Only <b>name</b> and <b>email</b> are required.</span>
+            </p>
+
+            <div className="space-y-3">
+              <label className="block text-xs font-medium text-gray-400 uppercase">CSV File</label>
+              <input
+                type="file"
+                accept=".csv"
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-full file:border-0
+                  file:text-sm file:font-semibold
+                  file:bg-amber-500/10 file:text-amber-400
+                  hover:file:bg-amber-500/20"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) setCsvFile(f);
+                }}
+              />
+              {csvFile && (
+                <p className="text-xs text-gray-500">{csvFile.name}</p>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
+                onClick={() => { setImportOpen(false); setCsvFile(null); }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary px-6 py-2"
+                disabled={!csvFile || importing}
+                onClick={handleImportCsv}
+              >
+                {importing ? "Importing..." : "Import Players"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -636,14 +1065,32 @@ export default function OrganizerEventDetailPage() {
   const [auctionPlayers, setAuctionPlayers] = useState<AuctionPlayer[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
-  const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings">("players");
+  const [bidSlabs, setBidSlabs] = useState<BidSlab[]>([]);
+  const [categories, setCategories] = useState<PlayerCategory[]>([]);
+  const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings" | "bid-slabs" | "categories">("players");
   const [teamForm, setTeamForm] = useState({ name: "", color: "#3B82F6" });
-  const [settingsForm, setSettingsForm] = useState({ budget: "100000", max_players: "15", base_price: "100" });
+  const [settingsForm, setSettingsForm] = useState({ budget: "100000", max_players: "15", base_price: "100", no_timer: false });
+  const [slabForm, setSlabForm] = useState({ min_value: 0, max_value: 0, increment: 1000, sort_order: 0 });
+  const [catForm, setCatForm] = useState({ name: "", base_price: 1000, sort_order: 0, auction_first: false });
   const [toast, setToast] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [markingReady, setMarkingReady] = useState(false);
   const [scheduleInput, setScheduleInput] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [creatingSlab, setCreatingSlab] = useState(false);
+  const [creatingCat, setCreatingCat] = useState(false);
+  const [createProfileOpen, setCreateProfileOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    age: "",
+    batting_rating: 5,
+    bowling_rating: 5,
+    fielding_rating: 5,
+    password: "",
+  });
+  const [creatingProfile, setCreatingProfile] = useState(false);
 
   const showToast = (type: "ok" | "err", text: string) => {
     setToast({ type, text });
@@ -651,12 +1098,14 @@ export default function OrganizerEventDetailPage() {
   };
 
   const fetchAll = useCallback(async () => {
-    const [evRes, eligible, aPlayers, teamsRes, readinessRes] = await Promise.all([
+    const [evRes, eligible, aPlayers, teamsRes, readinessRes, slabsRes, catsRes] = await Promise.all([
       api.get(`/auction/events/${eid}`).catch(() => null),
       api.get(`/organizer/events/${eid}/eligible-players`),
       api.get(`/organizer/events/${eid}/players`),
       api.get(`/organizer/events/${eid}/teams`),
       api.get(`/events/${eid}/readiness`),
+      api.get(`/organizer/events/${eid}/bid-slabs`),
+      api.get(`/organizer/events/${eid}/categories`),
     ]);
     if (evRes) {
       setEvent(evRes.data);
@@ -665,21 +1114,24 @@ export default function OrganizerEventDetailPage() {
         budget: evRes.data.team_budget?.toString() || "100000",
         max_players: evRes.data.team_max_players?.toString() || "15",
         base_price: evRes.data.player_base_price?.toString() || "100",
+        no_timer: evRes.data.no_timer ?? false,
       });
     }
     setEligiblePlayers(eligible.data);
     setAuctionPlayers(aPlayers.data);
     setTeams(teamsRes.data);
     setReadiness(readinessRes.data);
+    setBidSlabs(slabsRes.data);
+    setCategories(catsRes.data);
   }, [eid]);
 
   useEffect(() => {
     fetchAll().catch(() => router.push("/auth/login"));
   }, [eid, fetchAll]);
 
-  const addPlayer = async (playerId: number) => {
+  const addPlayer = async (playerId: number, categoryId?: number) => {
     try {
-      await api.post(`/organizer/events/${eid}/players`, { player_id: playerId });
+      await api.post(`/organizer/events/${eid}/players`, { player_id: playerId, category_id: categoryId });
       await fetchAll();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -773,6 +1225,7 @@ export default function OrganizerEventDetailPage() {
         team_budget: parseInt(settingsForm.budget),
         team_max_players: parseInt(settingsForm.max_players),
         player_base_price: parseInt(settingsForm.base_price),
+        no_timer: settingsForm.no_timer,
       };
       const { data } = await api.patch(`/organizer/events/${eid}/settings`, payload);
       setEvent(data);
@@ -826,6 +1279,97 @@ export default function OrganizerEventDetailPage() {
     }
   };
 
+  // ── Bid Slabs ──
+  const createBidSlab = async () => {
+    setCreatingSlab(true);
+    try {
+      const { data } = await api.post(`/organizer/events/${eid}/bid-slabs`, {
+        min_value: slabForm.min_value,
+        max_value: slabForm.max_value,
+        increment: slabForm.increment,
+        sort_order: slabForm.sort_order,
+      });
+      showToast("ok", "Bid slab created");
+      setSlabForm({ min_value: 0, max_value: 0, increment: 1000, sort_order: 0 });
+      await fetchAll();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to create bid slab");
+    } finally {
+      setCreatingSlab(false);
+    }
+  };
+
+  const deleteBidSlab = async (id: number) => {
+    try {
+      await api.delete(`/organizer/events/${eid}/bid-slabs/${id}`);
+      showToast("ok", "Bid slab deleted");
+      await fetchAll();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to delete bid slab");
+    }
+  };
+
+  // ── Player Categories ──
+  const createCategory = async () => {
+    setCreatingCat(true);
+    try {
+      const { data } = await api.post(`/organizer/events/${eid}/categories`, {
+        name: catForm.name,
+        base_price: catForm.base_price,
+        sort_order: catForm.sort_order,
+        auction_first: catForm.auction_first,
+      });
+      showToast("ok", "Category created");
+      setCatForm({ name: "", base_price: 1000, sort_order: 0, auction_first: false });
+      await fetchAll();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to create category");
+    } finally {
+      setCreatingCat(false);
+    }
+  };
+
+  const deleteCategory = async (id: number) => {
+    try {
+      await api.delete(`/organizer/events/${eid}/categories/${id}`);
+      showToast("ok", "Category deleted");
+      await fetchAll();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to delete category");
+    }
+  };
+
+  const createPlayerProfile = async () => {
+    setCreatingProfile(true);
+    try {
+      const { data } = await api.post(`/organizer/events/${eid}/players/create-profile`, {
+        name: profileForm.name,
+        email: profileForm.email,
+        phone: profileForm.phone || undefined,
+        age: profileForm.age ? Number(profileForm.age) : undefined,
+        batting_rating: profileForm.batting_rating,
+        bowling_rating: profileForm.bowling_rating,
+        fielding_rating: profileForm.fielding_rating,
+        password: profileForm.password || undefined,
+      });
+      showToast("ok", `Player profile created: ${data.name}`);
+      setProfileForm({
+        name: "", email: "", phone: "", age: "", batting_rating: 5, bowling_rating: 5, fielding_rating: 5, password: "",
+      });
+      setCreateProfileOpen(false);
+      await fetchAll();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to create player profile");
+    } finally {
+      setCreatingProfile(false);
+    }
+  };
+
   const addedPlayerIds = new Set(auctionPlayers.map((ap) => ap.player_id));
   const playerMap = Object.fromEntries(eligiblePlayers.map((p) => [p.id, p]));
 
@@ -843,6 +1387,8 @@ export default function OrganizerEventDetailPage() {
     { key: "players", label: "Players", count: auctionPlayers.length },
     { key: "teams", label: "Teams", count: teams.length },
     { key: "auctioneer", label: "Auctioneer", count: readiness?.auctioneer_id ? 1 : 0 },
+    { key: "bid-slabs", label: "Bid Slabs", count: bidSlabs.length },
+    { key: "categories", label: "Categories", count: categories.length },
     { key: "settings", label: "Settings", count: 0 },
   ] as const;
 
@@ -980,6 +1526,13 @@ export default function OrganizerEventDetailPage() {
                 onToast={showToast}
                 editable={isDraft}
                 eventStatus={event?.status}
+                categories={categories}
+                createProfileOpen={createProfileOpen}
+                setCreateProfileOpen={setCreateProfileOpen}
+                profileForm={profileForm}
+                setProfileForm={setProfileForm}
+                creatingProfile={creatingProfile}
+                createPlayerProfile={createPlayerProfile}
               />
             )}
 
@@ -1030,8 +1583,8 @@ export default function OrganizerEventDetailPage() {
 
             {/* Settings tab */}
             {tab === "settings" && (
-              <div className="space-y-5">
-                <div className="card">
+              <div className="card">
+                <div className="space-y-5">
                   <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
                     Event Settings
                   </h3>
@@ -1164,6 +1717,19 @@ export default function OrganizerEventDetailPage() {
                           disabled={!isDraft}
                         />
                       </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <input
+                          type="checkbox"
+                          checked={settingsForm.no_timer}
+                          onChange={(e) =>
+                            isDraft && setSettingsForm({ ...settingsForm, no_timer: e.target.checked })
+                          }
+                          disabled={!isDraft}
+                        />
+                        <span className="text-xs text-gray-300">
+                          Disable auction timer (hammer manually)
+                        </span>
+                      </div>
                     </div>
 
                     {isDraft && (
@@ -1185,6 +1751,314 @@ export default function OrganizerEventDetailPage() {
                       Unpublish the event to adjust settings.
                     </p>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Bid Slabs tab */}
+            {tab === "bid-slabs" && (
+              <div className="card">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+                  Bid Slabs
+                </h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Define minimum bid increments based on the current bid value. For example:
+                  10,000–100,000 → increment ₹2,000; 100,000–500,000 → increment ₹7,000.
+                </p>
+
+                {isDraft ? (
+                  <div className="space-y-3 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                      <input
+                        type="number"
+                        placeholder="Min value"
+                        className="input text-sm"
+                        value={slabForm.min_value}
+                        onChange={(e) => setSlabForm({ ...slabForm, min_value: Number(e.target.value) || 0 })}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Max value (0 = no limit)"
+                        className="input text-sm"
+                        value={slabForm.max_value}
+                        onChange={(e) => setSlabForm({ ...slabForm, max_value: Number(e.target.value) || 0 })}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Increment"
+                        className="input text-sm"
+                        value={slabForm.increment}
+                        onChange={(e) => setSlabForm({ ...slabForm, increment: Number(e.target.value) || 1000 })}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Sort order"
+                        className="input text-sm"
+                        value={slabForm.sort_order}
+                        onChange={(e) => setSlabForm({ ...slabForm, sort_order: Number(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary w-full"
+                      onClick={createBidSlab}
+                      disabled={creatingSlab}
+                    >
+                      {creatingSlab ? "Creating..." : "Add Bid Slab"}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-gray-500">
+                    Unpublish the event to edit bid slabs.
+                  </p>
+                )}
+
+                <div className="mt-4">
+                  {bidSlabs.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No bid slabs defined. Default increment applies.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {bidSlabs.map((s) => (
+                        <div key={s.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg p-3">
+                          <div>
+                            <p className="text-sm font-medium text-white">
+                              {s.min_value.toLocaleString()} – {s.max_value === 0 ? "∞" : s.max_value.toLocaleString()}
+                            </p>
+                            <p className="text-xs text-gray-500">Increment: ₹{s.increment.toLocaleString()} · Order: {s.sort_order}</p>
+                          </div>
+                          {isDraft && (
+                            <button
+                              type="button"
+                              className="text-xs text-red-400 hover:text-red-300"
+                              onClick={() => deleteBidSlab(s.id)}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Categories tab */}
+            {tab === "categories" && (
+              <div className="card">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+                  Player Categories
+                </h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Create categories (e.g. Captain, High Ranking, Mid Ranking) with their own base price.
+                  Categories marked "Auction First" will be auctioned before the random pool.
+                </p>
+
+                {isDraft ? (
+                  <div className="space-y-3 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Category name"
+                        className="input text-sm"
+                        value={catForm.name}
+                        onChange={(e) => setCatForm({ ...catForm, name: e.target.value })}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Base price"
+                        className="input text-sm"
+                        value={catForm.base_price}
+                        onChange={(e) => setCatForm({ ...catForm, base_price: Number(e.target.value) || 1000 })}
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={catForm.auction_first}
+                          onChange={(e) => setCatForm({ ...catForm, auction_first: e.target.checked })}
+                        />
+                        Auction first
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="Sort order"
+                        className="input text-sm w-20"
+                        value={catForm.sort_order}
+                        onChange={(e) => setCatForm({ ...catForm, sort_order: Number(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary w-full"
+                      onClick={createCategory}
+                      disabled={creatingCat}
+                    >
+                      {creatingCat ? "Creating..." : "Add Category"}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-gray-500">
+                    Unpublish the event to edit categories.
+                  </p>
+                )}
+
+                <div className="mt-4">
+                  {categories.length === 0 ? (
+                    <p className="text-xs text-gray-500 text-center py-4">No categories defined.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {categories.map((c) => (
+                        <div key={c.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg p-3">
+                          <div>
+                            <p className="text-sm font-medium text-white">{c.name}</p>
+                            <p className="text-xs text-gray-500">
+                              Base price: ₹{c.base_price.toLocaleString()} · Order: {c.sort_order}{c.auction_first ? " · Auction first" : ""}
+                            </p>
+                          </div>
+                          {isDraft && (
+                            <button
+                              type="button"
+                              className="text-xs text-red-400 hover:text-red-300"
+                              onClick={() => deleteCategory(c.id)}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Create Player Profile dialog */}
+            {createProfileOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+                  <h3 className="text-lg font-bold text-white mb-1">Create Player Profile</h3>
+                  <p className="text-sm text-gray-400 mb-6">
+                    The organiser creates the player account directly. The player can log in later
+                    with the password below (or via magic code / reset password).
+                  </p>
+
+                  <form onSubmit={(e) => { e.preventDefault(); createPlayerProfile(); }} className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        className="input w-full text-sm"
+                        value={profileForm.name}
+                        onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                        placeholder="Virat Kohli"
+                        required
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Email</label>
+                      <input
+                        type="email"
+                        className="input w-full text-sm"
+                        value={profileForm.email}
+                        onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                        placeholder="virat@example.com"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Phone</label>
+                      <input
+                        type="tel"
+                        className="input w-full text-sm"
+                        value={profileForm.phone}
+                        onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                        placeholder="+91 98765 43210"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Age</label>
+                      <input
+                        type="number"
+                        className="input w-full text-sm"
+                        value={profileForm.age}
+                        onChange={(e) => setProfileForm({ ...profileForm, age: e.target.value })}
+                        placeholder="25"
+                        min={1}
+                        max={100}
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Batting Rating</label>
+                        <input
+                          type="number"
+                          className="input w-full text-sm"
+                          value={profileForm.batting_rating}
+                          onChange={(e) => setProfileForm({ ...profileForm, batting_rating: Number(e.target.value) || 5 })}
+                          min={1}
+                          max={10}
+                          step={0.5}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Bowling Rating</label>
+                        <input
+                          type="number"
+                          className="input w-full text-sm"
+                          value={profileForm.bowling_rating}
+                          onChange={(e) => setProfileForm({ ...profileForm, bowling_rating: Number(e.target.value) || 5 })}
+                          min={1}
+                          max={10}
+                          step={0.5}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Fielding Rating</label>
+                        <input
+                          type="number"
+                          className="input w-full text-sm"
+                          value={profileForm.fielding_rating}
+                          onChange={(e) => setProfileForm({ ...profileForm, fielding_rating: Number(e.target.value) || 5 })}
+                          min={1}
+                          max={10}
+                          step={0.5}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Password</label>
+                      <input
+                        type="password"
+                        className="input w-full text-sm"
+                        value={profileForm.password}
+                        onChange={(e) => setProfileForm({ ...profileForm, password: e.target.value })}
+                        placeholder="password123 (optional)"
+                      />
+                      <p className="text-[10px] text-gray-500 mt-0.5">
+                        Leave blank to set a default; player can reset via magic code.
+                      </p>
+                    </div>
+
+                    <div className="mt-6 flex justify-end gap-3">
+                      <button
+                        type="button"
+                        className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
+                        onClick={() => { setCreateProfileOpen(false); }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn-primary px-6 py-2"
+                        disabled={creatingProfile}
+                      >
+                        {creatingProfile ? "Creating..." : "Create Player"}
+                      </button>
+                    </div>
+                  </form>
                 </div>
               </div>
             )}
