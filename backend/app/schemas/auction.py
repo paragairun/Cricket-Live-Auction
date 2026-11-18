@@ -38,7 +38,7 @@ class AuctionEventOut(BaseModel):
     team_budget: int
     team_max_players: int
     player_base_price: int
-    no_timer: bool = False
+    no_timer: bool | None = False
     logo: Optional[str] = None
     created_at: datetime
 
@@ -83,11 +83,6 @@ class TeamOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AuctionPlayerCreate(BaseModel):
-    player_id: int
-    base_price: int | None = None
-
-
 class AuctionPlayerOut(BaseModel):
     id: int
     event_id: int
@@ -103,6 +98,11 @@ class AuctionPlayerOut(BaseModel):
 
 
 class BidCreate(BaseModel):
+    amount: int
+    captain_id: Optional[int] = None  # Optional: used when auctioneer places a bid for a captain
+
+
+class BidUpdateAmount(BaseModel):
     amount: int
 
 
@@ -186,14 +186,10 @@ class PlayerCategoryOut(PlayerCategoryBase):
     model_config = {"from_attributes": True}
 
 
-# ── AuctionPlayer update with category ──
+# ── AuctionPlayer create with category ──
 
 
 class AuctionPlayerCreate(BaseModel):
     player_id: int
     base_price: int | None = None
     category_id: int | None = None
-
-
-class NextPlayerRequest(BaseModel):
-    player_id: Optional[int] = None  # None = random

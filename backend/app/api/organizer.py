@@ -5,6 +5,7 @@ import io
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
@@ -33,6 +34,18 @@ from app.schemas.auction import (
     PlayerCategoryUpdate,
     PlayerCategoryOut,
 )
+from app.schemas.user import UserOut, AssignRolePayload
+from app.services import email_service
+from app.core.queue import enqueue
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
 from app.schemas.user import UserOut, AssignRolePayload, OrganizerPlayerCreate, OrganizerPlayerUpdate
 from app.services import email_service
 from app.services.s3_service import upload_file
@@ -319,6 +332,145 @@ async def list_event_players(
         select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
     )
     return [AuctionPlayerOut.model_validate(ap) for ap in result.scalars().all()]
+
+
+@router.get("/events/{event_id}/players/export-xlsx")
+async def export_players_xlsx(
+    event_id: int,
+    current_user: User = Depends(require_role(ROLE_ORGANIZER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export event players as an XLSX spreadsheet."""
+    if not HAS_OPENPYXL:
+        raise HTTPException(status_code=500, detail="Excel export is not available on the server")
+
+    event = await _get_event_for_organizer(event_id, current_user, db)
+
+    # Load players with their user profiles and team/captain info
+    result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id).order_by(AuctionPlayer.auction_order)
+    )
+    auction_players = result.scalars().all()
+
+    # Build player rows
+    rows = []
+    for ap in auction_players:
+        user_result = await db.execute(select(User).where(User.id == ap.player_id))
+        user = user_result.scalar_one_or_none()
+        if not user:
+            continue
+
+        # Fetch category name
+        category_name = ""
+        if ap.category_id:
+            cat_result = await db.execute(
+                select(PlayerCategory).where(PlayerCategory.id == ap.category_id)
+            )
+            cat = cat_result.scalar_one_or_none()
+            if cat:
+                category_name = cat.name
+
+        # Team + sold price
+        team_result = await db.execute(
+            select(Team, TeamPlayer)
+            .outerjoin(TeamPlayer, TeamPlayer.player_id == user.id)
+            .where(Team.id == TeamPlayer.team_id, Team.event_id == event_id)
+        )
+        team_row = team_result.first()
+        team_name = team_row.Team.name if team_row else ""
+        sold_price = team_row.TeamPlayer.sold_price if team_row else ""
+
+        rows.append({
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": str(user.phone or ""),
+            "age": user.age or "",
+            "roles": ", ".join(user.roles or []),
+            "batting_rating": user.batting_rating,
+            "bowling_rating": user.bowling_rating,
+            "fielding_rating": user.fielding_rating,
+            "onboarded": "Yes" if user.onboarded else "No",
+            "base_price": ap.base_price,
+            "category": category_name,
+            "current_bid": ap.current_bid,
+            "status": ap.status,
+            "auction_order": ap.auction_order,
+            "team": team_name,
+            "sold_price": sold_price,
+        })
+
+    # Write XLSX in memory
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Players"
+
+    headers = [
+        "ID", "Name", "Email", "Phone", "Age", "Roles",
+        "Batting", "Bowling", "Fielding", "Onboarded",
+        "Base Price", "Category", "Current Bid", "Status",
+        "Auction Order", "Team", "Sold Price",
+    ]
+
+    # Header styling
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F2937")  # gray-800
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin = Side(style="thin", color="4B5563")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = border
+
+    # Data rows
+    for row_idx, row in enumerate(rows, start=2):
+        values = [
+            row["id"], row["name"], row["email"], row["phone"], row["age"], row["roles"],
+            row["batting_rating"], row["bowling_rating"], row["fielding_rating"], row["onboarded"],
+            row["base_price"], row["category"], row["current_bid"], row["status"],
+            row["auction_order"], row["team"], row["sold_price"],
+        ]
+        for col_idx, val in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center")
+            
+            # Force Phone column to be Text so Excel preserves leading zeros and formatting
+            if headers[col_idx - 1] == "Phone":
+                cell.number_format = '@'
+                cell.value = str(val) if val is not None else ""
+
+            if col_idx == 1:
+                cell.font = Font(bold=True)
+
+    # Auto-size columns
+    for col_idx in range(1, len(headers) + 1):
+        column_letter = get_column_letter(col_idx)
+        max_length = len(str(headers[col_idx - 1]))
+        for row_idx in range(2, len(rows) + 2):
+            cell_val = ws.cell(row=row_idx, column=col_idx).value
+            if cell_val is not None:
+                max_length = max(max_length, len(str(cell_val)))
+        ws.column_dimensions[column_letter].width = min(max_length + 2, 40)
+
+    # Freeze header row
+    ws.freeze_panes = "A2"
+
+    # Save to bytes
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    filename = f"{event.name.replace(' ', '_')}_players.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.delete("/events/{event_id}/players/{player_id}", status_code=204)

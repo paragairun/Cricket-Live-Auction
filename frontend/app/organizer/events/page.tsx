@@ -20,7 +20,12 @@ export default function OrganizerEventsPage() {
     api
       .get("/organizer/events")
       .then(({ data }) => setEvents(data))
-      .catch(() => router.push("/auth/login"))
+      .catch((err) => {
+        // Only redirect on 401 auth errors; other errors stay visible
+        if (err.response?.status === 401) {
+          router.push("/auth/login");
+        }
+      })
       .finally(() => setLoading(false));
   }, [router]);
 

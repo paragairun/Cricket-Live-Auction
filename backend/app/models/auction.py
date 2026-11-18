@@ -46,7 +46,7 @@ class AuctionEvent(Base):
     player_base_price: Mapped[int] = mapped_column(Integer, default=1000)
 
     # If True, no countdown timer runs — auctioneer hammers manually
-    no_timer: Mapped[bool] = mapped_column(default=False)
+    no_timer: Mapped[bool | None] = mapped_column(default=False, nullable=True)
 
     # Final viewer count (persisted when event completes)
     total_viewers: Mapped[int | None] = mapped_column(Integer, nullable=True)

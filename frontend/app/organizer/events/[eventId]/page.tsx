@@ -23,6 +23,7 @@ interface AuctionPlayer {
   player_id: number;
   base_price: number;
   status: string;
+  category_id: number | null;
 }
 
 interface Team {
@@ -506,6 +507,7 @@ function PlayersTab({
   const [filter, setFilter] = useState<"all" | "added" | "not_added">("all");
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [pendingAdd, setPendingAdd] = useState<number | null>(null); // player waiting for category selection
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
@@ -583,6 +585,31 @@ function PlayersTab({
       onToast("err", msg || "Import failed");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleExportXlsx = async () => {
+    setExporting(true);
+    try {
+      const res = await api.get(`/organizer/events/${eventId}/players/export-xlsx`, {
+        responseType: "blob",
+      });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      const disposition = res.headers["content-disposition"] || "";
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      a.download = filenameMatch ? filenameMatch[1] : `event_${eventId}_players.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      onToast("ok", "Players exported to Excel");
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      onToast("err", msg || "Export failed");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -678,6 +705,14 @@ function PlayersTab({
                   disabled={importing}
                 >
                   {importing ? "Importing..." : "Import CSV"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary text-sm px-4 py-2 shrink-0 border-green-500/30 hover:border-green-500 hover:bg-green-500/10"
+                  disabled={auctionPlayers.length === 0 || exporting}
+                  onClick={handleExportXlsx}
+                >
+                  {exporting ? "Exporting..." : "Export XLSX"}
                 </button>
                 <button
                   type="button"
@@ -1126,7 +1161,12 @@ export default function OrganizerEventDetailPage() {
   }, [eid]);
 
   useEffect(() => {
-    fetchAll().catch(() => router.push("/auth/login"));
+    fetchAll().catch((err) => {
+      // Only redirect on 401 auth errors; other errors stay visible
+      if (err.response?.status === 401) {
+        router.push("/auth/login");
+      }
+    });
   }, [eid, fetchAll]);
 
   const addPlayer = async (playerId: number, categoryId?: number) => {

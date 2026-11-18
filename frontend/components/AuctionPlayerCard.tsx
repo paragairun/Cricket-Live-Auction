@@ -19,6 +19,7 @@ export default function AuctionPlayerCard({
   currentBidderName,
   timer,
   status,
+  noTimer,
 }: Props) {
   const timerColor =
     timer > 30 ? "text-green-400" : timer > 10 ? "text-amber-400" : "text-red-400";

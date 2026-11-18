@@ -1,5 +1,21 @@
 import { create } from "zustand";
 
+export interface BidSlab {
+  id: number;
+  min_value: number;
+  max_value: number;
+  increment: number;
+  sort_order: number;
+}
+
+export interface PlayerCategory {
+  id: number;
+  name: string;
+  base_price: number;
+  sort_order: number;
+  auction_first: boolean;
+}
+
 export interface TeamState {
   id: number;
   name: string;
@@ -15,6 +31,7 @@ export interface PlayerState {
   id: number;
   player_id: number;
   base_price: number;
+  category_id?: number | null;
   current_bid: number;
   current_bidder_id: number | null;
   status: "pending" | "active" | "sold" | "unsold";
@@ -27,8 +44,13 @@ interface AuctionState {
   activePlayerId: number | null;
   teams: TeamState[];
   players: PlayerState[];
-  setFullState: (state: Partial<AuctionState>) => void;
-  updateBid: (auctionPlayerId: number, amount: number, captainId: number) => void;
+  bidSlabs: BidSlab[];
+  categories: PlayerCategory[];
+
+  setFullState: (
+    state: Partial<AuctionState> & { bid_slabs?: BidSlab[]; categories?: PlayerCategory[] }
+  ) => void;
+  updateBid: (auctionPlayerId: number, amount: number, captainId: number | null) => void;
   setTimer: (remaining: number) => void;
   markPlayerSold: (auctionPlayerId: number, captainId: number, price: number) => void;
   markPlayerUnsold: (auctionPlayerId: number) => void;
@@ -42,8 +64,16 @@ export const useAuctionStore = create<AuctionState>((set) => ({
   activePlayerId: null,
   teams: [],
   players: [],
+  bidSlabs: [],
+  categories: [],
 
-  setFullState: (state) => set((prev) => ({ ...prev, ...state })),
+  setFullState: (state) =>
+    set((prev) => ({
+      ...prev,
+      ...state,
+      bidSlabs: state.bid_slabs ?? state.bidSlabs ?? prev.bidSlabs,
+      categories: state.categories ?? state.categories ?? prev.categories,
+    })),
 
   updateBid: (auctionPlayerId, amount, captainId) =>
     set((prev) => ({
@@ -59,7 +89,9 @@ export const useAuctionStore = create<AuctionState>((set) => ({
   markPlayerSold: (auctionPlayerId, captainId, price) =>
     set((prev) => ({
       players: prev.players.map((p) =>
-        p.id === auctionPlayerId ? { ...p, status: "sold" as const } : p
+        p.id === auctionPlayerId
+          ? { ...p, status: "sold" as const, current_bid: price, current_bidder_id: captainId }
+          : p
       ),
       teams: prev.teams.map((t) =>
         t.captain_id === captainId
@@ -78,10 +110,17 @@ export const useAuctionStore = create<AuctionState>((set) => ({
   setActivePlayer: (auctionPlayerId, basePrice) =>
     set((prev) => ({
       activePlayerId: auctionPlayerId,
-      players: prev.players.map((p) =>
-        p.id === auctionPlayerId
-          ? { ...p, status: "active" as const, current_bid: basePrice }
-          : p
-      ),
+      players: prev.players.map((p) => {
+        if (p.id !== auctionPlayerId) return p;
+        const cat = prev.categories.find((c) => c.id === p.category_id);
+        const resolvedBase = cat && cat.base_price > 0 ? cat.base_price : basePrice || p.base_price;
+        return {
+          ...p,
+          base_price: resolvedBase,
+          status: "active" as const,
+          current_bid: resolvedBase,
+          current_bidder_id: null,
+        };
+      }),
     })),
 }));
