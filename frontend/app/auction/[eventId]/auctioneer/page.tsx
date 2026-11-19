@@ -42,11 +42,22 @@ export default function AuctioneerPage() {
   const [busyAction, setBusyAction] = useState(false);
 
   const syncState = useCallback(async () => {
-    const [{ data }, teamRes, viewerStatsRes] = await Promise.all([
+    const [{ data }, eventRes, teamRes, viewerStatsRes] = await Promise.all([
       api.get(`/auction/events/${eid}/state`),
+      api.get(`/auction/events/${eid}`).catch(() => ({ data: null })),
       api.get(`/auction/events/${eid}/teams`).catch(() => ({ data: [] })),
       api.get(`/auction/events/${eid}/viewer-stats`).catch(() => ({ data: null })),
     ]);
+
+    const resolvedSlabs =
+      data.bid_slabs && data.bid_slabs.length > 0
+        ? data.bid_slabs
+        : eventRes.data?.bid_slabs || [];
+
+    const resolvedCategories =
+      data.categories && data.categories.length > 0
+        ? data.categories
+        : eventRes.data?.categories || [];
 
     store.setFullState({
       eventId: eid,
@@ -55,8 +66,8 @@ export default function AuctioneerPage() {
       activePlayerId: data.active_player_id,
       teams: data.teams || [],
       players: data.players || [],
-      bid_slabs: data.bid_slabs || [],
-      categories: data.categories || [],
+      bid_slabs: resolvedSlabs,
+      categories: resolvedCategories,
     });
 
     setStatus(data.status);
@@ -206,14 +217,15 @@ export default function AuctioneerPage() {
   const getBidIncrement = useCallback(
     (currentBid: number): number => {
       const slabs: BidSlab[] = store.bidSlabs || [];
-      if (slabs.length === 0) return 1000;
-      const sorted = [...slabs].sort((a, b) => a.sort_order - b.sort_order);
+      if (slabs.length === 0) return 10000;
+      const sorted = [...slabs].sort((a, b) => Number(b.min_value) - Number(a.min_value));
       for (const slab of sorted) {
-        const inRange =
-          currentBid >= slab.min_value && (slab.max_value === 0 || currentBid < slab.max_value);
-        if (inRange) return slab.increment;
+        const minVal = Number(slab.min_value);
+        const maxVal = Number(slab.max_value);
+        const inRange = currentBid >= minVal && (maxVal === 0 || currentBid <= maxVal);
+        if (inRange) return Number(slab.increment);
       }
-      return sorted[sorted.length - 1]?.increment || 1000;
+      return Number(sorted[sorted.length - 1]?.increment) || 10000;
     },
     [store.bidSlabs]
   );
@@ -319,9 +331,13 @@ export default function AuctioneerPage() {
     }
     const isOpening = !displayActiveAP.current_bidder_id;
     const activeBase = getEffectiveBasePrice(displayActiveAP);
-    const nextAmount = isOpening
-      ? activeBase
-      : displayActiveAP.current_bid + getBidIncrement(displayActiveAP.current_bid);
+    const referenceBid = isOpening ? activeBase : displayActiveAP.current_bid;
+    const increment = getBidIncrement(referenceBid);
+
+    const nextAmount =
+      isOpening && displayActiveAP.current_bid < activeBase
+        ? activeBase
+        : referenceBid + increment;
 
     await placeBidForCaptain(targetCaptain, nextAmount);
   };
@@ -430,15 +446,15 @@ export default function AuctioneerPage() {
       ? activeBasePrice
       : displayActiveAP.current_bid
     : 0;
+
   const currentIncrement = displayActiveAP
-    ? isOpeningBid
-      ? 0
-      : getBidIncrement(displayActiveAP.current_bid)
+    ? getBidIncrement(isOpeningBid ? activeBasePrice : displayActiveAP.current_bid)
     : 0;
+
   const nextBidAmount = displayActiveAP
-    ? isOpeningBid
+    ? isOpeningBid && displayActiveAP.current_bid < activeBasePrice
       ? activeBasePrice
-      : displayActiveAP.current_bid + currentIncrement
+      : (isOpeningBid ? activeBasePrice : displayActiveAP.current_bid) + currentIncrement
     : 0;
 
   const leadingTeam = displayActiveAP?.current_bidder_id
@@ -778,7 +794,7 @@ export default function AuctioneerPage() {
                 >
                   <span>↑</span>
                   <span>
-                    BID UP {displayActiveAP ? `(+${formatMoney(isOpeningBid ? 0 : currentIncrement)})` : ""}
+                    BID UP {displayActiveAP ? `(+${formatMoney(currentIncrement)})` : ""}
                   </span>
                 </button>
 
