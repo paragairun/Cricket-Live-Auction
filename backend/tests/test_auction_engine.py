@@ -412,3 +412,63 @@ async def test_pull_player_takes_them_off_the_block(
         result = await auction_service.pull_player(event.id, session)
 
     assert result.status == PlayerAuctionStatus.unsold
+
+
+# ── Starting the auction puts a player up (new in 2.1.4) ─────────────────────
+
+
+async def test_start_puts_a_player_on_the_block(
+    make_event, make_team, register_player
+):
+    """Pressing Start should not leave the auctioneer on an empty stage."""
+    event, _admin, _org, auctioneer = await make_event(status=AuctionStatus.ready)
+    await make_team(event, name="A")
+    await make_team(event, name="B")
+    _p1, ap1 = await register_player(event, name="One")
+    _p2, ap2 = await register_player(event, name="Two")
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session, actor=auctioneer)
+
+    async with AsyncSessionLocal() as session:
+        active = await auction_service._load_active_player(session, event.id)
+
+    assert active is not None, "A player must be up as soon as the auction starts"
+    assert active.id in (ap1.id, ap2.id)
+    assert active.status == PlayerAuctionStatus.active
+
+
+async def test_start_still_works_with_no_players(make_event, make_team):
+    """An empty pool must not stop the auction from starting."""
+    event, _admin, _org, auctioneer = await make_event(status=AuctionStatus.ready)
+    await make_team(event, name="A")
+    await make_team(event, name="B")
+
+    async with AsyncSessionLocal() as session:
+        result = await auction_service.start_auction(event.id, session, actor=auctioneer)
+
+    assert result.status == AuctionStatus.active
+    async with AsyncSessionLocal() as session:
+        assert await auction_service._load_active_player(session, event.id) is None
+
+
+async def test_resume_does_not_replace_the_player_on_the_block(
+    make_event, make_team, register_player
+):
+    """Pausing mid-player and resuming must keep that player up."""
+    event, _admin, _org, auctioneer = await make_event(status=AuctionStatus.ready)
+    await make_team(event, name="A")
+    _p1, ap1 = await register_player(event, name="One")
+    _p2, ap2 = await register_player(event, name="Two")
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session, actor=auctioneer)
+    async with AsyncSessionLocal() as session:
+        first = await auction_service._load_active_player(session, event.id)
+        first_id = first.id
+        await auction_service.pause_auction(event.id, session, actor=auctioneer)
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session, actor=auctioneer)
+        still_up = await auction_service._load_active_player(session, event.id)
+
+    assert still_up.id == first_id, "Resuming must not swap the player out"

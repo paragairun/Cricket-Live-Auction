@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import api, { describeError, newIdempotencyKey, postIdempotent } from "@/lib/api";
 import {
@@ -10,6 +10,7 @@ import {
   remainingSeconds,
 } from "@/store/auction";
 import { AuctionSocket, ConnectionState } from "@/lib/ws";
+import { shouldAutoAdvance, autoAdvanceDelayMs } from "@/lib/autoAdvance";
 import { incrementFor, quickBidSteps } from "@/lib/bidRules";
 
 /**
@@ -57,6 +58,14 @@ export default function AuctioneerPage() {
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rtmRaiseAmount, setRtmRaiseAmount] = useState("");
+  // Bring the next player up on its own, so the auctioneer is not tapping
+  // RANDOM between every lot. Manual selection stays available by turning this
+  // off. New in 2.1.4.
+  const [autoAdvance, setAutoAdvance] = useState(true);
+  // Read inside WebSocket handlers, which close over the state they were
+  // created with — a ref is what they can see the current value through.
+  const autoAdvanceRef = useRef(true);
+  const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<"none" | "sold" | "unsold" | "available" | "teams">("none");
@@ -94,6 +103,64 @@ export default function AuctioneerPage() {
       setViewerCount(count || 0);
     }
   }, [eid]);
+
+  const handleRandomNext = useCallback(
+    async (opts: { silent?: boolean } = {}) => {
+      setBusyAction(true);
+      try {
+        await postIdempotent(`/auction/events/${eid}/next-player`, {
+          auction_player_id: null,
+        });
+        setSelectedTeamId(null);
+        await syncState();
+      } catch (e: unknown) {
+        const info = describeError(e);
+        // An auto-advance that loses the race with the other console, or fires
+        // when the pool is empty, is not worth interrupting the room for.
+        if (!opts.silent) setActionError(info.message);
+        await syncState();
+      } finally {
+        setBusyAction(false);
+      }
+    },
+    [eid, syncState]
+  );
+
+  /** Bring the next player up automatically, after a beat for the SOLD card. */
+  const scheduleAutoAdvance = useCallback(
+    (trigger: "sold" | "unsold" | "start") => {
+      if (!autoAdvanceRef.current) return;
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = setTimeout(() => {
+        advanceTimerRef.current = null;
+        const fresh = useAuctionStore.getState();
+        if (
+          !shouldAutoAdvance({
+            enabled: autoAdvanceRef.current,
+            status: fresh.status,
+            activePlayerId: fresh.activePlayerId,
+            rtm: fresh.rtm,
+          })
+        ) {
+          return;
+        }
+        void handleRandomNext({ silent: true });
+      }, autoAdvanceDelayMs(trigger));
+    },
+    [handleRandomNext]
+  );
+
+  useEffect(() => {
+    autoAdvanceRef.current = autoAdvance;
+  }, [autoAdvance]);
+
+  useEffect(
+    () => () => {
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+    },
+    []
+  );
+
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -227,9 +294,18 @@ export default function AuctioneerPage() {
             );
             setSelectedTeamId(null);
             syncState();
+            scheduleAutoAdvance("sold");
             break;
 
           case "player_unsold":
+            useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
+            setSelectedTeamId(null);
+            syncState();
+            scheduleAutoAdvance("unsold");
+            break;
+
+          // Pulling a player off the block is a deliberate stop, so it does
+          // NOT pull the next one up.
           case "player_pulled":
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
@@ -243,6 +319,9 @@ export default function AuctioneerPage() {
           case "auction_started":
             setStatus("active");
             syncState();
+            // Starting the auction should put a player up, not land the
+            // auctioneer on an empty block waiting to be told what to do.
+            scheduleAutoAdvance("start");
             break;
           case "auction_completed":
             setStatus("completed");
@@ -269,7 +348,7 @@ export default function AuctioneerPage() {
     // message, which is what produced the flood of "WebSocket is closed before
     // the connection is established" and the infinite render loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eid, hasAccess]);
+  }, [eid, hasAccess, scheduleAutoAdvance]);
 
   useEffect(() => {
     const fetchPlayersInfo = async () => {
@@ -392,7 +471,14 @@ export default function AuctioneerPage() {
 
   const formatMoney = (val: number) => val.toLocaleString("en-IN");
 
-  const startAuction = () => api.post(`/auction/events/${eid}/start`).then(syncState);
+  // Starting the auction should put a player up. Scheduling here as well as on
+  // the auction_started broadcast means this does not depend on the socket
+  // echoing our own message back to us.
+  const startAuction = () =>
+    api
+      .post(`/auction/events/${eid}/start`)
+      .then(syncState)
+      .then(() => scheduleAutoAdvance("start"));
   const pauseAuction = () => api.post(`/auction/events/${eid}/pause`).then(syncState);
 
   const handleResetMock = async () => {
@@ -404,23 +490,6 @@ export default function AuctioneerPage() {
       await syncState();
     } catch (e: any) {
       setActionError(describeError(e).message);
-    } finally {
-      setBusyAction(false);
-    }
-  };
-
-  const handleRandomNext = async () => {
-    if (status !== "active") {
-      alert("Start or resume the auction first.");
-      return;
-    }
-    setBusyAction(true);
-    try {
-      await postIdempotent(`/auction/events/${eid}/next-player`, { auction_player_id: null });
-      setSelectedTeamId(null);
-      await syncState();
-    } catch (e: any) {
-      alert(e.response?.data?.detail || "No pending players available");
     } finally {
       setBusyAction(false);
     }
@@ -473,26 +542,37 @@ export default function AuctioneerPage() {
     }
   };
 
+  /**
+   * BID UP — a price correction, not a bid.
+   *
+   * It raises the current figure by one slab step and leaves the bidding team
+   * exactly as it is, mirroring DOWN (UNDO). Bids are placed by tapping a team
+   * paddle; this button is for fixing a number the auctioneer mis-keyed or a
+   * call made verbally in the room.
+   *
+   * Until 2.1.4 it placed a real bid, inventing a team when none was selected
+   * (the selected team, else the current leader, else simply the first team in
+   * the list) — so a mis-tap could attribute money to a side that never bid.
+   */
   const handleBidUp = async () => {
     if (!displayActiveAP) return;
-    // Any team can bid; a team no longer needs a captain assigned to take part.
-    const targetTeam =
-      selectedTeamId ?? displayActiveAP.current_bid_team_id ?? store.teams[0]?.id;
-    if (!targetTeam) {
-      setActionError("No teams have been created for this event yet.");
-      return;
-    }
     const isOpening = !displayActiveAP.current_bid_team_id;
     const activeBase = getEffectiveBasePrice(displayActiveAP);
     const referenceBid = isOpening ? activeBase : displayActiveAP.current_bid;
     const increment = getBidIncrement(referenceBid);
+    const nextAmount = referenceBid + increment;
 
-    const nextAmount =
-      isOpening && displayActiveAP.current_bid < activeBase
-        ? activeBase
-        : referenceBid + increment;
-
-    await placeBidForTeam(targetTeam, nextAmount);
+    setBusyAction(true);
+    setActionError(null);
+    try {
+      await api.patch(`/auction/events/${eid}/bid-edit`, { amount: nextAmount });
+      await syncState();
+    } catch (e: unknown) {
+      setActionError(describeError(e).message);
+      await syncState();
+    } finally {
+      setBusyAction(false);
+    }
   };
 
   const handleBidDown = async () => {
@@ -534,6 +614,11 @@ export default function AuctioneerPage() {
       setBusyAction(false);
     }
   };
+
+  // BID UP corrects the price and needs no team, so it is available whenever a
+  // player is up — including before the first bid, when it raises the opening
+  // figure.
+  const canCorrectPrice = !!displayActiveAP && status === "active";
 
   const handleSoldOrUnsold = async (markUnsold: boolean) => {
     if (!displayActiveAP) return;
@@ -831,19 +916,32 @@ export default function AuctioneerPage() {
               </span>
             </div>
 
-            <div className="flex items-center gap-4 sm:gap-6">
-              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-white/85 bg-slate-800 overflow-hidden shrink-0 shadow-xl flex items-center justify-center">
-                {activeInfo?.profile_photo ? (
-                  <img
-                    src={activeInfo.profile_photo}
-                    alt={activeInfo.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span className="text-3xl font-black text-amber-300">
-                    {(activeInfo?.name || "P")[0]?.toUpperCase()}
-                  </span>
-                )}
+            <div className="flex items-center gap-5 sm:gap-7">
+              {/*
+                Portrait frame, 3:4, and the brightest thing on the page. The
+                player is what the room is looking at; a 80px circle buried in a
+                row of text was not carrying that. The glow ring and the lift
+                off the background are deliberate.
+              */}
+              <div className="relative shrink-0">
+                <div
+                  className="absolute -inset-1.5 rounded-2xl bg-gradient-to-b from-amber-300/70 to-amber-500/30 blur-[6px]"
+                  aria-hidden="true"
+                />
+                <div className="relative w-32 sm:w-44 md:w-52 aspect-[3/4] rounded-2xl border-[3px] border-amber-300 bg-slate-900 overflow-hidden shadow-[0_12px_40px_rgba(0,0,0,0.55)] flex items-center justify-center">
+                  {activeInfo?.profile_photo ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={activeInfo.profile_photo}
+                      alt={activeInfo.name}
+                      className="w-full h-full object-cover object-top"
+                    />
+                  ) : (
+                    <span className="text-6xl sm:text-7xl font-black text-amber-300/90">
+                      {(activeInfo?.name || "P")[0]?.toUpperCase()}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="min-w-0 flex-1">
@@ -906,7 +1004,9 @@ export default function AuctioneerPage() {
             </p>
             <p className="text-xs text-red-200/80 mt-1">
               {status === "active"
-                ? "Tap RANDOM or MANUAL below to bring up the next player."
+                ? autoAdvance
+                  ? "Bringing the next player up…"
+                  : "Tap RANDOM or MANUAL below to bring up the next player."
                 : "Click Start/Resume in the top right to begin."}
             </p>
           </div>
@@ -1040,9 +1140,20 @@ export default function AuctioneerPage() {
                     Filter ({pendingPlayers.length})
                   </button>
                 </div>
+                <label className="flex items-center gap-2 mb-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoAdvance}
+                    onChange={(e) => setAutoAdvance(e.target.checked)}
+                    className="accent-amber-400"
+                  />
+                  <span className="text-[11px] font-bold text-amber-200">
+                    Auto — bring the next player up after each sale
+                  </span>
+                </label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
-                    onClick={handleRandomNext}
+                    onClick={() => handleRandomNext()}
                     disabled={status !== "active" || busyAction || pendingPlayers.length === 0}
                     className="bg-[#7c121c] hover:bg-[#961723] disabled:opacity-40 border border-white/20 rounded-lg py-2 px-2 text-xs font-extrabold tracking-wide transition"
                   >
@@ -1063,12 +1174,13 @@ export default function AuctioneerPage() {
               <div className="md:col-span-8 grid grid-cols-2 gap-2.5">
                 <button
                   onClick={handleBidUp}
-                  disabled={status !== "active" || !displayActiveAP || busyAction}
+                  disabled={!canCorrectPrice || busyAction}
+                  title="Correct the price upward by one slab step. Does not change which team is bidding — tap a team paddle to bid."
                   className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black text-sm sm:text-base py-3 px-3 shadow-md flex items-center justify-center gap-1.5 transition"
                 >
                   <span>↑</span>
                   <span>
-                    BID UP {displayActiveAP ? `(+${formatMoney(currentIncrement)})` : ""}
+                    UP (CORRECT) {displayActiveAP ? `+${formatMoney(currentIncrement)}` : ""}
                   </span>
                 </button>
 

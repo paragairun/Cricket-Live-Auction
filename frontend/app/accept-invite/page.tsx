@@ -89,7 +89,7 @@ function AcceptInviteContent() {
         {/* Invite badge */}
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6 text-center">
           <p className="text-amber-400 font-semibold text-sm">
-            You've been invited to{" "}
+            You&apos;ve been invited to{" "}
             <span className="text-white">{invite?.event_name}</span>
           </p>
           <p className="text-gray-500 text-xs mt-1">

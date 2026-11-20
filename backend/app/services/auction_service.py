@@ -545,6 +545,19 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if was_first_start:
         await _notify_participants_starting(event, db)
 
+    # Put the first player up automatically. An auctioneer who has just pressed
+    # Start wants someone on the block, not an empty stage and another button to
+    # find. Best-effort: if the pool is empty, or the nomination queue is (in
+    # nomination mode), the auction still starts and the console shows
+    # "No player on the block" as before.
+    if not await _load_active_player(db, event_id):
+        try:
+            await set_next_player(event_id, None, db, actor=actor)
+        except AuctionError as exc:
+            logger.info(
+                "Event %s started with no player on the block: %s", event_id, exc
+            )
+
     return event
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
 
@@ -51,9 +51,7 @@ export default function AdminEventsPage() {
   const [form, setForm] = useState({ name: "", description: "", domains: "", scheduled_at: "" });
   const [error, setError] = useState("");
 
-  useEffect(() => { fetchEvents(); }, []);
-
-  const fetchEvents = async () => {
+  const fetchEvents = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/events");
       setEvents(data);
@@ -62,7 +60,11 @@ export default function AdminEventsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [router]);
+
+  useEffect(() => {
+    fetchEvents();
+  }, [fetchEvents]);
 
   const createEvent = async (e: React.FormEvent) => {
     e.preventDefault();

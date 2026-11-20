@@ -6,6 +6,27 @@ import api, { describeError } from "@/lib/api";
 import { derivePublishState, isDraftState } from "@/lib/eventStatus";
 import UserSearchInvite from "@/components/UserSearchInvite";
 
+/** A roster player plus their state in this event. New in 2.0.0. */
+interface EventPlayer {
+  id: number;               // players.id
+  name: string;
+  email: string | null;
+  phone: string | null;
+  age: number | null;
+  profile_photo: string | null;
+  notes: string | null;
+  batting_rating: number;
+  bowling_rating: number;
+  fielding_rating: number;
+  created_at: string;
+  auction_player_id: number | null;
+  base_price: number | null;
+  category_id: number | null;
+  status: string | null;
+  sold_price: number | null;
+  sold_to_team_id: number | null;
+}
+
 interface User {
   id: number;
   name: string;
@@ -435,27 +456,6 @@ function TeamsTab({
 }
 
 // ─── Players Tab ──────────────────────────────────────────────────────────────
-
-/** A roster player plus their state in this event. New in 2.0.0. */
-interface EventPlayer {
-  id: number;               // players.id
-  name: string;
-  email: string | null;
-  phone: string | null;
-  age: number | null;
-  profile_photo: string | null;
-  notes: string | null;
-  batting_rating: number;
-  bowling_rating: number;
-  fielding_rating: number;
-  created_at: string;
-  auction_player_id: number | null;
-  base_price: number | null;
-  category_id: number | null;
-  status: string | null;
-  sold_price: number | null;
-  sold_to_team_id: number | null;
-}
 
 function isValidEmail(val: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
@@ -1615,7 +1615,7 @@ export default function OrganizerEventDetailPage() {
                   Assign Auctioneer
                 </h3>
                 <p className="text-xs text-gray-600 mb-4">
-                  Search by name or email. If the person isn't registered yet, they'll receive an invite link.
+                  Search by name or email. If the person isn&apos;t registered yet, they&apos;ll receive an invite link.
                 </p>
                 <div className={isDraft ? "" : "pointer-events-none opacity-75"}>
                   <UserSearchInvite
@@ -2050,7 +2050,7 @@ export default function OrganizerEventDetailPage() {
                 </h3>
                 <p className="text-xs text-gray-500 mb-4">
                   Create categories (e.g. Captain, High Ranking, Mid Ranking) with their own base price.
-                  Categories marked "Auction First" will be auctioned before the random pool.
+                  Categories marked &quot;Auction First&quot; will be auctioned before the random pool.
                 </p>
 
                 {isDraft ? (
