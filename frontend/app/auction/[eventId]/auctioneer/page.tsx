@@ -11,6 +11,7 @@ import {
 } from "@/store/auction";
 import { AuctionSocket, ConnectionState } from "@/lib/ws";
 import { shouldAutoAdvance, autoAdvanceDelayMs } from "@/lib/autoAdvance";
+import { useFitText } from "@/lib/useFitText";
 import { incrementFor, quickBidSteps } from "@/lib/bidRules";
 
 /**
@@ -49,7 +50,6 @@ export default function AuctioneerPage() {
   const [status, setStatus] = useState("draft");
   const [playerDetails, setPlayerDetails] = useState<Record<number, PlayerDetail>>({});
   const [teamRosters, setTeamRosters] = useState<Record<number, { player_id: number; sold_price: number }[]>>({});
-  const [viewerCount, setViewerCount] = useState<number>(0);
 
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   // Ticked locally from the server's absolute deadline. 1.x relied on a
@@ -74,11 +74,10 @@ export default function AuctioneerPage() {
   const [busyAction, setBusyAction] = useState(false);
 
   const syncState = useCallback(async () => {
-    const [{ data }, eventRes, teamRes, viewerStatsRes] = await Promise.all([
+    const [{ data }, eventRes, teamRes] = await Promise.all([
       api.get(`/auction/events/${eid}/state`),
       api.get(`/auction/events/${eid}`).catch(() => ({ data: null })),
       api.get(`/auction/events/${eid}/teams`).catch(() => ({ data: [] })),
-      api.get(`/auction/events/${eid}/viewer-stats`).catch(() => ({ data: null })),
     ]);
 
     // The state payload is now the single source of truth: slabs, categories,
@@ -94,13 +93,6 @@ export default function AuctioneerPage() {
         map[t.id] = t.players || [];
       });
       setTeamRosters(map);
-    }
-    if (viewerStatsRes.data) {
-      const count =
-        data.status === "completed"
-          ? viewerStatsRes.data.total_unique_viewers
-          : viewerStatsRes.data.live_viewers;
-      setViewerCount(count || 0);
     }
   }, [eid]);
 
@@ -326,8 +318,9 @@ export default function AuctioneerPage() {
           case "auction_completed":
             setStatus("completed");
             break;
+          // viewer_count is ignored: the console no longer shows a live
+          // watcher ticker.
           case "viewer_count":
-            setViewerCount(msg.count as number);
             break;
           case "unauthorized":
             router.replace(`/auction/${eid}/spectate`);
@@ -615,6 +608,11 @@ export default function AuctioneerPage() {
     }
   };
 
+  /** Lot position in the evening: everything resolved, plus the one on the block. */
+  const lotIndex =
+    soldPlayers.length + unsoldPlayers.length + (displayActiveAP ? 1 : 0);
+  const lotTotal = store.players.length;
+
   // BID UP corrects the price and needs no team, so it is available whenever a
   // player is up — including before the first bid, when it raises the opening
   // figure.
@@ -665,9 +663,20 @@ export default function AuctioneerPage() {
     await syncState();
   };
 
+  const activeInfo = displayActiveAP ? playerDetails[displayActiveAP.player_id] : undefined;
+  const activeCategory = displayActiveAP ? getCategoryObj(displayActiveAP.category_id) : undefined;
+  /**
+   * The player's name is sized to its box rather than clipped. Nothing about a
+   * name is predictable — "P. Venkatasubramanian" and "Kai Roy" share a panel.
+   */
+  const nameRef = useFitText<HTMLHeadingElement>(14, 56, [
+    activeInfo?.name,
+    displayActiveAP?.player_id,
+  ]);
+
   if (checkingAccess) {
     return (
-      <div className="min-h-screen bg-[#140708] flex items-center justify-center text-amber-200 font-semibold">
+      <div className="min-h-screen bg-[#0c111a] flex items-center justify-center text-amber-200 font-semibold">
         Loading Auction Console...
       </div>
     );
@@ -675,8 +684,6 @@ export default function AuctioneerPage() {
 
   if (!hasAccess) return null;
 
-  const activeInfo = displayActiveAP ? playerDetails[displayActiveAP.player_id] : undefined;
-  const activeCategory = displayActiveAP ? getCategoryObj(displayActiveAP.category_id) : undefined;
   const isOpeningBid = !!displayActiveAP && !displayActiveAP.current_bid_team_id;
   const activeBasePrice = displayActiveAP ? getEffectiveBasePrice(displayActiveAP) : 0;
   const displayedCurrentBid = displayActiveAP
@@ -707,571 +714,637 @@ export default function AuctioneerPage() {
   const inspectedTeam = store.teams.find((t) => t.id === inspectTeamId);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#3b070c] via-[#5e0b13] to-[#290408] text-white flex flex-col justify-between select-none">
-      {/* ── TOP BROADCAST HEADER BAR ── */}
-      <header className="bg-[#7a0c15] border-b border-red-400/20 px-4 py-2.5 shadow-lg">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => router.push("/dashboard")}
-              className="w-9 h-9 rounded-lg bg-black/25 hover:bg-black/40 flex items-center justify-center text-white font-bold transition"
-              title="Exit to Dashboard"
-            >
-              ‹
-            </button>
-            {eventLogo ? (
-              <img src={eventLogo} alt="" className="w-9 h-9 rounded-lg object-cover bg-white/10" />
-            ) : (
-              <div className="w-9 h-9 rounded-lg bg-amber-400 text-red-950 font-black flex items-center justify-center text-sm shadow">
-                🏏
-              </div>
-            )}
-            <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-extrabold tracking-tight truncate">
-                {eventName}
-              </h1>
-              <div className="flex items-center gap-2 text-[11px] text-red-200">
-                <span className="inline-flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  {viewerCount} Live
-                </span>
-                <span>•</span>
-                <span className="uppercase font-bold text-amber-300">{status}</span>
-              </div>
+    /*
+      FIXED-VIEWPORT SHELL (2.2.0)
+
+      The page is exactly one screen tall and never scrolls. `min-h-screen`
+      previously meant "at least the viewport, grow past it", which is what
+      produced the scroll on laptops and projectors.
+
+      Four rows: header, alerts, stage, dock. Only the stage is `1fr`, so when
+      an alert appears the stage gives up the space rather than the document
+      growing. `minmax(0,1fr)` (not `1fr`) is what actually lets a grid child
+      shrink below its content size.
+    */
+    <div className="h-[100dvh] w-full overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-gradient-to-b from-[#161d28] via-[#0f141d] to-[#090c12] text-white select-none">
+      {/* ── ROW 1 · COMMAND BAR ── */}
+      <header className="bg-[#19212e] border-b border-white/10 px-3 py-2 shadow-lg">
+        <div className="mx-auto w-full max-w-[1800px] flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="w-8 h-8 shrink-0 rounded-lg bg-black/30 hover:bg-black/50 flex items-center justify-center font-bold transition"
+            title="Exit to Dashboard"
+          >
+            ‹
+          </button>
+
+          {eventLogo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={eventLogo} alt="" className="w-8 h-8 shrink-0 rounded-lg object-cover bg-white/10" />
+          ) : (
+            <div className="w-8 h-8 shrink-0 rounded-lg bg-amber-400 text-red-950 font-black flex items-center justify-center text-sm">
+              🏏
+            </div>
+          )}
+
+          <div className="min-w-0 mr-auto">
+            <h1 className="text-sm sm:text-base font-extrabold tracking-tight truncate leading-tight">
+              {eventName}
+            </h1>
+            <div className="text-[10px] leading-tight">
+              <span className="uppercase font-bold text-amber-300 tracking-wider">{status}</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {status !== "completed" && (
-              <>
-                <button
-                  onClick={handleResetMock}
-                  disabled={busyAction}
-                  className="bg-black/30 hover:bg-black/50 border border-amber-400/40 text-amber-300 px-2.5 py-1.5 rounded-lg text-xs font-bold transition"
-                  title="Reset Mock Auction"
-                >
-                  ↻ Reset
-                </button>
-                {status !== "active" ? (
-                  <button
-                    onClick={startAuction}
-                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3.5 py-1.5 rounded-lg text-xs font-extrabold shadow transition"
-                  >
-                    ▶ {status === "paused" ? "Resume" : "Start"}
-                  </button>
-                ) : (
-                  <button
-                    onClick={pauseAuction}
-                    className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-extrabold shadow transition"
-                  >
-                    ⏸ Pause
-                  </button>
-                )}
-              </>
-            )}
+          {/*
+            LOT COUNTER — borrowed from broadcast auction boards. It tells the
+            room, and the auctioneer, exactly how far through the evening we are.
+          */}
+          <div className="shrink-0 px-2.5 py-1 rounded-lg bg-black/35 border border-amber-300/30 text-center leading-none">
+            <div className="text-[8px] font-bold uppercase tracking-[0.15em] text-amber-200/80">Lot</div>
+            <div className="text-xs sm:text-sm font-black text-amber-300 tabular-nums">
+              {lotIndex} / {lotTotal}
+            </div>
           </div>
+
+          {/*
+            PROGRESS CHIPS — these are the four drawer buttons that used to sit
+            in a footer strip. Nothing was removed: they moved up here, took on
+            the stat-chip treatment, and gave their entire row back to the stage.
+          */}
+          <div className="flex items-stretch gap-1.5 shrink-0">
+            {([
+              { key: "sold", label: "Sold", value: soldPlayers.length, tone: "bg-[#4d7c0f] hover:bg-[#65a30d]", on: "bg-emerald-400 text-slate-950" },
+              { key: "unsold", label: "Unsold", value: unsoldPlayers.length, tone: "bg-[#b91c1c] hover:bg-[#dc2626]", on: "bg-red-300 text-slate-950" },
+              { key: "available", label: "To Go", value: pendingPlayers.length, tone: "bg-[#ca8a04] hover:bg-[#eab308]", on: "bg-amber-300 text-slate-950" },
+              { key: "teams", label: "Teams", value: store.teams.length, tone: "bg-[#0d9488] hover:bg-[#14b8a6]", on: "bg-teal-300 text-slate-950" },
+            ] as const).map((chip) => (
+              <button
+                key={chip.key}
+                onClick={() => setActiveDrawerTab(activeDrawerTab === chip.key ? "none" : chip.key)}
+                className={`px-2.5 py-1 rounded-lg leading-none text-center transition font-black ${
+                  activeDrawerTab === chip.key ? chip.on : `${chip.tone} text-white`
+                }`}
+                title={`Open ${chip.label}`}
+              >
+                <div className="text-sm sm:text-base tabular-nums">{chip.value}</div>
+                <div className="text-[8px] font-bold uppercase tracking-[0.12em] opacity-90">
+                  {chip.label}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {status !== "completed" && (
+            <div className="flex items-center gap-1.5 shrink-0 pl-1.5 ml-0.5 border-l border-white/20">
+              <button
+                onClick={handleResetMock}
+                disabled={busyAction}
+                className="bg-black/30 hover:bg-black/50 border border-amber-400/40 text-amber-300 px-2 py-1.5 rounded-lg text-[11px] font-bold transition disabled:opacity-40"
+                title="Reset Mock Auction"
+              >
+                ↻
+              </button>
+              {status !== "active" ? (
+                <button
+                  onClick={startAuction}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3 py-1.5 rounded-lg text-[11px] font-extrabold shadow transition"
+                >
+                  ▶ {status === "paused" ? "Resume" : "Start"}
+                </button>
+              ) : (
+                <button
+                  onClick={pauseAuction}
+                  className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-3 py-1.5 rounded-lg text-[11px] font-extrabold shadow transition"
+                >
+                  ⏸ Pause
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
-      {/* ── RIGHT TO MATCH DECISION PANEL (new in 2.1.0) ──
-          Bidding has closed but no sale has happened: the rights holder, and
-          then the top bidder, have decisions to make. Only the step that is
-          actually available at the current stage is offered. */}
-      {store.rtm && (
-        <div className="px-6 py-4 bg-blue-950/60 border-y border-blue-500/40">
-          <div className="max-w-5xl mx-auto">
-            <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
-              <h3 className="text-sm font-bold text-blue-200 uppercase tracking-wide">
-                Right to Match — {store.rtm.player_name ?? `Player #${store.rtm.player_id}`}
-              </h3>
-              <p className="text-xs text-blue-300/80">
-                {store.rtm.top_team_name ?? "Top bidder"} bid{" "}
-                <span className="font-bold text-white">
-                  ₹{formatMoney(store.rtm.top_amount ?? 0)}
-                </span>
-                {" · "}rights held by{" "}
-                <span className="font-semibold text-white">
-                  {store.rtm.rights_team_name ?? "—"}
-                </span>
-              </p>
-            </div>
-
-            {store.rtm.stage === "offered" && (
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="text-sm text-blue-100 mr-2">
-                  Does {store.rtm.rights_team_name} exercise its Right to Match?
-                </p>
-                <button
-                  onClick={() => rtmAction("exercise")}
-                  disabled={busyAction}
-                  className="bg-blue-500 hover:bg-blue-400 text-white font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  Exercise RTM
-                </button>
-                <button
-                  onClick={() => rtmAction("decline")}
-                  disabled={busyAction}
-                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  Decline — sell to {store.rtm.top_team_name}
-                </button>
-              </div>
-            )}
-
-            {store.rtm.stage === "raise_offered" && (
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="text-sm text-blue-100 mr-2">
-                  RTM exercised. {store.rtm.top_team_name} may raise once.
-                </p>
-                <input
-                  type="number"
-                  value={rtmRaiseAmount}
-                  onChange={(e) => setRtmRaiseAmount(e.target.value)}
-                  placeholder={`> ${store.rtm.top_amount ?? 0}`}
-                  className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-36"
-                />
-                <button
-                  onClick={() => {
-                    const amount = parseInt(rtmRaiseAmount, 10);
-                    if (!Number.isFinite(amount)) {
-                      setActionError("Enter the raised amount");
-                      return;
-                    }
-                    rtmAction("raise", { amount }).then(() => setRtmRaiseAmount(""));
-                  }}
-                  disabled={busyAction}
-                  className="bg-amber-500 hover:bg-amber-400 text-black font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  Raise
-                </button>
-                <button
-                  onClick={() => rtmAction("skip-raise")}
-                  disabled={busyAction}
-                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  No raise — {store.rtm.rights_team_name} takes the player
-                </button>
-              </div>
-            )}
-
-            {store.rtm.stage === "match_offered" && (
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="text-sm text-blue-100 mr-2">
-                  Raised to ₹{formatMoney(store.rtm.top_amount ?? 0)}. Does{" "}
-                  {store.rtm.rights_team_name} match?
-                </p>
-                <button
-                  onClick={() => rtmAction("match")}
-                  disabled={busyAction}
-                  className="bg-blue-500 hover:bg-blue-400 text-white font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  Match — takes the player
-                </button>
-                <button
-                  onClick={() => rtmAction("no-match")}
-                  disabled={busyAction}
-                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
-                >
-                  No match — sell to {store.rtm.top_team_name}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── OPERATOR ERROR BANNER ── */}
-      {actionError && (
-        <div className="px-6 py-2 bg-red-950/70 border-y border-red-500/40">
-          <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
-            <p className="text-sm text-red-200">{actionError}</p>
-            <button
-              onClick={() => setActionError(null)}
-              className="text-xs text-red-300 hover:text-white shrink-0"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── MAIN BROADCAST STAGE ── */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-4 flex flex-col justify-between gap-4">
-        {/* 1. HERO PLAYER BANNER */}
-        {displayActiveAP ? (
-          <div className="relative rounded-2xl bg-gradient-to-br from-[#8c111b] to-[#57080f] border border-red-300/20 p-4 sm:p-5 shadow-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-              <div className="flex items-center gap-2">
-                <span className="bg-amber-400 text-red-950 text-[11px] font-black uppercase px-2.5 py-0.5 rounded-full">
-                  {activeCategory ? activeCategory.name : "Standard Pool"}
-                </span>
-                <span className="text-xs text-red-100/90 font-semibold">
-                  Base: ₹{formatMoney(activeBasePrice)}
-                </span>
-              </div>
-              <span className="text-xs font-bold text-amber-300 bg-black/30 px-2.5 py-0.5 rounded-full">
-                {isOpeningBid
-                  ? `Opening Bid: ₹${formatMoney(nextBidAmount)}`
-                  : `Slab Step: +₹${formatMoney(currentIncrement)}`}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-5 sm:gap-7">
-              {/*
-                Portrait frame, 3:4, and the brightest thing on the page. The
-                player is what the room is looking at; a 80px circle buried in a
-                row of text was not carrying that. The glow ring and the lift
-                off the background are deliberate.
-              */}
-              <div className="relative shrink-0">
-                <div
-                  className="absolute -inset-1.5 rounded-2xl bg-gradient-to-b from-amber-300/70 to-amber-500/30 blur-[6px]"
-                  aria-hidden="true"
-                />
-                <div className="relative w-32 sm:w-44 md:w-52 aspect-[3/4] rounded-2xl border-[3px] border-amber-300 bg-slate-900 overflow-hidden shadow-[0_12px_40px_rgba(0,0,0,0.55)] flex items-center justify-center">
-                  {activeInfo?.profile_photo ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={activeInfo.profile_photo}
-                      alt={activeInfo.name}
-                      className="w-full h-full object-cover object-top"
-                    />
-                  ) : (
-                    <span className="text-6xl sm:text-7xl font-black text-amber-300/90">
-                      {(activeInfo?.name || "P")[0]?.toUpperCase()}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xl sm:text-2xl font-black text-amber-300 pr-2.5 border-r-2 border-white/30">
-                    #{displayActiveAP.player_id}
-                  </span>
-                  <h2 className="text-xl sm:text-3xl font-black tracking-tight truncate">
-                    {activeInfo?.name || `Player #${displayActiveAP.player_id}`}
-                  </h2>
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-red-100/90 font-medium">
-                  {activeInfo?.role && <span>{activeInfo.role}</span>}
-                  {activeInfo?.age && <span>• {activeInfo.age} Yrs</span>}
-                  {(activeInfo?.batting_rating || activeInfo?.bowling_rating) && (
-                    <span>
-                      • Bat {activeInfo.batting_rating ?? "-"} / Bowl {activeInfo.bowling_rating ?? "-"}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* 2. CENTRAL CURRENT BID BAR + PENCIL EDIT */}
-            <div className="mt-4 pt-3 border-t border-white/15 flex items-center justify-between gap-3">
-              <div className="w-10" />
-              <div className="text-center">
-                <div className="inline-flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-amber-400 text-amber-950 font-black text-xs flex items-center justify-center shadow">
-                    ₹
-                  </span>
-                  <span className="text-3xl sm:text-4xl font-black tracking-tight text-white drop-shadow">
-                    {formatMoney(displayedCurrentBid)}
-                  </span>
-                </div>
-                <p className="text-xs font-bold mt-0.5 text-amber-300">
-                  {leadingTeam
-                    ? `Current Highest: ${leadingTeam.name}`
-                    : "Awaiting Opening Bid"}
+      {/* ── ROW 2 · ALERTS (RTM decision + operator errors) ── */}
+      <div>
+        {/* RIGHT TO MATCH DECISION PANEL (2.1.0) — bidding has closed but no
+            sale has happened: only the step available at the current stage is
+            offered. */}
+        {store.rtm && (
+          <div className="px-3 py-2 bg-blue-950/70 border-y border-blue-400/40">
+            <div className="mx-auto w-full max-w-[1800px]">
+              <div className="flex items-baseline justify-between flex-wrap gap-x-3 gap-y-1 mb-2">
+                <h3 className="text-xs font-black text-blue-200 uppercase tracking-wider">
+                  Right to Match — {store.rtm.player_name ?? `Player #${store.rtm.player_id}`}
+                </h3>
+                <p className="text-[11px] text-blue-300/80">
+                  {store.rtm.top_team_name ?? "Top bidder"} bid{" "}
+                  <span className="font-bold text-white">₹{formatMoney(store.rtm.top_amount ?? 0)}</span>
+                  {" · "}rights held by{" "}
+                  <span className="font-semibold text-white">{store.rtm.rights_team_name ?? "—"}</span>
                 </p>
               </div>
-              <button
-                onClick={handleOpenEditBid}
-                disabled={status !== "active"}
-                className="w-10 h-10 rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-40 flex items-center justify-center text-white transition shadow"
-                title="Edit Current Bid Amount"
-              >
-                ✎
-              </button>
+
+              {store.rtm.stage === "offered" && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-blue-100 mr-1">
+                    Does {store.rtm.rights_team_name} exercise its Right to Match?
+                  </p>
+                  <button
+                    onClick={() => rtmAction("exercise")}
+                    disabled={busyAction}
+                    className="bg-blue-500 hover:bg-blue-400 text-white font-bold px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    Exercise RTM
+                  </button>
+                  <button
+                    onClick={() => rtmAction("decline")}
+                    disabled={busyAction}
+                    className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    Decline — sell to {store.rtm.top_team_name}
+                  </button>
+                </div>
+              )}
+
+              {store.rtm.stage === "raise_offered" && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-blue-100 mr-1">
+                    RTM exercised. {store.rtm.top_team_name} may raise once.
+                  </p>
+                  <input
+                    type="number"
+                    value={rtmRaiseAmount}
+                    onChange={(e) => setRtmRaiseAmount(e.target.value)}
+                    placeholder={`> ${store.rtm.top_amount ?? 0}`}
+                    className="bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs w-32"
+                  />
+                  <button
+                    onClick={() => {
+                      const amount = parseInt(rtmRaiseAmount, 10);
+                      if (!Number.isFinite(amount)) {
+                        setActionError("Enter the raised amount");
+                        return;
+                      }
+                      rtmAction("raise", { amount }).then(() => setRtmRaiseAmount(""));
+                    }}
+                    disabled={busyAction}
+                    className="bg-amber-500 hover:bg-amber-400 text-black font-bold px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    Raise
+                  </button>
+                  <button
+                    onClick={() => rtmAction("skip-raise")}
+                    disabled={busyAction}
+                    className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    No raise — {store.rtm.rights_team_name} takes the player
+                  </button>
+                </div>
+              )}
+
+              {store.rtm.stage === "match_offered" && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-blue-100 mr-1">
+                    Raised to ₹{formatMoney(store.rtm.top_amount ?? 0)}. Does{" "}
+                    {store.rtm.rights_team_name} match?
+                  </p>
+                  <button
+                    onClick={() => rtmAction("match")}
+                    disabled={busyAction}
+                    className="bg-blue-500 hover:bg-blue-400 text-white font-bold px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    Match — takes the player
+                  </button>
+                  <button
+                    onClick={() => rtmAction("no-match")}
+                    disabled={busyAction}
+                    className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40"
+                  >
+                    No match — sell to {store.rtm.top_team_name}
+                  </button>
+                </div>
+              )}
             </div>
-          </div>
-        ) : (
-          <div className="rounded-2xl bg-black/30 border border-white/15 py-12 px-6 text-center">
-            <p className="text-lg font-bold text-amber-200">
-              {status === "active"
-                ? "No Player on the Block"
-                : status === "completed"
-                ? "Auction Completed"
-                : "Auction Paused / Not Started"}
-            </p>
-            <p className="text-xs text-red-200/80 mt-1">
-              {status === "active"
-                ? autoAdvance
-                  ? "Bringing the next player up…"
-                  : "Tap RANDOM or MANUAL below to bring up the next player."
-                : "Click Start/Resume in the top right to begin."}
-            </p>
           </div>
         )}
 
-        {/* 3. TEAM PADDLE CARDS GRID */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-red-200/80">
-              Team Paddles (Tap Team to Bid {displayActiveAP ? `₹${formatMoney(nextBidAmount)}` : ""})
-            </span>
-            {store.bidSlabs.length > 0 && (
-              <span className="text-[11px] text-amber-300/90">
-                {store.bidSlabs.length} Bid Slabs Active
-              </span>
-            )}
+        {/* OPERATOR ERROR BANNER */}
+        {actionError && (
+          <div className="px-3 py-1.5 bg-red-950/80 border-y border-red-400/50">
+            <div className="mx-auto w-full max-w-[1800px] flex items-center justify-between gap-4">
+              <p className="text-xs text-red-200">{actionError}</p>
+              <button
+                onClick={() => setActionError(null)}
+                className="text-[11px] text-red-300 hover:text-white shrink-0 font-bold"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
+        )}
+      </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {store.teams.map((team) => {
-              const remainingPurse = Math.max(0, team.budget - team.spent);
-              const maxBid = getTeamMaxBid(team);
-              const isLeading =
-                !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
-              const isSelected = selectedTeamId === team.id;
-              const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
-              const isFull = team.player_count >= team.max_players;
-              const disabled =
-                status !== "active" ||
-                !displayActiveAP ||
-                isLeading ||
-                cannotAfford ||
-                isFull ||
-                busyAction;
+      {/* ── ROW 3 · STAGE ──
+          Two columns on a laptop and up: the lot on the left, the paddles on
+          the right. The operator's eye lives on the paddles, so they get the
+          wider half — this console is not the audience screen. */}
+      <main className="min-h-0 overflow-hidden px-3 py-2">
+        <div className="mx-auto w-full max-w-[1800px] h-full grid gap-2.5 grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          {/* ── LOT PANEL ── */}
+          {displayActiveAP ? (
+            <section className="min-h-0 rounded-2xl bg-gradient-to-br from-[#1c2533] to-[#141a25] border border-white/10 shadow-2xl p-3 flex flex-col gap-2.5 overflow-hidden">
+              {/* Category / base / slab micro-bar */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="bg-amber-400 text-red-950 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full">
+                    {activeCategory ? activeCategory.name : "Standard Pool"}
+                  </span>
+                  <span className="text-[11px] text-slate-300 font-semibold whitespace-nowrap">
+                    Base ₹{formatMoney(activeBasePrice)}
+                  </span>
+                </div>
+                <span className="text-[10px] font-black text-amber-300 bg-black/35 px-2 py-0.5 rounded-full whitespace-nowrap">
+                  {isOpeningBid
+                    ? `Opening ₹${formatMoney(nextBidAmount)}`
+                    : `Slab +₹${formatMoney(currentIncrement)}`}
+                </span>
+              </div>
 
-              return (
-                <div
-                  key={team.id}
-                  onClick={() => {
-                    if (!disabled) {
-                      placeBidForTeam(team.id, nextBidAmount);
-                    }
-                  }}
-                  className={`rounded-xl bg-white text-slate-900 p-2.5 shadow-md transition relative flex items-center gap-3 ${
-                    isLeading
-                      ? "ring-4 ring-emerald-400 bg-emerald-50"
-                      : isSelected
-                      ? "ring-4 ring-amber-400"
-                      : disabled
-                      ? "opacity-60 cursor-not-allowed"
-                      : "cursor-pointer hover:scale-[1.01] hover:ring-2 hover:ring-amber-300"
-                  }`}
-                >
-                  <div className="flex flex-col items-center shrink-0">
-                    <div
-                      className="w-11 h-11 rounded-full flex items-center justify-center font-black text-sm text-white shadow relative"
-                      style={{ backgroundColor: team.color || "#16a34a" }}
-                    >
-                      {team.name
-                        .split(" ")
-                        .map((w) => w[0])
-                        .join("")
-                        .slice(0, 2)
-                        .toUpperCase()}
-                      <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white">
-                        {team.player_count}
+              {/* PHOTO — takes whatever height the stack leaves it. */}
+              <div className="flex-1 min-h-0 flex items-center justify-center">
+                <div className="relative h-full max-h-[46vh] max-w-full aspect-[3/4]">
+                  <div
+                    className="absolute -inset-1 rounded-2xl bg-gradient-to-b from-amber-300/35 to-amber-500/10 blur-[7px]"
+                    aria-hidden="true"
+                  />
+                  <div className="relative w-full h-full rounded-2xl border-2 border-amber-300/70 bg-slate-950 overflow-hidden shadow-[0_12px_40px_rgba(0,0,0,0.55)] flex items-center justify-center">
+                    {activeInfo?.profile_photo ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={activeInfo.profile_photo}
+                        alt={activeInfo.name}
+                        className="w-full h-full object-cover object-top"
+                      />
+                    ) : (
+                      <span className="text-[clamp(2rem,7vh,4rem)] font-black text-amber-300/90">
+                        {(activeInfo?.name || "P")[0]?.toUpperCase()}
                       </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setInspectTeamId(team.id);
-                      }}
-                      className="mt-1 bg-red-700 hover:bg-red-800 text-white text-[9px] font-bold px-2 py-0.5 rounded"
-                    >
-                      View Squad
-                    </button>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1">
-                      <p className="text-xs font-extrabold text-slate-900 truncate">
-                        {team.name}
-                      </p>
-                      {isLeading && (
-                        <span className="text-[9px] font-black uppercase bg-emerald-600 text-white px-1.5 py-0.5 rounded">
-                          Highest
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-1 flex items-center gap-1 text-xs font-bold text-slate-700">
-                      <span className="text-amber-500">●</span>
-                      <span>
-                        {formatMoney(remainingPurse)} / {formatMoney(team.budget)}
-                      </span>
-                    </div>
-
-                    <div className="mt-0.5 flex items-center justify-between text-[11px]">
-                      <span className="text-slate-500 font-semibold">
-                        Max Bid:{" "}
-                        <strong className={cannotAfford ? "text-red-600" : "text-slate-800"}>
-                          {formatMoney(maxBid)}
-                        </strong>
-                      </span>
-                      <span className="text-slate-400 font-semibold">
-                        {team.player_count}/{team.max_players}
-                      </span>
-                    </div>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </div>
+              </div>
 
-        {/* 4. BROADCAST ACTION DOCK */}
-        {status !== "completed" && (
-          <div className="rounded-2xl bg-black/40 border border-white/15 p-3 shadow-xl">
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-stretch">
-              <div className="md:col-span-4 rounded-xl bg-[#540910] border border-red-400/25 p-2.5 flex flex-col justify-between">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-extrabold text-white">New Player</span>
-                  <button
-                    onClick={() =>
-                      setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")
-                    }
-                    className="text-[11px] text-amber-300 hover:underline font-bold"
+              {/* NAME — below the photo, above the price, and never cropped:
+                  useFitText shrinks it until it fits this fixed box. */}
+              <div className="shrink-0 flex items-stretch gap-2">
+                <span className="shrink-0 self-center text-[clamp(0.85rem,2vh,1.3rem)] font-black text-amber-300">
+                  #{displayActiveAP.player_id}
+                </span>
+                {/* The h2 fills a box of definite height, so its clientHeight is
+                    the space available and its scrollHeight is the text --
+                    which is what makes the fit measurement meaningful. With an
+                    auto-height heading every size "fits" and nothing shrinks. */}
+                <div className="min-w-0 flex-1 h-[clamp(2.1rem,6.5vh,4.2rem)] bg-white rounded-lg px-3 py-1 shadow-lg">
+                  <h2
+                    ref={nameRef}
+                    className="w-full h-full overflow-hidden flex items-center justify-center text-center text-red-950 font-black leading-[1.05] tracking-tight break-words"
                   >
-                    Filter ({pendingPlayers.length})
-                  </button>
+                    {activeInfo?.name || `Player #${displayActiveAP.player_id}`}
+                  </h2>
                 </div>
-                <label className="flex items-center gap-2 mb-2 cursor-pointer select-none">
+              </div>
+
+              {/* DETAILS — wrap freely; nothing here is ever truncated. */}
+              <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+                {activeInfo?.role && (
+                  <span className="bg-black/40 border border-amber-300/30 text-amber-200 text-[10px] font-black uppercase tracking-[0.16em] px-2 py-0.5 rounded">
+                    {activeInfo.role}
+                  </span>
+                )}
+                <div className="leading-none text-center">
+                  <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Base</div>
+                  <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
+                    ₹{formatMoney(activeBasePrice)}
+                  </div>
+                </div>
+                {activeInfo?.age && (
+                  <div className="leading-none text-center">
+                    <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Age</div>
+                    <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
+                      {activeInfo.age}
+                    </div>
+                  </div>
+                )}
+                {(activeInfo?.batting_rating || activeInfo?.bowling_rating) && (
+                  <>
+                    <div className="leading-none text-center">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Bat</div>
+                      <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
+                        {activeInfo.batting_rating ?? "-"}
+                      </div>
+                    </div>
+                    <div className="leading-none text-center">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Bowl</div>
+                      <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
+                        {activeInfo.bowling_rating ?? "-"}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* CURRENT BID — the number the auctioneer calls out. */}
+              <div className="shrink-0 rounded-xl bg-black/30 border border-white/10 px-3 py-2 flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[8px] font-bold uppercase tracking-[0.18em] text-amber-200/80 leading-none mb-0.5">
+                    {isOpeningBid ? "Opening Bid" : "Current Bid"}
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-[clamp(1rem,2.4vh,1.5rem)] font-black text-amber-300 leading-none">₹</span>
+                    <span className="text-[clamp(1.6rem,5.2vh,3.6rem)] font-black leading-none tracking-tight tabular-nums drop-shadow">
+                      {formatMoney(displayedCurrentBid)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-bold mt-1 text-amber-300 leading-tight break-words">
+                    {leadingTeam ? `Highest — ${leadingTeam.name}` : "Awaiting opening bid"}
+                  </p>
+                </div>
+                <button
+                  onClick={handleOpenEditBid}
+                  disabled={status !== "active"}
+                  className="w-10 h-10 shrink-0 rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-40 flex items-center justify-center transition shadow"
+                  title="Edit Current Bid Amount"
+                >
+                  ✎
+                </button>
+              </div>
+            </section>
+          ) : (
+            <section className="min-h-0 rounded-2xl bg-black/30 border border-white/15 flex flex-col items-center justify-center text-center p-6">
+              <p className="text-[clamp(1rem,2.8vh,1.6rem)] font-black text-amber-200">
+                {status === "active"
+                  ? "No Player on the Block"
+                  : status === "completed"
+                  ? "Auction Completed"
+                  : "Auction Paused / Not Started"}
+              </p>
+              <p className="text-xs text-slate-400 mt-1.5">
+                {status === "active"
+                  ? autoAdvance
+                    ? "Bringing the next player up…"
+                    : "Auto is off — use PICK MANUALLY below to bring up the next player."
+                  : "Click Start/Resume in the top right to begin."}
+              </p>
+            </section>
+          )}
+
+          {/* ── TEAM PADDLES ── */}
+          <section className="min-h-0 flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2 shrink-0 px-0.5">
+              <span className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 truncate">
+                Team Paddles — tap to bid{" "}
+                {displayActiveAP && (
+                  <span className="text-amber-300">₹{formatMoney(nextBidAmount)}</span>
+                )}
+              </span>
+              {store.bidSlabs.length > 0 && (
+                <span className="text-[10px] font-bold text-amber-300/80 shrink-0 whitespace-nowrap">
+                  {store.bidSlabs.length} slabs
+                </span>
+              )}
+            </div>
+
+            {/*
+              The paddles fill the column and only ever scroll inside this box —
+              the document itself stays fixed. On a laptop with a normal squad
+              count nothing scrolls at all.
+            */}
+            <div className="min-h-0 max-h-full overflow-y-auto overscroll-contain rounded-2xl bg-white/[0.04] border border-white/10 p-2">
+              <div
+                className="grid gap-2 content-start grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                style={{ gridAutoRows: "minmax(5.5rem, auto)" }}
+              >
+                {store.teams.map((team) => {
+                  const remainingPurse = Math.max(0, team.budget - team.spent);
+                  const maxBid = getTeamMaxBid(team);
+                  const isLeading =
+                    !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
+                  const isSelected = selectedTeamId === team.id;
+                  const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
+                  const isFull = team.player_count >= team.max_players;
+                  const disabled =
+                    status !== "active" ||
+                    !displayActiveAP ||
+                    isLeading ||
+                    cannotAfford ||
+                    isFull ||
+                    busyAction;
+
+                  return (
+                    <div
+                      key={team.id}
+                      onClick={() => {
+                        if (!disabled) placeBidForTeam(team.id, nextBidAmount);
+                      }}
+                      className={`relative rounded-xl bg-white text-slate-900 p-2 shadow-md transition overflow-hidden flex flex-col justify-between ${
+                        isLeading
+                          ? "ring-[3px] ring-emerald-400 bg-emerald-50"
+                          : isSelected
+                          ? "ring-[3px] ring-amber-400"
+                          : disabled
+                          ? "opacity-55 cursor-not-allowed"
+                          : "cursor-pointer hover:ring-2 hover:ring-amber-300 hover:-translate-y-0.5"
+                      }`}
+                    >
+                      {/* Team colour spine — identity at a glance. */}
+                      <span
+                        className="absolute left-0 top-0 bottom-0 w-1"
+                        style={{ backgroundColor: team.color || "#16a34a" }}
+                        aria-hidden="true"
+                      />
+
+                      <div className="pl-1.5 flex items-center gap-2">
+                        <div className="relative shrink-0">
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center font-black text-[11px] text-white shadow"
+                            style={{ backgroundColor: team.color || "#16a34a" }}
+                          >
+                            {team.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                          </div>
+                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[9px] font-black flex items-center justify-center border-2 border-white">
+                            {team.player_count}
+                          </span>
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1">
+                            <p className="text-[11px] font-black text-slate-900 truncate flex-1">
+                              {team.name}
+                            </p>
+                            {isLeading && (
+                              <span className="shrink-0 text-[8px] font-black uppercase bg-emerald-600 text-white px-1 py-0.5 rounded">
+                                High
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[9px] font-bold text-slate-400 leading-tight">
+                            {team.player_count}/{team.max_players} players
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* PURSE and MAX BID as the two numbers that matter —
+                          the one idea worth taking wholesale from a broadcast
+                          team strip. */}
+                      <div className="pl-1.5 mt-1.5 grid grid-cols-2 gap-1">
+                        <div className="rounded-md bg-slate-100 px-1.5 py-1 leading-none">
+                          <div className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-500">
+                            Purse
+                          </div>
+                          <div className="text-[13px] font-black text-amber-600 tabular-nums truncate">
+                            {formatMoney(remainingPurse)}
+                          </div>
+                        </div>
+                        <div className="rounded-md bg-slate-100 px-1.5 py-1 leading-none">
+                          <div className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-500">
+                            Max Bid
+                          </div>
+                          <div
+                            className={`text-[13px] font-black tabular-nums truncate ${
+                              cannotAfford ? "text-red-600" : "text-sky-700"
+                            }`}
+                          >
+                            {formatMoney(maxBid)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setInspectTeamId(team.id);
+                        }}
+                        className="mt-1.5 ml-1.5 w-[calc(100%-0.375rem)] shrink-0 bg-slate-700 hover:bg-slate-600 text-white text-[9px] font-black uppercase tracking-wider py-1 rounded transition"
+                      >
+                        View Squad
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      {/* ── ROW 4 · ACTION DOCK ── */}
+      {status !== "completed" && (
+        <footer className="bg-[#0c111a] border-t border-white/10 px-3 py-2 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]">
+          <div className="mx-auto w-full max-w-[1800px] grid gap-2 md:grid-cols-12 items-center">
+            {/* Next-player controls */}
+            <div className="md:col-span-4 rounded-xl bg-[#19212e] border border-white/10 p-2">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[10px] font-black uppercase tracking-[0.14em] text-amber-200">
+                  New Player
+                </span>
+                <button
+                  onClick={() =>
+                    setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")
+                  }
+                  className="text-[10px] text-amber-300 hover:underline font-bold whitespace-nowrap"
+                >
+                  Filter ({pendingPlayers.length})
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")
+                  }
+                  disabled={status !== "active"}
+                  className="flex-1 bg-[#273449] hover:bg-[#33435c] disabled:opacity-40 border border-white/20 rounded-lg py-2 text-[11px] font-black tracking-wide transition"
+                >
+                  📋 PICK MANUALLY
+                </button>
+                <label
+                  className="shrink-0 flex flex-col items-center gap-0.5 cursor-pointer select-none px-1"
+                  title="On: the next player is drawn at random automatically. Off: pick each player yourself."
+                >
                   <input
                     type="checkbox"
                     checked={autoAdvance}
                     onChange={(e) => setAutoAdvance(e.target.checked)}
-                    className="accent-amber-400"
+                    className="accent-amber-400 w-4 h-4"
                   />
-                  <span className="text-[11px] font-bold text-amber-200">
-                    Auto — bring the next player up after each sale
+                  <span className="text-[8px] font-black uppercase tracking-wider text-amber-200">
+                    Auto
                   </span>
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => handleRandomNext()}
-                    disabled={status !== "active" || busyAction || pendingPlayers.length === 0}
-                    className="bg-[#7c121c] hover:bg-[#961723] disabled:opacity-40 border border-white/20 rounded-lg py-2 px-2 text-xs font-extrabold tracking-wide transition"
-                  >
-                    🎲 RANDOM
-                  </button>
-                  <button
-                    onClick={() =>
-                      setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")
-                    }
-                    disabled={status !== "active"}
-                    className="bg-[#7c121c] hover:bg-[#961723] disabled:opacity-40 border border-white/20 rounded-lg py-2 px-2 text-xs font-extrabold tracking-wide transition"
-                  >
-                    📋 MANUAL
-                  </button>
-                </div>
-              </div>
-
-              <div className="md:col-span-8 grid grid-cols-2 gap-2.5">
-                <button
-                  onClick={handleBidUp}
-                  disabled={!canCorrectPrice || busyAction}
-                  title="Correct the price upward by one slab step. Does not change which team is bidding — tap a team paddle to bid."
-                  className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black text-sm sm:text-base py-3 px-3 shadow-md flex items-center justify-center gap-1.5 transition"
-                >
-                  <span>↑</span>
-                  <span>
-                    UP (CORRECT) {displayActiveAP ? `+${formatMoney(currentIncrement)}` : ""}
-                  </span>
-                </button>
-
-                <button
-                  onClick={handleBidDown}
-                  disabled={
-                    status !== "active" ||
-                    !displayActiveAP ||
-                    !displayActiveAP.current_bid_team_id ||
-                    busyAction
-                  }
-                  className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black text-sm sm:text-base py-3 px-3 shadow-md flex items-center justify-center gap-1.5 transition"
-                >
-                  <span>↓</span>
-                  <span>DOWN (UNDO)</span>
-                </button>
-
-                <button
-                  onClick={() => handleSoldOrUnsold(false)}
-                  disabled={
-                    status !== "active" ||
-                    !displayActiveAP ||
-                    !displayActiveAP.current_bid_team_id ||
-                    busyAction
-                  }
-                  className="rounded-xl bg-[#65a30d] hover:bg-[#84cc16] disabled:opacity-40 text-white font-black text-sm sm:text-base py-3 px-3 shadow-md transition"
-                >
-                  SOLD
-                </button>
-
-                <button
-                  onClick={() => handleSoldOrUnsold(true)}
-                  disabled={status !== "active" || !displayActiveAP || busyAction}
-                  className="rounded-xl bg-[#ef4444] hover:bg-[#f87171] disabled:opacity-40 text-white font-black text-sm sm:text-base py-3 px-3 shadow-md transition"
-                >
-                  UNSOLD
-                </button>
               </div>
             </div>
+
+            {/* Price corrections + outcome */}
+            <div className="md:col-span-8 grid grid-cols-2 lg:grid-cols-4 gap-2">
+              <button
+                onClick={handleBidUp}
+                disabled={!canCorrectPrice || busyAction}
+                title="Correct the price upward by one slab step. Does not change which team is bidding — tap a team paddle to bid."
+                className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black py-3 px-2 shadow-md transition leading-none"
+              >
+                <div className="text-sm">↑ UP</div>
+                <div className="text-[9px] font-bold uppercase tracking-wider opacity-70 mt-0.5">
+                  Correct {displayActiveAP ? `+${formatMoney(currentIncrement)}` : ""}
+                </div>
+              </button>
+
+              <button
+                onClick={handleBidDown}
+                disabled={
+                  status !== "active" ||
+                  !displayActiveAP ||
+                  !displayActiveAP.current_bid_team_id ||
+                  busyAction
+                }
+                className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black py-3 px-2 shadow-md transition leading-none"
+              >
+                <div className="text-sm">↓ DOWN</div>
+                <div className="text-[9px] font-bold uppercase tracking-wider opacity-70 mt-0.5">
+                  Undo
+                </div>
+              </button>
+
+              <button
+                onClick={() => handleSoldOrUnsold(false)}
+                disabled={
+                  status !== "active" ||
+                  !displayActiveAP ||
+                  !displayActiveAP.current_bid_team_id ||
+                  busyAction
+                }
+                className="rounded-xl bg-[#65a30d] hover:bg-[#84cc16] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
+              >
+                <div className="text-base tracking-wide">SOLD</div>
+                <div className="text-[9px] font-bold uppercase tracking-wider opacity-80 mt-0.5 truncate">
+                  {leadingTeam ? leadingTeam.name : "No bidder"}
+                </div>
+              </button>
+
+              <button
+                onClick={() => handleSoldOrUnsold(true)}
+                disabled={status !== "active" || !displayActiveAP || busyAction}
+                className="rounded-xl bg-[#ef4444] hover:bg-[#f87171] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
+              >
+                <div className="text-base tracking-wide">UNSOLD</div>
+                <div className="text-[9px] font-bold uppercase tracking-wider opacity-80 mt-0.5">
+                  Pass
+                </div>
+              </button>
+            </div>
           </div>
-        )}
-      </main>
-
-      {/* ── BOTTOM STATUS BAR ── */}
-      <footer className="bg-[#1b0608] border-t border-white/15 px-3 py-2.5">
-        <div className="max-w-5xl mx-auto grid grid-cols-4 gap-2">
-          <button
-            onClick={() => setActiveDrawerTab(activeDrawerTab === "sold" ? "none" : "sold")}
-            className={`py-2 px-2 rounded-lg text-xs sm:text-sm font-extrabold transition ${
-              activeDrawerTab === "sold"
-                ? "bg-emerald-500 text-slate-950"
-                : "bg-[#4d7c0f] hover:bg-[#65a30d] text-white"
-            }`}
-          >
-            Sold {soldPlayers.length}
-          </button>
-
-          <button
-            onClick={() => setActiveDrawerTab(activeDrawerTab === "unsold" ? "none" : "unsold")}
-            className={`py-2 px-2 rounded-lg text-xs sm:text-sm font-extrabold transition ${
-              activeDrawerTab === "unsold"
-                ? "bg-red-400 text-slate-950"
-                : "bg-[#dc2626] hover:bg-[#ef4444] text-white"
-            }`}
-          >
-            Unsold {unsoldPlayers.length}
-          </button>
-
-          <button
-            onClick={() => setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")}
-            className={`py-2 px-2 rounded-lg text-xs sm:text-sm font-extrabold transition ${
-              activeDrawerTab === "available"
-                ? "bg-amber-300 text-slate-950"
-                : "bg-[#ca8a04] hover:bg-[#eab308] text-white"
-            }`}
-          >
-            Available {pendingPlayers.length}
-          </button>
-
-          <button
-            onClick={() => setActiveDrawerTab(activeDrawerTab === "teams" ? "none" : "teams")}
-            className={`py-2 px-2 rounded-lg text-xs sm:text-sm font-extrabold transition ${
-              activeDrawerTab === "teams"
-                ? "bg-teal-300 text-slate-950"
-                : "bg-[#0d9488] hover:bg-[#14b8a6] text-white"
-            }`}
-          >
-            Teams {store.teams.length}
-          </button>
-        </div>
-      </footer>
+        </footer>
+      )}
 
       {/* ── DRAWER FOR SOLD / UNSOLD / AVAILABLE / TEAMS ── */}
       {activeDrawerTab !== "none" && (
