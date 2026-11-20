@@ -1,22 +1,28 @@
-"""
-Public events API — accessible by any authenticated user.
-Powers the main dashboard event listing.
+"""Public event listing for the dashboard.
 
-Visibility rules:
-  - draft  → visible only to the event's admin and organizer
-  - ready / active / paused / completed → visible to everyone
+Version: 2.0.0 (2026-11-20)
+
+Changed from 1.x: "my events" matched `Team.captain_id == user.id` and
+`AuctionPlayer.player_id == user.id`. Both of those columns now point at
+players.id, not users.id — a user's relationship to an event is their operating
+role (admin, organizer or auctioneer). Also filters out archived tournaments.
+
+Visibility:
+  draft                              -> the event's admin and organizer only
+  ready / active / paused / completed -> any authenticated user
 """
-from fastapi import APIRouter, Depends
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.models.user import User, ROLE_ADMIN
-from app.models.auction import AuctionEvent, AuctionStatus, Team, AuctionPlayer
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
+from app.models.auction import AuctionEvent, AuctionPlayer, AuctionStatus, Team
+from app.models.user import User
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -32,13 +38,12 @@ class EventCardOut(BaseModel):
     auctioneer_id: Optional[int]
     scheduled_at: Optional[datetime]
     created_at: datetime
-    my_roles: list[str] = []  # all roles this user has in this event
-    viewer_count: Optional[int] = None  # live viewers or total unique viewers for completed
-    logo: Optional[str] = None  # event logo URL
+    my_roles: list[str] = []
+    viewer_count: Optional[int] = None
+    logo: Optional[str] = None
 
 
 def _can_see_draft(event: AuctionEvent, user: User) -> bool:
-    """Draft events are only visible to the creating admin and the assigned organizer."""
     return event.admin_id == user.id or event.organizer_id == user.id
 
 
@@ -47,10 +52,12 @@ async def list_all_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent))
-    events = result.scalars().all()
+    result = await db.execute(
+        select(AuctionEvent).where(AuctionEvent.deleted_at.is_(None))
+    )
     visible = [
-        e for e in events
+        e
+        for e in result.scalars().all()
         if e.status != AuctionStatus.draft or _can_see_draft(e, current_user)
     ]
     return [await _to_card(e, current_user, db) for e in visible]
@@ -61,47 +68,19 @@ async def list_my_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Events where the current user has a role.
-    Draft events are still filtered — only admin/organizer of that event see them here too.
-    """
+    """Events where this user holds an operating role."""
     uid = current_user.id
-
-    # Events where user is admin / organizer / auctioneer (staff can always see their own drafts)
-    staff_result = await db.execute(
+    result = await db.execute(
         select(AuctionEvent).where(
+            AuctionEvent.deleted_at.is_(None),
             or_(
                 AuctionEvent.admin_id == uid,
                 AuctionEvent.organizer_id == uid,
                 AuctionEvent.auctioneer_id == uid,
-            )
+            ),
         )
     )
-    events = {e.id: e for e in staff_result.scalars().all()}
-
-    # Captain — only non-draft events
-    cap_result = await db.execute(
-        select(AuctionEvent)
-        .join(Team, Team.event_id == AuctionEvent.id)
-        .where(Team.captain_id == uid, AuctionEvent.status != AuctionStatus.draft)
-    )
-    for e in cap_result.scalars().all():
-        events[e.id] = e
-
-    # Player in pool — only non-draft events
-    ap_result = await db.execute(
-        select(AuctionEvent)
-        .join(AuctionPlayer, AuctionPlayer.event_id == AuctionEvent.id)
-        .where(AuctionPlayer.player_id == uid, AuctionEvent.status != AuctionStatus.draft)
-    )
-    for e in ap_result.scalars().all():
-        events[e.id] = e
-
-    # For auctioneer — also apply draft filter (they only see ready/active/etc via their staff role)
-    # Auctioneer is assigned before ready, so they can see their event even in draft
-    # (already included via staff_result above)
-
-    return [await _to_card(e, current_user, db) for e in events.values()]
+    return [await _to_card(e, current_user, db) for e in result.scalars().all()]
 
 
 @router.get("/{event_id}/readiness")
@@ -110,16 +89,22 @@ async def event_readiness(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns a checklist of what's done and what's missing before marking ready."""
-    ev_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = ev_result.scalar_one_or_none()
+    """Checklist of what is still missing before the event can be marked ready."""
+    result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.id == event_id, AuctionEvent.deleted_at.is_(None)
+        )
+    )
+    event = result.scalar_one_or_none()
     if not event:
-        return {"error": "Not found"}
+        raise HTTPException(status_code=404, detail="Event not found")
 
     teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
     teams = teams_result.scalars().all()
 
-    players_result = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event_id))
+    players_result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
+    )
     players = players_result.scalars().all()
 
     teams_with_captain = [t for t in teams if t.captain_id]
@@ -128,12 +113,16 @@ async def event_readiness(
         "organizer_assigned": event.organizer_id is not None,
         "auctioneer_assigned": event.auctioneer_id is not None,
         "teams_created": len(teams) >= 2,
+        # A captain is now a roster player, so this is informational rather than
+        # a hard requirement — an auction can run with no captains named.
         "all_teams_have_captain": len(teams) > 0 and len(teams_with_captain) == len(teams),
-        "players_added": len(players) >= 1,
+        "players_added": len(players) > len(teams),
     }
+    required = {k: v for k, v in checks.items() if k != "all_teams_have_captain"}
+
     return {
         "checks": checks,
-        "ready": all(checks.values()),
+        "ready": all(required.values()),
         "teams_count": len(teams),
         "teams_with_captain": len(teams_with_captain),
         "players_count": len(players),
@@ -146,31 +135,25 @@ async def _to_card(event: AuctionEvent, user: User, db: AsyncSession) -> EventCa
     teams_result = await db.execute(select(Team).where(Team.event_id == event.id))
     teams = teams_result.scalars().all()
 
-    players_result = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event.id))
+    players_result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event.id)
+    )
     players = players_result.scalars().all()
 
-    uid = user.id
     my_roles: list[str] = []
-
-    if event.admin_id == uid:
+    if event.admin_id == user.id:
         my_roles.append("admin")
-    if event.organizer_id == uid:
+    if event.organizer_id == user.id:
         my_roles.append("organizer")
-    if event.auctioneer_id == uid:
+    if event.auctioneer_id == user.id:
         my_roles.append("auctioneer")
-    if any(t.captain_id == uid for t in teams):
-        my_roles.append("captain")
-    if any(p.player_id == uid for p in players):
-        my_roles.append("player")
 
-    # Get viewer count for active/completed events
     viewer_count = None
     if event.status == AuctionStatus.completed:
-        # Use persisted value from database for completed events
         viewer_count = event.total_viewers
     elif event.status in (AuctionStatus.active, AuctionStatus.paused):
-        # Use live count from Redis for active events
         from app.ws.manager import manager
+
         stats = await manager.get_viewer_stats(event.id)
         viewer_count = stats.get("live_viewers", 0)
 

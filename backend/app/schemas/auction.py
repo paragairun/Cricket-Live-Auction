@@ -1,3 +1,15 @@
+"""Auction request/response schemas.
+
+Version: 2.0.0 (2026-11-20)
+
+Changed from 1.x:
+  - BidCreate takes `team_id` instead of `captain_id`, and gains
+    `expected_version` plus `idempotency_key`. The version lets the server
+    reject a bid computed against a price that has since moved, rather than
+    silently accepting it; the key makes a retry or double-tap a no-op, which
+    matters with two operator consoles on one auction.
+  - Player schemas moved to schemas/player.py — players are no longer users.
+"""
 from datetime import datetime
 from typing import Optional
 
@@ -7,22 +19,27 @@ from app.models.auction import AuctionStatus, PlayerAuctionStatus
 
 
 class AuctionEventCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = None
     allowed_domains: list[str] = []
     scheduled_at: Optional[datetime] = None
 
 
 class AuctionEventUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = None
     organizer_id: Optional[int] = None
     auctioneer_id: Optional[int] = None
     allowed_domains: Optional[list[str]] = None
     scheduled_at: Optional[datetime] = None
     team_budget: Optional[int] = Field(default=None, ge=1000)
-    team_max_players: Optional[int] = None
-    player_base_price: Optional[int] = Field(default=None, ge=1000)
+    team_max_players: Optional[int] = Field(default=None, ge=1, le=50)
+    team_min_players: Optional[int] = Field(default=None, ge=0, le=50)
+    player_base_price: Optional[int] = Field(default=None, ge=100)
+    no_timer: Optional[bool] = None
+    timer_seconds: Optional[int] = Field(default=None, ge=5, le=600)
+    soft_close_threshold_seconds: Optional[int] = Field(default=None, ge=0, le=120)
+    soft_close_extension_seconds: Optional[int] = Field(default=None, ge=1, le=120)
 
 
 class AuctionEventOut(BaseModel):
@@ -37,31 +54,41 @@ class AuctionEventOut(BaseModel):
     scheduled_at: Optional[datetime]
     team_budget: int
     team_max_players: int
+    team_min_players: int
     player_base_price: int
     no_timer: bool | None = False
+    timer_seconds: Optional[int] = None
+    soft_close_threshold_seconds: Optional[int] = None
+    soft_close_extension_seconds: Optional[int] = None
     logo: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+# ── Teams ─────────────────────────────────────────────────────────────────────
+
+
 class TeamCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     color: str = "#3B82F6"
-    budget: int = 1000
-    max_players: int = 11
+    budget: Optional[int] = Field(default=None, ge=0)
+    max_players: Optional[int] = Field(default=None, ge=1, le=50)
+    captain_id: Optional[int] = None  # a players.id
 
 
 class TeamUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     color: Optional[str] = None
-    captain_id: Optional[int] = None
-    budget: Optional[int] = None
-    max_players: Optional[int] = None
+    logo: Optional[str] = None
+    captain_id: Optional[int] = None  # a players.id
+    budget: Optional[int] = Field(default=None, ge=0)
+    max_players: Optional[int] = Field(default=None, ge=1, le=50)
 
 
 class TeamPlayerOut(BaseModel):
     id: int
+    event_id: int
     team_id: int
     player_id: int
     sold_price: int
@@ -74,6 +101,7 @@ class TeamOut(BaseModel):
     event_id: int
     name: str
     color: str
+    logo: Optional[str] = None
     captain_id: Optional[int]
     budget: int
     spent: int
@@ -83,6 +111,9 @@ class TeamOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ── Auction players ───────────────────────────────────────────────────────────
+
+
 class AuctionPlayerOut(BaseModel):
     id: int
     event_id: int
@@ -90,65 +121,85 @@ class AuctionPlayerOut(BaseModel):
     base_price: int
     category_id: Optional[int] = None
     current_bid: int
-    current_bidder_id: Optional[int]
+    current_bid_team_id: Optional[int]
     status: PlayerAuctionStatus
     auction_order: int
+    version: int
 
     model_config = {"from_attributes": True}
 
 
+class AuctionPlayerCreate(BaseModel):
+    player_id: int
+    base_price: Optional[int] = Field(default=None, ge=0)
+    category_id: Optional[int] = None
+
+
+class AuctionPlayerUpdate(BaseModel):
+    base_price: Optional[int] = Field(default=None, ge=0)
+    category_id: Optional[int] = None
+    auction_order: Optional[int] = None
+
+
+# ── Bidding ───────────────────────────────────────────────────────────────────
+
+
 class BidCreate(BaseModel):
-    amount: int
-    captain_id: Optional[int] = None  # Optional: used when auctioneer places a bid for a captain
+    team_id: int
+    amount: int = Field(gt=0)
+    # The AuctionPlayer.version the bidder's screen was showing. When supplied
+    # and stale, the server rejects with 409 rather than accepting a bid
+    # computed against a price that has already moved.
+    expected_version: Optional[int] = None
+    # Client-generated. Replaying the same key returns the original bid instead
+    # of placing a second one.
+    idempotency_key: Optional[str] = Field(default=None, max_length=64)
 
 
-class BidUpdateAmount(BaseModel):
-    amount: int
+class BidCorrection(BaseModel):
+    amount: int = Field(ge=0)
 
 
 class BidOut(BaseModel):
     id: int
     event_id: int
     auction_player_id: int
-    captain_id: int
+    team_id: int
     amount: int
+    reverted_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 class NextPlayerRequest(BaseModel):
-    player_id: Optional[int] = None  # None = random
+    auction_player_id: Optional[int] = None  # None = random from the pending pool
+    idempotency_key: Optional[str] = Field(default=None, max_length=64)
 
 
-class PlayerImportRow(BaseModel):
-    name: str
-    email: str
-    password: Optional[str] = None
-    phone: Optional[str] = None
-    batting_rating: Optional[float] = 5.0
-    bowling_rating: Optional[float] = 5.0
-    fielding_rating: Optional[float] = 5.0
+class HammerRequest(BaseModel):
+    idempotency_key: Optional[str] = Field(default=None, max_length=64)
 
 
-class PlayerImportResult(BaseModel):
-    imported: int
-    skipped: int
-    errors: list[str]
-
-
-# ── Bid Slab schemas ──
+# ── Bid slabs ─────────────────────────────────────────────────────────────────
 
 
 class BidSlabBase(BaseModel):
-    min_value: int = 0
-    max_value: int = 0  # 0 means no upper limit
-    increment: int = 1000
+    min_value: int = Field(default=0, ge=0)
+    max_value: int = Field(default=0, ge=0)  # 0 = no upper limit
+    increment: int = Field(default=1000, gt=0)
     sort_order: int = 0
 
 
 class BidSlabCreate(BidSlabBase):
     pass
+
+
+class BidSlabUpdate(BaseModel):
+    min_value: Optional[int] = Field(default=None, ge=0)
+    max_value: Optional[int] = Field(default=None, ge=0)
+    increment: Optional[int] = Field(default=None, gt=0)
+    sort_order: Optional[int] = None
 
 
 class BidSlabOut(BidSlabBase):
@@ -158,12 +209,12 @@ class BidSlabOut(BidSlabBase):
     model_config = {"from_attributes": True}
 
 
-# ── Player Category schemas ──
+# ── Player categories ─────────────────────────────────────────────────────────
 
 
 class PlayerCategoryBase(BaseModel):
-    name: str
-    base_price: int = 1000
+    name: str = Field(min_length=1, max_length=100)
+    base_price: int = Field(default=1000, ge=0)
     sort_order: int = 0
     auction_first: bool = False
 
@@ -173,8 +224,8 @@ class PlayerCategoryCreate(PlayerCategoryBase):
 
 
 class PlayerCategoryUpdate(BaseModel):
-    name: Optional[str] = None
-    base_price: Optional[int] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    base_price: Optional[int] = Field(default=None, ge=0)
     sort_order: Optional[int] = None
     auction_first: Optional[bool] = None
 
@@ -186,10 +237,19 @@ class PlayerCategoryOut(PlayerCategoryBase):
     model_config = {"from_attributes": True}
 
 
-# ── AuctionPlayer create with category ──
+# ── Audit ─────────────────────────────────────────────────────────────────────
 
 
-class AuctionPlayerCreate(BaseModel):
-    player_id: int
-    base_price: int | None = None
-    category_id: int | None = None
+class AuditLogOut(BaseModel):
+    id: int
+    event_id: int
+    action: str
+    actor_user_id: Optional[int]
+    auction_player_id: Optional[int]
+    team_id: Optional[int]
+    amount: Optional[int]
+    previous_amount: Optional[int]
+    detail: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

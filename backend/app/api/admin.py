@@ -1,22 +1,57 @@
-import secrets
+"""Admin endpoints: tournaments and user roles.
+
+Version: 2.0.0 (2026-11-20)
+
+Changed from 1.x:
+  - Added DELETE /events/{id} and a complete PATCH. An admin can now edit and
+    delete a tournament; 1.x had create, list, get and a partial patch that
+    silently ignored budget, squad-size and base-price changes.
+  - Event endpoints are scoped to the event's own admin rather than to anyone
+    holding the global admin role.
+  - Role assignment is restricted to ASSIGNABLE_ROLES and an admin cannot strip
+    their own admin role (which would lock the platform out of itself).
+"""
 import json
+import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_role
-from app.core.redis import get_redis
-from app.models.user import User, ROLE_ADMIN, ROLE_ORGANIZER, ROLE_AUCTIONEER
-from app.models.auction import AuctionEvent, AuctionStatus
-from app.schemas.auction import AuctionEventCreate, AuctionEventUpdate, AuctionEventOut
-from app.schemas.user import UserOut, AssignRolePayload
-from app.services import email_service
 from app.core.queue import enqueue
-from pydantic import BaseModel, EmailStr, field_validator
+from app.core.redis import get_redis
+from app.core.security import decode_token  # noqa: F401 (kept for route parity)
+from app.models.auction import (
+    AuctionEvent,
+    AuctionPlayer,
+    AuctionStatus,
+    Bid,
+    BidSlab,
+    PlayerCategory,
+    Team,
+    TeamPlayer,
+)
+from app.models.user import (
+    ASSIGNABLE_ROLES,
+    ROLE_ADMIN,
+    ROLE_AUCTIONEER,
+    ROLE_ORGANIZER,
+    User,
+)
+from app.schemas.auction import AuctionEventCreate, AuctionEventOut, AuctionEventUpdate
+from app.schemas.user import AssignRolePayload, UserOut
+from app.core.deps import require_role
 
-INVITE_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 days
+logger = logging.getLogger(__name__)
+
+INVITE_TTL_SECONDS = 60 * 60 * 24 * 7
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+AdminUser = Depends(require_role(ROLE_ADMIN))
 
 
 class InvitePayload(BaseModel):
@@ -28,17 +63,32 @@ class InvitePayload(BaseModel):
     def lowercase_email(cls, v: str) -> str:
         return v.lower()
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+
+async def _get_own_event(event_id: int, admin: User, db: AsyncSession) -> AuctionEvent:
+    result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.id == event_id, AuctionEvent.deleted_at.is_(None)
+        )
+    )
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    if event.admin_id != admin.id:
+        raise HTTPException(status_code=403, detail="This tournament belongs to another admin")
+    return event
+
+
+# ── Tournaments ───────────────────────────────────────────────────────────────
 
 
 @router.post("/events", response_model=AuctionEventOut, status_code=201)
 async def create_event(
     payload: AuctionEventCreate,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
     event = AuctionEvent(
-        name=payload.name,
+        name=payload.name.strip(),
         description=payload.description,
         admin_id=current_user.id,
         allowed_domains=payload.allowed_domains,
@@ -52,23 +102,24 @@ async def create_event(
 
 @router.get("/events", response_model=list[AuctionEventOut])
 async def list_events(
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    include_deleted: bool = False,
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.admin_id == current_user.id))
+    query = select(AuctionEvent).where(AuctionEvent.admin_id == current_user.id)
+    if not include_deleted:
+        query = query.where(AuctionEvent.deleted_at.is_(None))
+    result = await db.execute(query.order_by(AuctionEvent.created_at.desc()))
     return [AuctionEventOut.model_validate(e) for e in result.scalars().all()]
 
 
 @router.get("/events/{event_id}", response_model=AuctionEventOut)
 async def get_event(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+    event = await _get_own_event(event_id, current_user, db)
     return AuctionEventOut.model_validate(event)
 
 
@@ -76,52 +127,145 @@ async def get_event(
 async def update_event(
     event_id: int,
     payload: AuctionEventUpdate,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-        
-    if event.status == AuctionStatus.completed:
-        raise HTTPException(status_code=400, detail="Cannot edit a completed event")
+    """Edit a tournament.
 
-    if payload.name is not None:
-        event.name = payload.name
-    if payload.description is not None:
-        event.description = payload.description
-    if payload.organizer_id is not None:
-        event.organizer_id = payload.organizer_id
-        # Auto-grant organizer role to the assigned user
-        org_result = await db.execute(select(User).where(User.id == payload.organizer_id))
-        org_user = org_result.scalar_one_or_none()
-        if org_user:
-            org_user.add_role("organizer")
-    if payload.auctioneer_id is not None:
-        event.auctioneer_id = payload.auctioneer_id
-        # Auto-grant auctioneer role
-        ae_result = await db.execute(select(User).where(User.id == payload.auctioneer_id))
-        ae_user = ae_result.scalar_one_or_none()
-        if ae_user:
-            ae_user.add_role("auctioneer")
-    if payload.allowed_domains is not None:
-        event.allowed_domains = payload.allowed_domains
-    if payload.scheduled_at is not None:
-        event.scheduled_at = payload.scheduled_at
+    1.x applied only name, description, organizer, auctioneer, domains and
+    schedule — budget, squad sizes and base price were in the schema but
+    silently dropped.
+    """
+    event = await _get_own_event(event_id, current_user, db)
+
+    if event.status == AuctionStatus.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed tournament")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    if event.status == AuctionStatus.active:
+        locked = {"team_budget", "team_max_players", "team_min_players", "player_base_price"}
+        attempted = locked & data.keys()
+        if attempted:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot change {', '.join(sorted(attempted))} while the auction is running",
+            )
+
+    # Assigning an operator grants them the matching role.
+    if "organizer_id" in data and data["organizer_id"] is not None:
+        org = await db.get(User, data["organizer_id"])
+        if not org:
+            raise HTTPException(status_code=400, detail="Organizer user not found")
+        org.add_role(ROLE_ORGANIZER)
+
+    if "auctioneer_id" in data and data["auctioneer_id"] is not None:
+        auctioneer = await db.get(User, data["auctioneer_id"])
+        if not auctioneer:
+            raise HTTPException(status_code=400, detail="Auctioneer user not found")
+        auctioneer.add_role(ROLE_AUCTIONEER)
+
+    if "team_min_players" in data and data["team_min_players"] is not None:
+        max_players = data.get("team_max_players", event.team_max_players)
+        if data["team_min_players"] > max_players:
+            raise HTTPException(
+                status_code=400, detail="Minimum squad cannot exceed maximum squad"
+            )
+
+    for field, value in data.items():
+        setattr(event, field, value)
 
     await db.commit()
     await db.refresh(event)
     return AuctionEventOut.model_validate(event)
 
 
+@router.delete("/events/{event_id}", status_code=200)
+async def delete_event(
+    event_id: int,
+    hard: bool = Query(
+        False,
+        description="Permanently remove the tournament and all of its data. "
+        "Without this it is archived and can be restored.",
+    ),
+    current_user: User = AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a tournament. New in 2.0.0 — 1.x had no delete at all.
+
+    Soft by default: the tournament is archived and disappears from listings but
+    its results stay intact. `hard=true` removes everything, which is refused
+    while an auction is running.
+    """
+    event = await _get_own_event(event_id, current_user, db)
+
+    if event.status == AuctionStatus.active:
+        raise HTTPException(
+            status_code=409,
+            detail="This auction is running. Pause or finish it before deleting.",
+        )
+
+    if not hard:
+        from datetime import datetime, timezone
+
+        event.deleted_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {
+            "status": "archived",
+            "message": f"'{event.name}' archived. Its results are preserved.",
+        }
+
+    # Hard delete: children first, in foreign-key order.
+    team_ids = [
+        t.id for t in (await db.execute(select(Team).where(Team.event_id == event_id))).scalars()
+    ]
+
+    await db.execute(Bid.__table__.delete().where(Bid.event_id == event_id))
+    await db.execute(TeamPlayer.__table__.delete().where(TeamPlayer.event_id == event_id))
+    await db.execute(AuctionPlayer.__table__.delete().where(AuctionPlayer.event_id == event_id))
+    await db.execute(BidSlab.__table__.delete().where(BidSlab.event_id == event_id))
+    await db.execute(PlayerCategory.__table__.delete().where(PlayerCategory.event_id == event_id))
+    if team_ids:
+        await db.execute(Team.__table__.delete().where(Team.id.in_(team_ids)))
+    await db.delete(event)
+    await db.commit()
+
+    redis = await get_redis()
+    await redis.delete(f"auction:{event_id}:deadline", f"auction:{event_id}:active_player")
+
+    logger.warning("Admin %s hard-deleted tournament %s", current_user.id, event_id)
+    return {"status": "deleted", "message": f"'{event.name}' and all of its data were deleted."}
+
+
+@router.post("/events/{event_id}/restore", response_model=AuctionEventOut)
+async def restore_event(
+    event_id: int,
+    current_user: User = AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a soft delete."""
+    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    if event.admin_id != current_user.id:
+        raise HTTPException(status_code=403, detail="This tournament belongs to another admin")
+    event.deleted_at = None
+    await db.commit()
+    await db.refresh(event)
+    return AuctionEventOut.model_validate(event)
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+
 @router.get("/users", response_model=list[UserOut])
 async def list_users(
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(User).where(User.deleted_at.is_(None), User.is_active == True)
+        select(User).where(User.deleted_at.is_(None), User.is_active.is_(True))
     )
     return [UserOut.model_validate(u) for u in result.scalars().all()]
 
@@ -129,17 +273,18 @@ async def list_users(
 @router.get("/users/search", response_model=list[UserOut])
 async def search_users(
     q: str = Query(..., min_length=1),
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """Search users by name or email — used by the invite widget."""
     pattern = f"%{q}%"
     result = await db.execute(
-        select(User).where(
+        select(User)
+        .where(
             User.deleted_at.is_(None),
-            User.is_active == True,
-            or_(User.name.ilike(pattern), User.email.ilike(pattern))
-        ).limit(8)
+            User.is_active.is_(True),
+            or_(User.name.ilike(pattern), User.email.ilike(pattern)),
+        )
+        .limit(8)
     )
     return [UserOut.model_validate(u) for u in result.scalars().all()]
 
@@ -148,33 +293,25 @@ async def search_users(
 async def invite_to_event(
     event_id: int,
     payload: InvitePayload,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Invite someone to an event as organizer/auctioneer.
-    - If the email already has an account → assign role immediately.
-    - If not → send an invite email with a one-time token link.
-    """
+    """Invite an organizer or auctioneer. These are the only roles that log in."""
     if payload.role not in (ROLE_ORGANIZER, ROLE_AUCTIONEER):
         raise HTTPException(status_code=400, detail="Role must be organizer or auctioneer")
 
-    ev_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = ev_result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+    event = await _get_own_event(event_id, current_user, db)
 
-    user_result = await db.execute(
+    result = await db.execute(
         select(User).where(
             User.email == payload.email,
             User.deleted_at.is_(None),
-            User.is_active == True
+            User.is_active.is_(True),
         )
     )
-    user = user_result.scalar_one_or_none()
+    user = result.scalar_one_or_none()
 
     if user:
-        # Existing user → assign immediately
         user.add_role(payload.role)
         if payload.role == ROLE_ORGANIZER:
             event.organizer_id = user.id
@@ -182,43 +319,49 @@ async def invite_to_event(
             event.auctioneer_id = user.id
         await db.commit()
         await db.refresh(user)
-        email_service.send_event_invitation(user.email, user.name, event.name, event.id, payload.role)
+        await enqueue(
+            "task_send_event_invitation",
+            user.email, user.name, event.name, event.id, payload.role,
+        )
         return {
             "status": "assigned",
             "user": UserOut.model_validate(user).model_dump(),
             "message": f"{user.name} assigned as {payload.role}",
         }
-    else:
-        # Unknown email → create invite token in Redis
-        token = secrets.token_urlsafe(32)
-        redis = await get_redis()
-        invite_data = {
-            "email": payload.email,
-            "event_id": event_id,
-            "event_name": event.name,
-            "role": payload.role,
-        }
-        await redis.setex(f"invite:{token}", INVITE_TTL_SECONDS, json.dumps(invite_data))
-        await enqueue("task_send_organizer_invite", payload.email, event.name, token, payload.role)
-        return {
-            "status": "invited",
-            "user": None,
-            "message": f"Invitation sent to {payload.email}",
-        }
+
+    token = secrets.token_urlsafe(32)
+    redis = await get_redis()
+    await redis.setex(
+        f"invite:{token}",
+        INVITE_TTL_SECONDS,
+        json.dumps(
+            {
+                "email": payload.email,
+                "event_id": event_id,
+                "event_name": event.name,
+                "role": payload.role,
+            }
+        ),
+    )
+    await enqueue("task_send_organizer_invite", payload.email, event.name, token, payload.role)
+    return {"status": "invited", "user": None, "message": f"Invitation sent to {payload.email}"}
 
 
 @router.post("/users/{user_id}/roles/add", response_model=UserOut)
 async def add_user_role(
     user_id: int,
     payload: AssignRolePayload,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
+    if payload.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Role must be one of: {sorted(ASSIGNABLE_ROLES)}",
+        )
     result = await db.execute(
         select(User).where(
-            User.id == user_id,
-            User.deleted_at.is_(None),
-            User.is_active == True
+            User.id == user_id, User.deleted_at.is_(None), User.is_active.is_(True)
         )
     )
     user = result.scalar_one_or_none()
@@ -234,21 +377,23 @@ async def add_user_role(
 async def remove_user_role(
     user_id: int,
     payload: AssignRolePayload,
-    current_user: User = Depends(require_role(ROLE_ADMIN)),
+    current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(User).where(
-            User.id == user_id,
-            User.deleted_at.is_(None),
-            User.is_active == True
+            User.id == user_id, User.deleted_at.is_(None), User.is_active.is_(True)
         )
     )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if payload.role == "player":
-        raise HTTPException(status_code=400, detail="Cannot remove the base player role")
+
+    if user.id == current_user.id and payload.role == ROLE_ADMIN:
+        raise HTTPException(
+            status_code=400, detail="You cannot remove your own admin role"
+        )
+
     user.remove_role(payload.role)
     await db.commit()
     await db.refresh(user)

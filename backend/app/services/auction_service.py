@@ -1,87 +1,250 @@
+"""Live auction engine.
+
+Version: 2.0.0 (2026-11-20)
+
+Rewritten from 1.x. The four substantive changes:
+
+1. CONCURRENCY. `place_bid` previously did SELECT -> validate -> mutate -> COMMIT
+   with no lock held across the read and the write, and no version column. Two
+   bids at the same instant both passed validation against the same snapshot,
+   both were written, and the player went to whoever committed last rather than
+   whoever bid first. This was reproducible. Acceptance is now a conditional
+   UPDATE guarded by a version column (optimistic concurrency control), with a
+   row lock on backends that support it. A losing bid gets a clear "the price
+   moved" rejection instead of silently winning or silently losing.
+
+2. IDEMPOTENCY. Every mutating operation takes an idempotency key. With two
+   operator consoles driving one auction (auctioneer plus assistant), a retry, a
+   double-tap or a reconnect must not place a second bid or sell a player twice.
+   Unique constraints in the schema are the backstop.
+
+3. DURABLE TIMER. The countdown was an asyncio.Task inside one worker process,
+   coordinated by a Redis key holding a PID. If the worker restarted the task
+   died, the player stayed `active` forever and the hammer never fell. PIDs also
+   collide across containers. Redis now holds an absolute deadline; the hammer
+   fires from a deferred ARQ job, with a watchdog sweep as a second line. The
+   per-second tick broadcast is gone — clients count down from the deadline.
+
+4. AUDIT. Undo hard-deleted the bid row and bid-edit rewrote the amount with no
+   record, so a disputed sale could not be reconstructed. Bids are now reverted,
+   not deleted, and every operator action writes an AuctionAuditLog row.
+"""
 import asyncio
+import json
+import logging
 import random
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
-from app.models.user import User
+from app.core.config import settings
+from app.core.queue import enqueue, enqueue_at
+from app.core.redis import get_redis
 from app.models.auction import (
+    AuctionAuditLog,
     AuctionEvent,
     AuctionPlayer,
     AuctionStatus,
-    PlayerAuctionStatus,
+    AuditAction,
     Bid,
+    BidSlab,
+    Player,
+    PlayerAuctionStatus,
+    PlayerCategory,
     Team,
     TeamPlayer,
-    BidSlab,
-    PlayerCategory,
 )
-from app.core.redis import get_redis
+from app.models.user import User
+from app.services import bid_rules
+from app.services.bid_rules import Slab
 from app.ws.manager import manager
-from app.services import email_service
-from app.core.queue import enqueue
 
-TIMER_KEY = "auction:{event_id}:timer"
+logger = logging.getLogger(__name__)
 
 
-async def _get_bid_increment(db: AsyncSession, event_id: int, current_bid: int) -> int:
-    """Return the minimum bid increment based on bid slabs for this event."""
-    result = await db.execute(
-        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
-    )
-    slabs = result.scalars().all()
-    for slab in slabs:
-        in_range = current_bid >= slab.min_value
-        if slab.max_value > 0:
-            in_range = in_range and current_bid < slab.max_value
-        if in_range:
-            return slab.increment
-    return 1000  # default fallback
-ACTIVE_PLAYER_KEY = "auction:{event_id}:active_player"
-TIMER_SECONDS = 180
+# ── Redis keys ────────────────────────────────────────────────────────────────
 
-# Track running timer tasks per event (local to this worker)
-_timer_tasks: dict[int, asyncio.Task] = {}
-
-
-
-async def _resolve_effective_base_price(ap: AuctionPlayer, db: AsyncSession) -> int:
-    """Resolve player's base_price from their assigned PlayerCategory if present."""
-    if ap.category_id:
-        cat_res = await db.execute(
-            select(PlayerCategory).where(PlayerCategory.id == ap.category_id)
-        )
-        cat = cat_res.scalar_one_or_none()
-        if cat and cat.base_price and cat.base_price > 0:
-            if ap.base_price != cat.base_price:
-                ap.base_price = cat.base_price
-            return cat.base_price
-    return ap.base_price
-
-
-def _timer_owner_key(event_id: int) -> str:
-    """Redis key to track which worker owns the timer."""
-    return f"auction:{event_id}:timer_owner"
-
-
-def _get_worker_id() -> str:
-    """Get unique identifier for this worker process."""
-    import os
-    return f"{os.getpid()}"
-
-
-def _timer_key(event_id: int) -> str:
-    return f"auction:{event_id}:timer"
+def _deadline_key(event_id: int) -> str:
+    """Absolute unix timestamp at which the active player is hammered."""
+    return f"auction:{event_id}:deadline"
 
 
 def _active_key(event_id: int) -> str:
     return f"auction:{event_id}:active_player"
 
 
-async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+def _idem_key(event_id: int, key: str) -> str:
+    return f"auction:{event_id}:idem:{key}"
+
+
+# ── Errors ────────────────────────────────────────────────────────────────────
+
+
+class AuctionError(ValueError):
+    """A rule was broken. Surfaces to the client as 400."""
+
+
+class ConcurrentUpdate(AuctionError):
+    """Another operator's action landed first. Surfaces as 409."""
+
+
+# ── Timing ────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Timing:
+    base_seconds: int
+    threshold_seconds: int
+    extension_seconds: int
+    shrink_factor: float
+    min_extension_seconds: int
+
+    @classmethod
+    def for_event(cls, event: AuctionEvent) -> "Timing":
+        return cls(
+            base_seconds=event.timer_seconds or settings.AUCTION_TIMER_SECONDS,
+            threshold_seconds=(
+                event.soft_close_threshold_seconds
+                if event.soft_close_threshold_seconds is not None
+                else settings.SOFT_CLOSE_THRESHOLD_SECONDS
+            ),
+            extension_seconds=(
+                event.soft_close_extension_seconds
+                or settings.SOFT_CLOSE_EXTENSION_SECONDS
+            ),
+            shrink_factor=settings.SOFT_CLOSE_SHRINK_FACTOR,
+            min_extension_seconds=settings.SOFT_CLOSE_MIN_EXTENSION_SECONDS,
+        )
+
+    def extension_for(self, extension_count: int) -> int:
+        """Each successive extension on the same player is shorter.
+
+        Without this a two-team war never ends: each bid buys another full
+        window. 1.x reset to the full 180s on every bid, so a contested player
+        could run for twenty minutes.
+        """
+        value = self.extension_seconds * (self.shrink_factor ** max(0, extension_count))
+        return max(self.min_extension_seconds, int(round(value)))
+
+
+def _now() -> float:
+    return time.time()
+
+
+# ── Audit ─────────────────────────────────────────────────────────────────────
+
+
+async def record_audit(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    action: AuditAction,
+    actor_user_id: int | None = None,
+    auction_player_id: int | None = None,
+    team_id: int | None = None,
+    amount: int | None = None,
+    previous_amount: int | None = None,
+    detail: str | None = None,
+) -> None:
+    db.add(
+        AuctionAuditLog(
+            event_id=event_id,
+            action=action,
+            actor_user_id=actor_user_id,
+            auction_player_id=auction_player_id,
+            team_id=team_id,
+            amount=amount,
+            previous_amount=previous_amount,
+            detail=detail,
+        )
+    )
+
+
+# ── Idempotency ───────────────────────────────────────────────────────────────
+
+
+async def _claim_idempotency(event_id: int, key: str | None, ttl: int = 900) -> bool:
+    """True when this is the first time we have seen `key`.
+
+    Backed by Redis SET NX. The Bid table's unique constraint is the durable
+    backstop; this short-circuits the common case before any work is done.
+    """
+    if not key:
+        return True
+    redis = await get_redis()
+    claimed = await redis.set(_idem_key(event_id, key), "1", nx=True, ex=ttl)
+    return bool(claimed)
+
+
+# ── Loading helpers ───────────────────────────────────────────────────────────
+
+
+async def _load_slabs(db: AsyncSession, event_id: int) -> list[Slab]:
+    result = await db.execute(
+        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
+    )
+    return [
+        Slab(
+            min_value=s.min_value,
+            max_value=s.max_value,
+            increment=s.increment,
+            sort_order=s.sort_order,
+        )
+        for s in result.scalars().all()
+    ]
+
+
+async def _effective_base_price(ap: AuctionPlayer, db: AsyncSession) -> int:
+    """A category's base price overrides the player's own, when set."""
+    if ap.category_id:
+        result = await db.execute(
+            select(PlayerCategory).where(PlayerCategory.id == ap.category_id)
+        )
+        category = result.scalar_one_or_none()
+        if category and category.base_price and category.base_price > 0:
+            return category.base_price
+    return ap.base_price
+
+
+async def _get_event(db: AsyncSession, event_id: int) -> AuctionEvent:
+    result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.id == event_id, AuctionEvent.deleted_at.is_(None)
+        )
+    )
     event = result.scalar_one_or_none()
+    if not event:
+        raise AuctionError("Event not found")
+    return event
+
+
+async def _squad_size(db: AsyncSession, event_id: int, team_id: int) -> int:
+    result = await db.execute(
+        select(TeamPlayer).where(
+            TeamPlayer.event_id == event_id, TeamPlayer.team_id == team_id
+        )
+    )
+    return len(result.scalars().all())
+
+
+# ── State ─────────────────────────────────────────────────────────────────────
+
+
+async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
+    """Full snapshot sent on WebSocket connect and on demand.
+
+    Carries `deadline_epoch` rather than a seconds-remaining integer, so a
+    client that reconnects mid-player computes the correct countdown itself and
+    the server does not have to broadcast a tick every second.
+    """
+    event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+    event = event_result.scalar_one_or_none()
     if not event:
         return {}
 
@@ -91,40 +254,60 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
     players_result = await db.execute(
         select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
     )
-    players = players_result.scalars().all()
+    auction_players = players_result.scalars().all()
 
-    # Fetch bid slabs and categories for this event
-    slabs_result = await db.execute(
-        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
-    )
-    slabs = slabs_result.scalars().all()
+    slabs = await _load_slabs(db, event_id)
 
     cats_result = await db.execute(
-        select(PlayerCategory).where(PlayerCategory.event_id == event_id).order_by(PlayerCategory.sort_order)
+        select(PlayerCategory)
+        .where(PlayerCategory.event_id == event_id)
+        .order_by(PlayerCategory.sort_order)
     )
     categories = cats_result.scalars().all()
+    categories_by_id = {c.id: c for c in categories}
 
     redis = await get_redis()
-    timer = await redis.get(_timer_key(event_id))
+    deadline_raw = await redis.get(_deadline_key(event_id))
     active_player_id = await redis.get(_active_key(event_id))
+    deadline = float(deadline_raw) if deadline_raw else None
+
+    timing = Timing.for_event(event)
+
+    def base_for(ap: AuctionPlayer) -> int:
+        category = categories_by_id.get(ap.category_id) if ap.category_id else None
+        if category and category.base_price > 0:
+            return category.base_price
+        return ap.base_price
 
     return {
         "type": "auction_state",
         "event_id": event_id,
         "status": event.status,
         "scheduled_at": event.scheduled_at.isoformat() if event.scheduled_at else None,
-        "timer": int(timer) if timer else 0,
-        "active_player_id": int(active_player_id) if active_player_id else None,
+        "server_time": _now(),
+        "deadline_epoch": deadline,
+        "active_auction_player_id": int(active_player_id) if active_player_id else None,
         "no_timer": event.no_timer,
+        "timing": {
+            "base_seconds": timing.base_seconds,
+            "soft_close_threshold_seconds": timing.threshold_seconds,
+            "soft_close_extension_seconds": timing.extension_seconds,
+        },
+        "rules": {
+            "team_budget": event.team_budget,
+            "team_max_players": event.team_max_players,
+            "team_min_players": event.team_min_players,
+            "player_base_price": event.player_base_price,
+        },
         "bid_slabs": [
             {
-                "id": s.id,
+                "id": idx,
                 "min_value": s.min_value,
                 "max_value": s.max_value,
                 "increment": s.increment,
                 "sort_order": s.sort_order,
             }
-            for s in slabs
+            for idx, s in enumerate(slabs)
         ],
         "categories": [
             {
@@ -140,9 +323,13 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
             {
                 "id": t.id,
                 "name": t.name,
+                "color": t.color,
+                "logo": t.logo,
                 "captain_id": t.captain_id,
+                "captain_name": t.captain.name if t.captain else None,
                 "budget": t.budget,
                 "spent": t.spent,
+                "remaining": t.budget - t.spent,
                 "max_players": t.max_players,
                 "player_count": len(t.players),
             }
@@ -150,61 +337,49 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
         ],
         "players": [
             {
-                "id": p.id,
-                "player_id": p.player_id,
-                "base_price": (
-                    next((c.base_price for c in categories if c.id == p.category_id and c.base_price > 0), p.base_price)
-                    if p.category_id else p.base_price
-                ),
-                "category_id": p.category_id,
+                "id": ap.id,
+                "player_id": ap.player_id,
+                "name": ap.player.name if ap.player else f"Player #{ap.player_id}",
+                "profile_photo": ap.player.profile_photo if ap.player else None,
+                "base_price": base_for(ap),
+                "category_id": ap.category_id,
                 "current_bid": (
-                    next((c.base_price for c in categories if c.id == p.category_id and c.base_price > 0), p.base_price)
-                    if (p.category_id and p.status == PlayerAuctionStatus.active and p.current_bidder_id is None)
-                    else p.current_bid
+                    base_for(ap)
+                    if (ap.status == PlayerAuctionStatus.active and ap.current_bid_team_id is None)
+                    else ap.current_bid
                 ),
-                "current_bidder_id": p.current_bidder_id,
-                "status": p.status,
+                "current_bid_team_id": ap.current_bid_team_id,
+                "status": ap.status,
+                "version": ap.version,
             }
-            for p in players
+            for ap in auction_players
         ],
     }
 
 
 async def get_auction_summary(event_id: int, db: AsyncSession) -> dict:
-    """Build completed-auction summary used by UI and emails."""
-    event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = event_result.scalar_one_or_none()
-    if not event:
-        return {}
+    event = await _get_event(db, event_id)
 
     teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
     teams = teams_result.scalars().all()
 
-    aps_result = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event_id))
+    aps_result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
+    )
     auction_players = aps_result.scalars().all()
 
-    player_ids: set[int] = {ap.player_id for ap in auction_players}
-    for t in teams:
-        player_ids.update(tp.player_id for tp in (t.players or []))
-        if t.captain_id:
-            player_ids.add(t.captain_id)
+    sold = [ap for ap in auction_players if ap.status == PlayerAuctionStatus.sold]
+    unsold = [ap for ap in auction_players if ap.status == PlayerAuctionStatus.unsold]
 
-    users_by_id: dict[int, User] = {}
-    if player_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(player_ids)))
-        users = users_result.scalars().all()
-        users_by_id = {u.id: u for u in users}
-
-    sold_players = [ap for ap in auction_players if ap.status == PlayerAuctionStatus.sold]
-    unsold_players = [ap for ap in auction_players if ap.status == PlayerAuctionStatus.unsold]
+    teams_by_id = {t.id: t for t in teams}
 
     highest_bid_player = None
-    if sold_players:
-        top = max(sold_players, key=lambda ap: ap.current_bid)
-        top_team = next((t for t in teams if t.captain_id == top.current_bidder_id), None)
+    if sold:
+        top = max(sold, key=lambda ap: ap.current_bid)
+        top_team = teams_by_id.get(top.current_bid_team_id)
         highest_bid_player = {
             "player_id": top.player_id,
-            "player_name": users_by_id.get(top.player_id).name if users_by_id.get(top.player_id) else f"Player #{top.player_id}",
+            "player_name": top.player.name if top.player else f"Player #{top.player_id}",
             "sold_price": top.current_bid,
             "team_name": top_team.name if top_team else "Unknown Team",
         }
@@ -212,84 +387,75 @@ async def get_auction_summary(event_id: int, db: AsyncSession) -> dict:
     teams_summary = []
     strongest_team = None
     best_rating = -1.0
-    for t in teams:
+
+    for team in teams:
         roster = []
-        rating_total = 0.0
-        batting_total = 0.0
-        bowling_total = 0.0
-        fielding_total = 0.0
-        for tp in (t.players or []):
-            pu = users_by_id.get(tp.player_id)
-            batting = pu.batting_rating if pu else 0.0
-            bowling = pu.bowling_rating if pu else 0.0
-            fielding = pu.fielding_rating if pu else 0.0
-            rating_score = batting + bowling + fielding
-            rating_total += rating_score
+        batting_total = bowling_total = fielding_total = rating_total = 0.0
+
+        for tp in team.players or []:
+            player = tp.player
+            batting = player.batting_rating if player else 0.0
+            bowling = player.bowling_rating if player else 0.0
+            fielding = player.fielding_rating if player else 0.0
+            score = batting + bowling + fielding
+            rating_total += score
             batting_total += batting
             bowling_total += bowling
             fielding_total += fielding
             roster.append(
                 {
                     "player_id": tp.player_id,
-                    "name": pu.name if pu else f"Player #{tp.player_id}",
+                    "name": player.name if player else f"Player #{tp.player_id}",
                     "sold_price": tp.sold_price,
-                    "rating_score": round(rating_score, 2),
+                    "rating_score": round(score, 2),
+                    "is_captain": tp.player_id == team.captain_id,
                 }
             )
-        roster.sort(key=lambda x: x["sold_price"], reverse=True)
-        players_count = len(roster)
-        batting_avg = (batting_total / players_count) if players_count else 0.0
-        bowling_avg = (bowling_total / players_count) if players_count else 0.0
-        fielding_avg = (fielding_total / players_count) if players_count else 0.0
-        overall_rating = (batting_avg + bowling_avg + fielding_avg) / 3 if players_count else 0.0
-        summary_item = {
-            "team_id": t.id,
-            "team_name": t.name,
-            "captain_id": t.captain_id,
-            "captain_name": users_by_id.get(t.captain_id).name if t.captain_id and users_by_id.get(t.captain_id) else None,
-            "spent": t.spent,
-            "budget": t.budget,
-            "remaining": t.budget - t.spent,
-            "player_count": players_count,
-            "average_rating": round(overall_rating, 2),
-            "total_rating": round(rating_total, 2),
-            "batting_avg": round(batting_avg, 2),
-            "bowling_avg": round(bowling_avg, 2),
-            "fielding_avg": round(fielding_avg, 2),
-            "overall_rating": round(overall_rating, 2),
-            "players": roster,
-        }
-        teams_summary.append(summary_item)
-        if overall_rating > best_rating:
-            best_rating = overall_rating
-            strongest_team = {
-                "team_id": t.id,
-                "team_name": t.name,
-                "overall_rating": round(overall_rating, 2),
+
+        roster.sort(key=lambda r: r["sold_price"], reverse=True)
+        count = len(roster)
+        batting_avg = batting_total / count if count else 0.0
+        bowling_avg = bowling_total / count if count else 0.0
+        fielding_avg = fielding_total / count if count else 0.0
+        overall = (batting_avg + bowling_avg + fielding_avg) / 3 if count else 0.0
+
+        teams_summary.append(
+            {
+                "team_id": team.id,
+                "team_name": team.name,
+                "captain_id": team.captain_id,
+                "captain_name": team.captain.name if team.captain else None,
+                "spent": team.spent,
+                "budget": team.budget,
+                "remaining": team.budget - team.spent,
+                "player_count": count,
+                "average_rating": round(overall, 2),
+                "total_rating": round(rating_total, 2),
                 "batting_avg": round(batting_avg, 2),
                 "bowling_avg": round(bowling_avg, 2),
                 "fielding_avg": round(fielding_avg, 2),
-                "player_count": players_count,
+                "overall_rating": round(overall, 2),
+                "players": roster,
+            }
+        )
+
+        # Only a team that actually filled a squad can be "strongest" — an empty
+        # team scored 0.0 and could win on a tie in 1.x.
+        if count and overall > best_rating:
+            best_rating = overall
+            strongest_team = {
+                "team_id": team.id,
+                "team_name": team.name,
+                "overall_rating": round(overall, 2),
+                "batting_avg": round(batting_avg, 2),
+                "bowling_avg": round(bowling_avg, 2),
+                "fielding_avg": round(fielding_avg, 2),
+                "player_count": count,
             }
 
-    unsold_summary = [
-        {
-            "player_id": ap.player_id,
-            "name": users_by_id.get(ap.player_id).name if users_by_id.get(ap.player_id) else f"Player #{ap.player_id}",
-            "base_price": ap.base_price,
-            "last_bid": ap.current_bid,
-        }
-        for ap in unsold_players
-    ]
-
-    # Get viewer stats - use persisted value for completed events
     if event.status == AuctionStatus.completed and event.total_viewers is not None:
-        viewer_stats = {
-            "live_viewers": 0,
-            "total_unique_viewers": event.total_viewers,
-        }
+        viewer_stats = {"live_viewers": 0, "total_unique_viewers": event.total_viewers}
     else:
-        from app.ws.manager import manager
         viewer_stats = await manager.get_viewer_stats(event_id)
 
     return {
@@ -299,83 +465,109 @@ async def get_auction_summary(event_id: int, db: AsyncSession) -> dict:
         "highest_bid_player": highest_bid_player,
         "strongest_team": strongest_team,
         "teams": teams_summary,
-        "unsold_players": unsold_summary,
+        "unsold_players": [
+            {
+                "player_id": ap.player_id,
+                "name": ap.player.name if ap.player else f"Player #{ap.player_id}",
+                "base_price": ap.base_price,
+                "last_bid": ap.current_bid,
+            }
+            for ap in unsold
+        ],
         "stats": {
             "total_players": len(auction_players),
-            "sold_count": len(sold_players),
-            "unsold_count": len(unsold_players),
+            "sold_count": len(sold),
+            "unsold_count": len(unsold),
         },
         "viewer_stats": viewer_stats,
     }
 
 
-async def start_auction(event_id: int, db: AsyncSession) -> AuctionEvent:
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise ValueError("Event not found")
-    
-    # NOTE: Scheduled time enforcement is bypassed for testing/mock runs.
-    # If you want to re-enable it for production launch, uncomment the check below:
-    # if event.scheduled_at is not None:
-    #     from datetime import datetime, timezone
-    #     now = datetime.now(timezone.utc)
-    #     if now < event.scheduled_at:
-    #         raise ValueError("Auction can only be started after the scheduled time")
+# ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+
+async def start_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
+    event = await _get_event(db, event_id)
 
     if event.status not in (AuctionStatus.ready, AuctionStatus.paused):
-        raise ValueError(f"Cannot start auction in status: {event.status}")
+        raise AuctionError(f"Cannot start an auction in status: {event.status}")
+
+    # 1.x set status to active and THEN tested `if event.status == active` to
+    # decide whether to send "auction starting" notifications — always true, so
+    # every pause/resume cycle re-notified every participant.
+    was_first_start = event.status == AuctionStatus.ready
+
+    if event.scheduled_at is not None and was_first_start:
+        now = datetime.now(timezone.utc)
+        scheduled = event.scheduled_at
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        if now < scheduled:
+            # 1.x had this check commented out with a "bypassed for testing" note.
+            raise AuctionError(
+                f"Auction is scheduled for {scheduled.isoformat()} and cannot start before then"
+            )
 
     event.status = AuctionStatus.active
+    await record_audit(
+        db,
+        event_id=event_id,
+        action=AuditAction.auction_started if was_first_start else AuditAction.auction_resumed,
+        actor_user_id=actor.id if actor else None,
+    )
     await db.commit()
     await db.refresh(event)
 
     state = await get_auction_state(event_id, db)
-    await manager.broadcast(event_id, {**state, "type": "auction_resumed"})
+    await manager.broadcast(
+        event_id,
+        {**state, "type": "auction_started" if was_first_start else "auction_resumed"},
+    )
 
-    # Notify all participants on first start
-    if event.status == AuctionStatus.active:
-        players_result = await db.execute(
-            select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
-        )
-        participant_ids = {ap.player_id for ap in players_result.scalars().all()}
-
-        teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
-        captain_ids = {t.captain_id for t in teams_result.scalars().all() if t.captain_id}
-
-        all_ids = participant_ids | captain_ids
-        if event.auctioneer_id:
-            all_ids.add(event.auctioneer_id)
-
-        for uid in all_ids:
-            user_res = await db.execute(select(User).where(User.id == uid))
-            u = user_res.scalar_one_or_none()
-            if u:
-                role = "auctioneer" if uid == event.auctioneer_id else (
-                    "captain" if uid in captain_ids else "player"
-                )
-                await enqueue("task_send_auction_starting", u.email, u.name, event.name, event_id, role)
+    if was_first_start:
+        await _notify_participants_starting(event, db)
 
     return event
 
 
-async def pause_auction(event_id: int, db: AsyncSession) -> AuctionEvent:
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event or event.status != AuctionStatus.active:
-        raise ValueError("Auction not active")
+async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -> None:
+    """Email the operators. Players have no accounts and may have no email."""
+    recipient_ids = {
+        uid
+        for uid in (event.auctioneer_id, event.organizer_id, event.admin_id)
+        if uid is not None
+    }
+    if not recipient_ids:
+        return
+    users = await db.execute(select(User).where(User.id.in_(recipient_ids)))
+    for user in users.scalars().all():
+        role = (
+            "auctioneer"
+            if user.id == event.auctioneer_id
+            else "organizer"
+            if user.id == event.organizer_id
+            else "admin"
+        )
+        await enqueue(
+            "task_send_auction_starting", user.email, user.name, event.name, event.id, role
+        )
 
-    # Stop timer - clear ownership to signal all workers to stop
+
+async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
+    event = await _get_event(db, event_id)
+    if event.status != AuctionStatus.active:
+        raise AuctionError("Auction is not active")
+
     redis = await get_redis()
-    await redis.delete(_timer_owner_key(event_id))
-    await redis.delete(_timer_key(event_id))
-    
-    # Cancel local timer task if we have one
-    task = _timer_tasks.pop(event_id, None)
-    if task and not task.done():
-        task.cancel()
+    # Clearing the deadline is what stops the hammer: the deferred job and the
+    # watchdog both re-check it before acting.
+    await redis.delete(_deadline_key(event_id))
 
     event.status = AuctionStatus.paused
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.auction_paused,
+        actor_user_id=actor.id if actor else None,
+    )
     await db.commit()
     await db.refresh(event)
 
@@ -383,201 +575,135 @@ async def pause_auction(event_id: int, db: AsyncSession) -> AuctionEvent:
     return event
 
 
-async def finish_auction(event_id: int, db: AsyncSession) -> AuctionEvent:
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event or event.status not in (AuctionStatus.active, AuctionStatus.paused):
-        raise ValueError("Auction must be active or paused to finish")
+async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
+    event = await _get_event(db, event_id)
+    if event.status not in (AuctionStatus.active, AuctionStatus.paused):
+        raise AuctionError("Auction must be active or paused to finish")
 
-    # Stop timer - clear ownership to signal all workers to stop
     redis = await get_redis()
-    await redis.delete(_timer_owner_key(event_id))
-    await redis.delete(_timer_key(event_id))
+    await redis.delete(_deadline_key(event_id))
     await redis.delete(_active_key(event_id))
-    
-    # Cancel local timer task if we have one
-    task = _timer_tasks.pop(event_id, None)
-    if task and not task.done():
-        task.cancel()
 
-    # Mark active players as unsold
-    active_players_res = await db.execute(
-        select(AuctionPlayer).where(
-            AuctionPlayer.event_id == event_id,
-            AuctionPlayer.status == PlayerAuctionStatus.active
-        )
-    )
-    for ap in active_players_res.scalars().all():
-        ap.status = PlayerAuctionStatus.unsold
-
-    # Persist final viewer count before marking as completed
-    viewer_stats = await manager.get_viewer_stats(event_id)
-    event.total_viewers = viewer_stats.get("total_unique_viewers", 0)
-    
-    event.status = AuctionStatus.completed
-    await db.commit()
-    await db.refresh(event)
-    
-    # Set expiration on Redis viewer keys (7 days) - data is now persisted in DB
-    redis = await get_redis()
-    await redis.expire(f"event:{event_id}:unique_viewers", 86400 * 7)
-    await redis.expire(f"event:{event_id}:live_sessions", 86400 * 7)
-
-    summary = await get_auction_summary(event_id, db)
-
-    # Email completion summary to all event participants.
-    participant_ids: set[int] = set()
-    teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
-    teams = teams_result.scalars().all()
-    participant_ids.update(t.captain_id for t in teams if t.captain_id is not None)
-
-    aps_result = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event_id))
-    participant_ids.update(ap.player_id for ap in aps_result.scalars().all())
-
-    if event.auctioneer_id:
-        participant_ids.add(event.auctioneer_id)
-    if event.organizer_id:
-        participant_ids.add(event.organizer_id)
-    if event.admin_id:
-        participant_ids.add(event.admin_id)
-
-    if participant_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(participant_ids)))
-        for u in users_result.scalars().all():
-            await enqueue(
-                "task_send_event_completion_summary",
-                u.email,
-                u.name,
-                event.name,
-                event_id,
-                summary,
-            )
-
-    await manager.broadcast(event_id, {"type": "auction_completed", "event_id": event_id})
-    return event
-
-
-async def set_next_player(
-    event_id: int,
-    player_id: Optional[int],
-    db: AsyncSession,
-) -> AuctionPlayer:
-    # Take over timer ownership via Redis to stop any running timers on other workers
-    redis = await get_redis()
-    worker_id = _get_worker_id()
-    owner_key = _timer_owner_key(event_id)
-    
-    # Take ownership - this signals other workers to stop their timers
-    await redis.set(owner_key, worker_id)
-    
-    # Cancel local timer task if we have one
-    task = _timer_tasks.pop(event_id, None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-
-    # Defensive normalization: if any stale rows are still marked active
-    # (e.g. from old runs/crashes), mark them unsold before moving next.
-    stale_active_res = await db.execute(
+    active_result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
             AuctionPlayer.status == PlayerAuctionStatus.active,
         )
     )
-    for stale in stale_active_res.scalars().all():
-        stale.status = PlayerAuctionStatus.unsold
+    for ap in active_result.scalars().all():
+        ap.status = PlayerAuctionStatus.unsold
 
-    teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
-    captain_ids = {t.captain_id for t in teams_result.scalars().all() if t.captain_id is not None}
+    viewer_stats = await manager.get_viewer_stats(event_id)
+    event.total_viewers = viewer_stats.get("total_unique_viewers", 0)
+    event.status = AuctionStatus.completed
 
-    if player_id is None:
-        # Category-aware selection: auction_first categories first (by sort_order),
-        # then random from remaining pending players in included categories
-        categories_result = await db.execute(
-            select(PlayerCategory).where(PlayerCategory.event_id == event_id)
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.auction_finished,
+        actor_user_id=actor.id if actor else None,
+    )
+    await db.commit()
+    await db.refresh(event)
+
+    await redis.expire(f"event:{event_id}:unique_viewers", 86400 * 7)
+    await redis.expire(f"event:{event_id}:live_sessions", 86400 * 7)
+
+    summary = await get_auction_summary(event_id, db)
+
+    recipient_ids = {
+        uid
+        for uid in (event.auctioneer_id, event.organizer_id, event.admin_id)
+        if uid is not None
+    }
+    if recipient_ids:
+        users = await db.execute(select(User).where(User.id.in_(recipient_ids)))
+        for user in users.scalars().all():
+            await enqueue(
+                "task_send_event_completion_summary",
+                user.email, user.name, event.name, event_id, summary,
+            )
+
+    await manager.broadcast(
+        event_id, {"type": "auction_completed", "event_id": event_id, "summary": summary}
+    )
+    return event
+
+
+# ── Putting a player on the block ─────────────────────────────────────────────
+
+
+async def set_next_player(
+    event_id: int,
+    auction_player_id: Optional[int],
+    db: AsyncSession,
+    actor: User | None = None,
+    *,
+    idempotency_key: str | None = None,
+) -> AuctionPlayer:
+    if not await _claim_idempotency(event_id, idempotency_key):
+        raise ConcurrentUpdate("That action has already been applied")
+
+    event = await _get_event(db, event_id)
+    if event.status != AuctionStatus.active:
+        raise AuctionError("Auction is not active")
+
+    # 1.x silently flipped any still-active player to `unsold` here, with no
+    # broadcast — a misclick made the player on the block vanish from every
+    # screen with no explanation. Now it is an explicit error; the operator must
+    # hammer or pull the current player first.
+    active_result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
         )
-        categories = categories_result.scalars().all()
-        auction_first_cats = [c for c in categories if c.auction_first]
-        other_cats = [c for c in categories if not c.auction_first]
+    )
+    still_active = active_result.scalars().first()
+    if still_active:
+        raise AuctionError(
+            "A player is still on the block. Hammer the sale or pull the player first."
+        )
 
-        # Try auction-first categories in sort_order
-        for cat in sorted(auction_first_cats, key=lambda c: c.sort_order):
-            result = await db.execute(
-                select(AuctionPlayer).where(
-                    AuctionPlayer.event_id == event_id,
-                    AuctionPlayer.status == PlayerAuctionStatus.pending,
-                    AuctionPlayer.category_id == cat.id,
-                )
-            )
-            pending_in_cat = [p for p in result.scalars().all() if p.player_id not in captain_ids]
-            if pending_in_cat:
-                ap = random.choice(pending_in_cat)
-                break
-        else:
-            # No auction-first category players left — random from all pending (respecting other categories too)
-            result = await db.execute(
-                select(AuctionPlayer).where(
-                    AuctionPlayer.event_id == event_id,
-                    AuctionPlayer.status == PlayerAuctionStatus.pending,
-                )
-            )
-            pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
-            if not pending:
-                raise ValueError("No pending players left")
-            ap = random.choice(pending)
+    if auction_player_id is None:
+        ap = await _pick_random_pending(db, event_id)
     else:
         result = await db.execute(
             select(AuctionPlayer).where(
-                AuctionPlayer.id == player_id,
+                AuctionPlayer.id == auction_player_id,
                 AuctionPlayer.event_id == event_id,
             )
         )
         ap = result.scalar_one_or_none()
         if not ap:
-            raise ValueError("Player not found in event")
-        if ap.player_id in captain_ids:
-            raise ValueError("Team captains cannot be auctioned")
-        # Allow re-auctioning unsold players
+            raise AuctionError("Player is not registered in this event")
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
-            raise ValueError("Player already auctioned")
+            raise AuctionError("Player has already been auctioned")
 
-    effective_base = await _resolve_effective_base_price(ap, db)
-    ap.base_price = effective_base
+    base = await _effective_base_price(ap, db)
+    ap.base_price = base
     ap.status = PlayerAuctionStatus.active
-    ap.current_bid = effective_base
-    ap.current_bidder_id = None
+    ap.current_bid = base
+    ap.current_bid_team_id = None
+    ap.version += 1
+    ap.extension_count = 0
+
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.player_put_up,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, amount=base,
+    )
     await db.commit()
     await db.refresh(ap)
 
-    # Store active player in Redis and start timer (unless no_timer is set)
-    # redis already fetched at start of function
+    redis = await get_redis()
     await redis.set(_active_key(event_id), ap.id)
-    await redis.set(_timer_key(event_id), TIMER_SECONDS)
 
-    # Check if this event runs without a timer
-    event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = event_result.scalar_one_or_none()
-    if event and event.no_timer:
-        await manager.broadcast(
-            event_id,
-            {
-                "type": "player_up",
-                "event_id": event_id,
-                "auction_player_id": ap.id,
-                "player_id": ap.player_id,
-                "base_price": ap.base_price,
-                "current_bid": ap.current_bid,
-                "no_timer": True,
-            },
-        )
-        return ap
-
-    # Start countdown in background on this worker
-    task = asyncio.create_task(_run_timer(event_id, ap.id))
-    _timer_tasks[event_id] = task
+    deadline = None
+    if not event.no_timer:
+        timing = Timing.for_event(event)
+        deadline = _now() + timing.base_seconds
+        await redis.set(_deadline_key(event_id), deadline)
+        await _schedule_hammer(event_id, ap.id, deadline)
+    else:
+        await redis.delete(_deadline_key(event_id))
 
     await manager.broadcast(
         event_id,
@@ -586,245 +712,374 @@ async def set_next_player(
             "event_id": event_id,
             "auction_player_id": ap.id,
             "player_id": ap.player_id,
+            "player_name": ap.player.name if ap.player else None,
             "base_price": ap.base_price,
             "current_bid": ap.current_bid,
+            "version": ap.version,
+            "no_timer": bool(event.no_timer),
+            "deadline_epoch": deadline,
+            "server_time": _now(),
         },
     )
-
     return ap
 
 
-async def _run_timer(event_id: int, auction_player_id: int):
-    """
-    Run the countdown timer. Uses Redis to coordinate across workers.
-    Only the worker that owns the timer will run the countdown.
-    """
-    from app.core.database import AsyncSessionLocal
-    from app.models.auction import AuctionEvent
+async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer:
+    """Categories flagged `auction_first` come up first, in sort order."""
+    categories_result = await db.execute(
+        select(PlayerCategory).where(PlayerCategory.event_id == event_id)
+    )
+    categories = categories_result.scalars().all()
 
-    async with AsyncSessionLocal() as db:
-        event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-        event = event_result.scalar_one_or_none()
-        if not event or event.no_timer:
-            return  # No timer for this event
+    for category in sorted(
+        [c for c in categories if c.auction_first], key=lambda c: c.sort_order
+    ):
+        result = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.status == PlayerAuctionStatus.pending,
+                AuctionPlayer.category_id == category.id,
+            )
+        )
+        pending = result.scalars().all()
+        if pending:
+            return random.choice(pending)
+
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.pending,
+        )
+    )
+    pending = result.scalars().all()
+    if not pending:
+        raise AuctionError("No pending players left")
+    return random.choice(pending)
+
+
+async def pull_player(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> AuctionPlayer | None:
+    """Take the current player off the block without selling.
+
+    New in 2.0.0 — the explicit, broadcast version of what set_next_player used
+    to do silently.
+    """
+    ap = await _load_active_player(db, event_id)
+    if not ap:
+        raise AuctionError("No player is on the block")
+
+    ap.status = PlayerAuctionStatus.unsold
+    ap.version += 1
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.player_pulled,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, amount=ap.current_bid,
+    )
+    await db.commit()
 
     redis = await get_redis()
-    worker_id = _get_worker_id()
-    owner_key = _timer_owner_key(event_id)
+    await redis.delete(_deadline_key(event_id))
+    await redis.delete(_active_key(event_id))
 
-    try:
-        for remaining in range(TIMER_SECONDS, -1, -1):
-            # Check if we still own the timer (another worker may have taken over)
-            current_owner = await redis.get(owner_key)
-            if current_owner != worker_id:
-                # Another worker has taken over, stop this timer
-                return
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "player_pulled",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "player_id": ap.player_id,
+            "reason": "withdrawn_by_auctioneer",
+        },
+    )
+    return ap
 
-            await redis.set(_timer_key(event_id), remaining)
-            await manager.broadcast(
-                event_id,
-                {"type": "timer_tick", "event_id": event_id, "remaining": remaining},
-            )
-            if remaining == 0:
-                break
-            await asyncio.sleep(1)
 
-        # Auto-hammer when timer reaches 0 - but only if we still own it
-        # Use atomic check-and-delete to prevent race conditions
-        current_owner = await redis.get(owner_key)
-        if current_owner == worker_id:
-            # Delete ownership BEFORE hammering to prevent other workers from
-            # thinking we still own it during the hammer operation
-            await redis.delete(owner_key)
-            async with AsyncSessionLocal() as db:
-                await hammer_player(event_id, auction_player_id, db)
-    except asyncio.CancelledError:
-        pass
+async def _load_active_player(db: AsyncSession, event_id: int) -> AuctionPlayer | None:
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
+        )
+    )
+    return result.scalars().first()
+
+
+# ── Bidding ───────────────────────────────────────────────────────────────────
 
 
 async def place_bid(
     event_id: int,
-    auction_player_id: int,
-    captain_id: int,
+    team_id: int,
     amount: int,
     db: AsyncSession,
+    actor: User | None = None,
+    *,
+    idempotency_key: str | None = None,
+    expected_version: int | None = None,
 ) -> Bid:
-    result = await db.execute(
-        select(AuctionPlayer).where(
-            AuctionPlayer.id == auction_player_id,
-            AuctionPlayer.event_id == event_id,
+    """Accept a bid, or reject it with a reason.
+
+    The write is a conditional UPDATE guarded by AuctionPlayer.version. If
+    another operator's bid landed between this caller's read and this write, the
+    UPDATE matches zero rows and we raise ConcurrentUpdate rather than
+    overwriting their bid — which is exactly what 1.x did.
+    """
+    if idempotency_key:
+        existing = await db.execute(
+            select(Bid).where(
+                Bid.event_id == event_id, Bid.idempotency_key == idempotency_key
+            )
         )
-    )
-    ap = result.scalar_one_or_none()
-    if not ap or ap.status != PlayerAuctionStatus.active:
-        raise ValueError("No active player to bid on")
+        prior = existing.scalar_one_or_none()
+        if prior:
+            # Replaying the same submission returns the original result.
+            return prior
 
-    # Prevent captains from bidding on themselves
-    if ap.player_id == captain_id:
-        raise ValueError("You cannot bid on yourself")
+    event = await _get_event(db, event_id)
+    if event.status != AuctionStatus.active:
+        raise AuctionError("Auction is not active")
 
-    # Enforce turn-based bidding: same team/captain cannot bid twice in a row.
-    if ap.current_bidder_id == captain_id:
-        raise ValueError("Wait for another team to bid before bidding again")
+    ap = await _load_active_player(db, event_id)
+    if not ap:
+        raise AuctionError("No player is on the block")
 
-    is_first_bid = ap.current_bidder_id is None
-    if is_first_bid:
-        effective_base = await _resolve_effective_base_price(ap, db)
-        ap.base_price = effective_base
-        ap.current_bid = effective_base
-        if amount < effective_base:
-            raise ValueError(f"Bid must be at least base price ({effective_base})")
-    elif amount <= ap.current_bid:
-        raise ValueError(f"Bid must be higher than current bid ({ap.current_bid})")
+    if expected_version is not None and expected_version != ap.version:
+        raise ConcurrentUpdate(
+            f"The price has moved — current bid is {ap.current_bid}. Review and bid again."
+        )
 
-    # Bid slab-based minimum increment
-    min_step = await _get_bid_increment(db, event_id, ap.current_bid)
-
-    increment = amount - ap.current_bid
-    is_first_bid = ap.current_bidder_id is None
-    
-    # First bid can be at base price (increment = 0), subsequent bids need minimum increment
-    if is_first_bid:
-        if amount < ap.current_bid:
-            raise ValueError(f"Bid must be at least base price: {ap.current_bid}")
-    else:
-        if increment < min_step:
-            raise ValueError(f"Minimum increment is {min_step}")
-    
-    if increment > 0 and increment % min_step != 0:
-        raise ValueError(f"Bid increment must be in multiples of {min_step}")
-
-    # Check captain's team budget first (needed for max bid calculation)
     team_result = await db.execute(
-        select(Team).where(Team.event_id == event_id, Team.captain_id == captain_id)
+        select(Team).where(Team.id == team_id, Team.event_id == event_id)
     )
     team = team_result.scalar_one_or_none()
     if not team:
-        raise ValueError("Captain has no team in this event")
+        raise AuctionError("That team is not in this event")
 
-    # Guard against unrealistic jump bids:
-    # Max increment is min(50% of current bid, 5% of total budget)
-    fifty_percent_increment = ap.current_bid // 2
-    five_percent_of_budget = team.budget // 20  # 5% of budget
-    max_increment = min(fifty_percent_increment, five_percent_of_budget)
-    max_allowed_bid = ap.current_bid + max_increment
-    
-    if amount > max_allowed_bid:
-        if five_percent_of_budget < fifty_percent_increment:
-            raise ValueError(f"Max increment is 5% of budget. Max allowed: {max_allowed_bid}")
+    # A team cannot outbid itself — it would only be raising the price it pays.
+    if ap.current_bid_team_id == team_id:
+        raise AuctionError(f"{team.name} already holds the top bid")
+
+    # A team's captain is theirs already and is not auctioned.
+    if team.captain_id == ap.player_id:
+        raise AuctionError("A team cannot bid for its own captain")
+
+    base_price = await _effective_base_price(ap, db)
+    slabs = await _load_slabs(db, event_id)
+    squad_size = await _squad_size(db, event_id, team_id)
+
+    error = bid_rules.validate_bid(
+        amount=amount,
+        current_bid=ap.current_bid,
+        has_existing_bid=ap.current_bid_team_id is not None,
+        base_price=base_price,
+        slabs=slabs,
+        team_budget=team.budget,
+        team_spent=team.spent,
+        team_squad_size=squad_size,
+        team_max_players=team.max_players,
+        min_squad=event.team_min_players,
+        event_base_price=event.player_base_price,
+    )
+    if error:
+        raise AuctionError(error)
+
+    timing = Timing.for_event(event)
+    redis = await get_redis()
+
+    # ── Soft close ────────────────────────────────────────────────────────────
+    # 1.x reset the clock to the full duration on every bid. Now a bid only
+    # extends the clock when it lands inside the threshold, and each successive
+    # extension on the same player is shorter.
+    new_deadline = None
+    new_extension_count = ap.extension_count
+    if not event.no_timer:
+        raw_deadline = await redis.get(_deadline_key(event_id))
+        current_deadline = float(raw_deadline) if raw_deadline else _now()
+        remaining = current_deadline - _now()
+        if remaining <= timing.threshold_seconds:
+            extension = timing.extension_for(ap.extension_count)
+            new_deadline = _now() + extension
+            new_extension_count = ap.extension_count + 1
         else:
-            raise ValueError(f"Max increment is 50% of current bid. Max allowed: {max_allowed_bid}")
+            new_deadline = current_deadline
 
-    remaining_budget = team.budget - team.spent
-    if amount > remaining_budget:
-        raise ValueError(f"Insufficient budget. Remaining: {remaining_budget}")
-
-    # Check roster capacity
-    if len(team.players) >= team.max_players:
-        raise ValueError("Team roster is full")
-
-    ap.current_bid = amount
-    ap.current_bidder_id = captain_id
+    # ── The guarded write ─────────────────────────────────────────────────────
+    stmt = (
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.version == ap.version,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
+        )
+        .values(
+            current_bid=amount,
+            current_bid_team_id=team_id,
+            version=AuctionPlayer.version + 1,
+            extension_count=new_extension_count,
+        )
+    )
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
+        await db.rollback()
+        raise ConcurrentUpdate(
+            "Another bid landed first. The price has moved — review and bid again."
+        )
 
     bid = Bid(
         event_id=event_id,
-        auction_player_id=auction_player_id,
-        captain_id=captain_id,
+        auction_player_id=ap.id,
+        team_id=team_id,
         amount=amount,
+        idempotency_key=idempotency_key or uuid.uuid4().hex,
+        placed_by_user_id=actor.id if actor else None,
     )
     db.add(bid)
-    await db.commit()
-    await db.refresh(ap)
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.bid_placed,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=team_id, amount=amount,
+        previous_amount=ap.current_bid,
+    )
 
-    # Reset timer to full duration on every valid bid.
-    # Take over timer ownership via Redis to coordinate across workers.
-    redis = await get_redis()
-    worker_id = _get_worker_id()
-    owner_key = _timer_owner_key(event_id)
-    
-    # Take ownership - this signals other workers to stop their timers
-    await redis.set(owner_key, worker_id)
-    await redis.set(_timer_key(event_id), TIMER_SECONDS)
-    
-    # Cancel local timer task if we have one
-    task = _timer_tasks.pop(event_id, None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+    try:
+        await db.commit()
+    except IntegrityError:
+        # The unique (event_id, idempotency_key) constraint caught a duplicate
+        # submission that raced past the Redis check.
+        await db.rollback()
+        existing = await db.execute(
+            select(Bid).where(
+                Bid.event_id == event_id, Bid.idempotency_key == idempotency_key
+            )
+        )
+        prior = existing.scalar_one_or_none()
+        if prior:
+            return prior
+        raise
 
-    # Start new timer on this worker
-    task = asyncio.create_task(_run_timer(event_id, auction_player_id))
-    _timer_tasks[event_id] = task
+    await db.refresh(bid)
+
+    if new_deadline is not None:
+        await redis.set(_deadline_key(event_id), new_deadline)
+        await _schedule_hammer(event_id, ap.id, new_deadline)
 
     await manager.broadcast(
         event_id,
         {
             "type": "new_bid",
             "event_id": event_id,
-            "auction_player_id": auction_player_id,
-            "captain_id": captain_id,
+            "auction_player_id": ap.id,
+            "team_id": team_id,
+            "team_name": team.name,
             "amount": amount,
-            "current_bid": ap.current_bid,
+            "current_bid": amount,
+            "version": ap.version + 1,
+            "deadline_epoch": new_deadline,
+            "server_time": _now(),
         },
     )
     return bid
 
 
-async def hammer_player(event_id: int, auction_player_id: int, db: AsyncSession):
+# ── Hammer ────────────────────────────────────────────────────────────────────
+
+
+async def hammer_player(
+    event_id: int,
+    auction_player_id: int,
+    db: AsyncSession,
+    actor: User | None = None,
+    *,
+    idempotency_key: str | None = None,
+) -> AuctionPlayer | None:
+    """Close the bidding: sold to the top bidder, or unsold.
+
+    Idempotent. 1.x guarded only on `status != active` with no lock, so the
+    auctioneer clicking hammer as the timer fired could produce two TeamPlayer
+    rows and deduct the price twice. The conditional UPDATE below means exactly
+    one caller can move the player out of `active`.
+    """
     result = await db.execute(
-        select(AuctionPlayer).where(AuctionPlayer.id == auction_player_id)
+        select(AuctionPlayer).where(
+            AuctionPlayer.id == auction_player_id, AuctionPlayer.event_id == event_id
+        )
     )
     ap = result.scalar_one_or_none()
-    if not ap or ap.status != PlayerAuctionStatus.active:
-        return
+    if not ap:
+        return None
+    if ap.status != PlayerAuctionStatus.active:
+        # Already hammered by the timer, the other console, or a retry.
+        return ap
 
-    # Clear timer ownership and keys - signals all workers to stop their timers
+    sold = ap.current_bid_team_id is not None
+    new_status = PlayerAuctionStatus.sold if sold else PlayerAuctionStatus.unsold
+    sale_price = ap.current_bid
+    winning_team_id = ap.current_bid_team_id
+
+    # Only one caller wins this.
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.version == ap.version,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
+        )
+        .values(status=new_status, version=AuctionPlayer.version + 1)
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        await db.refresh(ap)
+        return ap
+
     redis = await get_redis()
-    await redis.delete(_timer_owner_key(event_id))
-    await redis.delete(_timer_key(event_id))
+    await redis.delete(_deadline_key(event_id))
     await redis.delete(_active_key(event_id))
 
-    # Cancel local timer task if we have one (and it's not the current task doing auto-hammer)
-    task = _timer_tasks.pop(event_id, None)
-    current = asyncio.current_task()
-    if task and not task.done() and task is not current:
-        task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-
-    if ap.current_bidder_id:
-        ap.status = PlayerAuctionStatus.sold
-
-        team_result = await db.execute(
-            select(Team).where(
-                Team.event_id == event_id,
-                Team.captain_id == ap.current_bidder_id,
-            )
-        )
+    if sold and winning_team_id:
+        team_result = await db.execute(select(Team).where(Team.id == winning_team_id))
         team = team_result.scalar_one_or_none()
         if team:
-            team.spent += ap.current_bid
-            tp = TeamPlayer(team_id=team.id, player_id=ap.player_id, sold_price=ap.current_bid)
-            db.add(tp)
-
-            # Email captain about their new player
-            cap_res = await db.execute(select(User).where(User.id == ap.current_bidder_id))
-            captain = cap_res.scalar_one_or_none()
-            player_res = await db.execute(select(User).where(User.id == ap.player_id))
-            sold_player = player_res.scalar_one_or_none()
-            if captain and sold_player:
-                await enqueue(
-                    "task_send_player_sold",
-                    captain.email, captain.name, sold_player.name,
-                    team.name, ap.current_bid, event_id,
+            # Guarded by uq_team_player_event_player, so even a concurrent
+            # duplicate cannot create a second sale row.
+            db.add(
+                TeamPlayer(
+                    event_id=event_id,
+                    team_id=team.id,
+                    player_id=ap.player_id,
+                    sold_price=sale_price,
                 )
+            )
+            await db.execute(
+                update(Team).where(Team.id == team.id).values(spent=Team.spent + sale_price)
+            )
 
+        await record_audit(
+            db, event_id=event_id, action=AuditAction.player_sold,
+            actor_user_id=actor.id if actor else None,
+            auction_player_id=ap.id, team_id=winning_team_id, amount=sale_price,
+        )
+    else:
+        await record_audit(
+            db, event_id=event_id, action=AuditAction.player_unsold,
+            actor_user_id=actor.id if actor else None,
+            auction_player_id=ap.id,
+        )
+
+    try:
         await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        logger.warning(
+            "Duplicate sale blocked by constraint: event=%s auction_player=%s",
+            event_id, ap.id,
+        )
+        await db.refresh(ap)
+        return ap
+
+    await db.refresh(ap)
+
+    if sold:
         await manager.broadcast(
             event_id,
             {
@@ -832,13 +1087,12 @@ async def hammer_player(event_id: int, auction_player_id: int, db: AsyncSession)
                 "event_id": event_id,
                 "auction_player_id": ap.id,
                 "player_id": ap.player_id,
-                "sold_to_captain_id": ap.current_bidder_id,
-                "sold_price": ap.current_bid,
+                "player_name": ap.player.name if ap.player else None,
+                "sold_to_team_id": winning_team_id,
+                "sold_price": sale_price,
             },
         )
     else:
-        ap.status = PlayerAuctionStatus.unsold
-        await db.commit()
         await manager.broadcast(
             event_id,
             {
@@ -846,86 +1100,269 @@ async def hammer_player(event_id: int, auction_player_id: int, db: AsyncSession)
                 "event_id": event_id,
                 "auction_player_id": ap.id,
                 "player_id": ap.player_id,
+                "player_name": ap.player.name if ap.player else None,
             },
         )
-
-    await db.refresh(ap)
     return ap
 
-async def undo_last_bid(event_id: int, auction_player_id: int, db: AsyncSession) -> dict:
-    """Reverts the latest bid on the active player (Bid Down)."""
-    ap_res = await db.execute(select(AuctionPlayer).where(AuctionPlayer.id == auction_player_id))
-    ap = ap_res.scalar_one_or_none()
-    if not ap or ap.status != PlayerAuctionStatus.active:
-        raise ValueError("Player is not active")
 
-    effective_base = await _resolve_effective_base_price(ap, db)
+# ── Operator corrections ──────────────────────────────────────────────────────
 
-    bids_res = await db.execute(
+
+async def undo_last_bid(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> dict:
+    """Revert the most recent bid on the player currently on the block.
+
+    1.x hard-deleted the Bid row, leaving no record that the bid or the reversal
+    ever happened. The row is now marked reverted and an audit entry is written.
+    """
+    ap = await _load_active_player(db, event_id)
+    if not ap:
+        raise AuctionError("No player is on the block")
+
+    bids_result = await db.execute(
         select(Bid)
-        .where(Bid.event_id == event_id, Bid.auction_player_id == auction_player_id)
+        .where(
+            Bid.event_id == event_id,
+            Bid.auction_player_id == ap.id,
+            Bid.reverted_at.is_(None),
+        )
         .order_by(Bid.id.desc())
     )
-    bids = bids_res.scalars().all()
+    bids = bids_result.scalars().all()
     if not bids:
-        raise ValueError("No bids to undo")
+        raise AuctionError("There are no bids to undo")
 
-    latest_bid = bids[0]
-    await db.delete(latest_bid)
+    latest = bids[0]
+    latest.reverted_at = datetime.now(timezone.utc)
+    latest.reverted_by_user_id = actor.id if actor else None
 
+    previous_amount = ap.current_bid
     if len(bids) > 1:
-        prev_bid = bids[1]
-        ap.current_bid = prev_bid.amount
-        ap.current_bidder_id = prev_bid.captain_id
+        prior = bids[1]
+        ap.current_bid = prior.amount
+        ap.current_bid_team_id = prior.team_id
     else:
-        ap.current_bid = effective_base
-        ap.current_bidder_id = None
+        ap.current_bid = await _effective_base_price(ap, db)
+        ap.current_bid_team_id = None
+    ap.version += 1
 
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.bid_reverted,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=latest.team_id,
+        amount=ap.current_bid, previous_amount=previous_amount,
+        detail=f"Reverted bid #{latest.id} of {latest.amount}",
+    )
     await db.commit()
-    await manager.broadcast(event_id, {
-        "type": "new_bid",
-        "auction_player_id": ap.id,
-        "amount": ap.current_bid,
-        "captain_id": ap.current_bidder_id,
-    })
-    return {"current_bid": ap.current_bid, "current_bidder_id": ap.current_bidder_id}
+    await db.refresh(ap)
+
+    # A distinct message type: 1.x re-used "new_bid", so every screen showed an
+    # auctioneer's correction as though a team had just bid.
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "bid_reverted",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "current_bid": ap.current_bid,
+            "current_bid_team_id": ap.current_bid_team_id,
+            "reverted_amount": latest.amount,
+            "version": ap.version,
+        },
+    )
+    return {
+        "current_bid": ap.current_bid,
+        "current_bid_team_id": ap.current_bid_team_id,
+        "version": ap.version,
+    }
 
 
-async def edit_current_bid(event_id: int, auction_player_id: int, new_amount: int, db: AsyncSession) -> dict:
-    """Manually edits the current bid amount on the active player (Pencil Edit button)."""
-    ap_res = await db.execute(select(AuctionPlayer).where(AuctionPlayer.id == auction_player_id))
-    ap = ap_res.scalar_one_or_none()
-    if not ap or ap.status != PlayerAuctionStatus.active:
-        raise ValueError("Player is not active")
+async def correct_current_bid(
+    event_id: int, new_amount: int, db: AsyncSession, actor: User | None = None
+) -> dict:
+    """Operator override of the current price (mis-keyed amount, verbal bid)."""
+    ap = await _load_active_player(db, event_id)
+    if not ap:
+        raise AuctionError("No player is on the block")
     if new_amount < 0:
-        raise ValueError("Bid amount cannot be negative")
+        raise AuctionError("Bid amount cannot be negative")
 
-    if ap.current_bidder_id is not None:
-        team_res = await db.execute(
-            select(Team).where(Team.event_id == event_id, Team.captain_id == ap.current_bidder_id)
-        )
-        team = team_res.scalar_one_or_none()
+    previous = ap.current_bid
+
+    if ap.current_bid_team_id is not None:
+        team_result = await db.execute(select(Team).where(Team.id == ap.current_bid_team_id))
+        team = team_result.scalar_one_or_none()
         if team and (team.budget - team.spent) < new_amount:
-            raise ValueError(f"{team.name} does not have enough remaining purse ({team.budget - team.spent})")
+            raise AuctionError(
+                f"{team.name} does not have enough purse ({team.budget - team.spent})"
+            )
 
-        bids_res = await db.execute(
+        latest_result = await db.execute(
             select(Bid)
-            .where(Bid.event_id == event_id, Bid.auction_player_id == auction_player_id)
+            .where(
+                Bid.event_id == event_id,
+                Bid.auction_player_id == ap.id,
+                Bid.reverted_at.is_(None),
+            )
             .order_by(Bid.id.desc())
         )
-        latest_bid = bids_res.scalars().first()
-        if latest_bid:
-            latest_bid.amount = new_amount
+        latest = latest_result.scalars().first()
+        if latest:
+            latest.amount = new_amount
 
     ap.current_bid = new_amount
-    if ap.current_bidder_id is None:
+    if ap.current_bid_team_id is None:
         ap.base_price = new_amount
+    ap.version += 1
 
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.bid_corrected,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=ap.current_bid_team_id,
+        amount=new_amount, previous_amount=previous,
+        detail="Manual correction by operator",
+    )
     await db.commit()
-    await manager.broadcast(event_id, {
-        "type": "new_bid",
-        "auction_player_id": ap.id,
-        "amount": ap.current_bid,
-        "captain_id": ap.current_bidder_id,
-    })
-    return {"current_bid": ap.current_bid, "current_bidder_id": ap.current_bidder_id}
+    await db.refresh(ap)
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "bid_corrected",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "current_bid": ap.current_bid,
+            "current_bid_team_id": ap.current_bid_team_id,
+            "previous_amount": previous,
+            "version": ap.version,
+        },
+    )
+    return {
+        "current_bid": ap.current_bid,
+        "current_bid_team_id": ap.current_bid_team_id,
+        "version": ap.version,
+    }
+
+
+# ── Durable hammer scheduling ─────────────────────────────────────────────────
+
+
+async def _schedule_hammer(event_id: int, auction_player_id: int, deadline: float) -> None:
+    """Queue the auto-hammer as a deferred job.
+
+    The job re-reads the deadline from Redis before acting, so a later bid that
+    pushed the deadline out simply causes the earlier job to exit — no job
+    cancellation needed, and nothing is lost if a worker restarts.
+    """
+    await enqueue_at(
+        "task_auto_hammer",
+        deadline,
+        event_id,
+        auction_player_id,
+        job_id=f"hammer:{event_id}:{auction_player_id}:{int(deadline)}",
+    )
+
+
+async def run_due_hammers(db_factory, *, grace_seconds: float = 0.5) -> int:
+    """Watchdog sweep: hammer any event whose deadline has passed.
+
+    Second line of defence behind the deferred job, and the only mechanism when
+    ARQ is not running (local development). Safe to run concurrently with the
+    job because hammer_player is idempotent.
+    """
+    redis = await get_redis()
+    hammered = 0
+    now = _now()
+
+    cursor = 0
+    keys: list[str] = []
+    while True:
+        cursor, batch = await redis.scan(cursor, match="auction:*:deadline", count=200)
+        keys.extend(batch)
+        if cursor == 0:
+            break
+
+    for key in keys:
+        raw = await redis.get(key)
+        if raw is None:
+            continue
+        try:
+            deadline = float(raw)
+            event_id = int(str(key).split(":")[1])
+        except (ValueError, IndexError):
+            continue
+
+        if now < deadline + grace_seconds:
+            continue
+
+        active_raw = await redis.get(_active_key(event_id))
+        if not active_raw:
+            await redis.delete(key)
+            continue
+
+        async with db_factory() as db:
+            try:
+                await hammer_player(event_id, int(active_raw), db)
+                hammered += 1
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Watchdog hammer failed for event %s: %s", event_id, exc)
+
+    return hammered
+
+
+async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -> None:
+    """Entry point for the deferred ARQ job."""
+    redis = await get_redis()
+    raw = await redis.get(_deadline_key(event_id))
+    if raw is None:
+        # Paused, hammered, or the player was pulled.
+        return
+    deadline = float(raw)
+    if _now() < deadline - 0.5:
+        # A later bid extended the clock; a newer job owns this player.
+        return
+    await hammer_player(event_id, auction_player_id, db)
+
+
+# ── Reset (development / mock runs) ───────────────────────────────────────────
+
+
+async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> None:
+    """Return an event to `ready` with empty rosters and full purses."""
+    event = await _get_event(db, event_id)
+
+    players_result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
+    )
+    for ap in players_result.scalars().all():
+        ap.status = PlayerAuctionStatus.pending
+        ap.current_bid = 0
+        ap.current_bid_team_id = None
+        ap.version += 1
+        ap.extension_count = 0
+
+    await db.execute(
+        TeamPlayer.__table__.delete().where(TeamPlayer.event_id == event_id)
+    )
+    await db.execute(
+        Bid.__table__.delete().where(Bid.event_id == event_id)
+    )
+    await db.execute(
+        update(Team).where(Team.event_id == event_id).values(spent=0, budget=event.team_budget)
+    )
+
+    event.status = AuctionStatus.ready
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.auction_reset,
+        actor_user_id=actor.id if actor else None,
+    )
+    await db.commit()
+
+    redis = await get_redis()
+    await redis.delete(_active_key(event_id))
+    await redis.delete(_deadline_key(event_id))
+
+    state = await get_auction_state(event_id, db)
+    await manager.broadcast(event_id, {**state, "type": "auction_reset"})

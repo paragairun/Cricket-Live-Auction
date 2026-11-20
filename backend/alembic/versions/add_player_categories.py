@@ -22,7 +22,7 @@ def upgrade() -> None:
         sa.Column('name', sa.String(100), nullable=False),
         sa.Column('base_price', sa.Integer(), default=1000, nullable=False),
         sa.Column('sort_order', sa.Integer(), default=0, nullable=False),
-        sa.Column('auction_first', sa.Boolean(), default=False, nullable=False),
+        sa.Column('auction_first', sa.Boolean(), server_default=sa.false(), nullable=False),
     )
     op.add_column('auction_players', sa.Column('category_id', sa.Integer(), sa.ForeignKey('player_categories.id'), nullable=True))
 

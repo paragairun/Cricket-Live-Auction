@@ -1,80 +1,95 @@
+"""Live auction endpoints.
+
+Version: 2.0.0 (2026-11-20)
+
+Changed from 1.x:
+  - Every operating endpoint now depends on `require_event_access`, which loads
+    the event and checks the caller's role ON THAT EVENT. Previously they used
+    `require_role(ROLE_AUCTIONEER)`, which only checked the global roles array —
+    so any user holding the auctioneer role anywhere could hammer, pause, finish,
+    re-pick players or rewrite bids on ANY event on the platform. `reset-mock-
+    auction` was worse still: it accepted any user with the organizer role, with
+    no guard against running mid-auction.
+  - The WebSocket rejects a missing or invalid token. It used to declare
+    `token: str = ""`, resolve an invalid token to None, accept the connection
+    anyway and immediately push full auction state — every team's budget, every
+    bid — to anyone who knew an event id.
+  - Bids are placed for a TEAM by an operator. The captain bidding path is gone.
+"""
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.core.database import AsyncSessionLocal
-from app.core.database import get_db
-from app.core.deps import get_current_user, require_role
-from app.core.redis import get_redis
-from app.core.security import decode_token
-from app.models.user import User, ROLE_AUCTIONEER, ROLE_CAPTAIN
-from app.models.auction import AuctionEvent, AuctionPlayer, AuctionStatus, PlayerAuctionStatus, Team
-from app.schemas.auction import (
-    AuctionPlayerOut,
-    AuctionEventOut,
-    BidCreate,
-    BidUpdateAmount,
-    BidOut,
-    NextPlayerRequest,
-    TeamOut,
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
 )
-from app.services import auction_service
-from app.ws.manager import manager
-from app.models.user import User, ROLE_AUCTIONEER, ROLE_CAPTAIN, ROLE_ORGANIZER
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.deps import (
+    AUCTION_OPERATORS,
+    EventContext,
+    authorize_event_socket,
+    get_current_user,
+    require_event_access,
+)
 from app.models.auction import (
+    AuctionAuditLog,
     AuctionEvent,
     AuctionPlayer,
     AuctionStatus,
     PlayerAuctionStatus,
     Team,
-    TeamPlayer,
 )
+from app.models.user import User
+from app.schemas.auction import (
+    AuctionEventOut,
+    AuctionPlayerOut,
+    AuditLogOut,
+    BidCorrection,
+    BidCreate,
+    BidOut,
+    HammerRequest,
+    NextPlayerRequest,
+    TeamOut,
+)
+from app.services import auction_service
+from app.services.auction_service import AuctionError, ConcurrentUpdate
+from app.ws.manager import manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auction", tags=["auction"])
 
+# Operator-only dependency, reused across every mutating endpoint below.
+OperatorCtx = Depends(require_event_access(*AUCTION_OPERATORS))
+# Any authenticated user, with their event-scoped roles resolved.
+ViewerCtx = Depends(require_event_access())
 
-async def _get_active_player(event_id: int, db: AsyncSession) -> AuctionPlayer | None:
-    # Prefer Redis pointer when available to avoid ambiguity if bad historical data
-    # has more than one row marked as active.
-    redis = await get_redis()
-    active_player_id = await redis.get(f"auction:{event_id}:active_player")
-    if active_player_id:
-        by_id = await db.execute(
-            select(AuctionPlayer).where(
-                AuctionPlayer.id == int(active_player_id),
-                AuctionPlayer.event_id == event_id,
-            )
-        )
-        ap = by_id.scalar_one_or_none()
-        if ap:
-            return ap
 
-    result = await db.execute(
-        select(AuctionPlayer).where(
-            AuctionPlayer.event_id == event_id,
-            AuctionPlayer.status == PlayerAuctionStatus.active,
-        )
-    )
-    return result.scalars().first()
+def _handle(exc: Exception) -> HTTPException:
+    if isinstance(exc, ConcurrentUpdate):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+# ── Read ──────────────────────────────────────────────────────────────────────
 
 
 @router.get("/events/{event_id}", response_model=AuctionEventOut)
-async def get_event(
-    event_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return AuctionEventOut.model_validate(event)
+async def get_event(ctx: EventContext = ViewerCtx):
+    return AuctionEventOut.model_validate(ctx.event)
 
 
 @router.get("/events/{event_id}/state")
 async def get_state(
     event_id: int,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = ViewerCtx,
     db: AsyncSession = Depends(get_db),
 ):
     return await auction_service.get_auction_state(event_id, db)
@@ -83,22 +98,20 @@ async def get_state(
 @router.get("/events/{event_id}/summary")
 async def get_summary(
     event_id: int,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = ViewerCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    if event.status != AuctionStatus.completed:
-        raise HTTPException(status_code=400, detail="Summary is available after auction completion")
+    if ctx.event.status != AuctionStatus.completed and not ctx.is_operator:
+        raise HTTPException(
+            status_code=400, detail="Summary is available once the auction is complete"
+        )
     return await auction_service.get_auction_summary(event_id, db)
 
 
 @router.get("/events/{event_id}/players", response_model=list[AuctionPlayerOut])
 async def list_players(
     event_id: int,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = ViewerCtx,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -110,228 +123,232 @@ async def list_players(
 @router.get("/events/{event_id}/players-info")
 async def list_players_info(
     event_id: int,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = ViewerCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Lightweight player info for captain/spectator views.
-    """
-    from app.models.user import User as UserModel
-
+    """Lightweight roster for the auctioneer console and spectator view."""
     result = await db.execute(
-        select(AuctionPlayer, UserModel)
-        .join(UserModel, UserModel.id == AuctionPlayer.player_id)
-        .where(AuctionPlayer.event_id == event_id)
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
     )
-    rows = result.all()
     return [
         {
             "auction_player_id": ap.id,
-            "player_id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "profile_photo": user.profile_photo,
+            "player_id": ap.player_id,
+            "name": ap.player.name if ap.player else f"Player #{ap.player_id}",
+            "profile_photo": ap.player.profile_photo if ap.player else None,
+            "batting_rating": ap.player.batting_rating if ap.player else None,
+            "bowling_rating": ap.player.bowling_rating if ap.player else None,
+            "fielding_rating": ap.player.fielding_rating if ap.player else None,
+            "base_price": ap.base_price,
+            "category_id": ap.category_id,
+            "status": ap.status,
         }
-        for ap, user in rows
+        for ap in result.scalars().all()
     ]
 
 
 @router.get("/events/{event_id}/teams", response_model=list[TeamOut])
 async def list_teams(
     event_id: int,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = ViewerCtx,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Team).where(Team.event_id == event_id))
     return [TeamOut.model_validate(t) for t in result.scalars().all()]
 
 
-@router.get("/events/{event_id}/my-team", response_model=TeamOut)
-async def my_team(
+@router.get("/events/{event_id}/audit", response_model=list[AuditLogOut])
+async def list_audit_log(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_CAPTAIN)),
+    limit: int = 200,
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
+    """Every operator action on this event, newest first. New in 2.0.0."""
     result = await db.execute(
-        select(Team).where(Team.event_id == event_id, Team.captain_id == current_user.id)
+        select(AuctionAuditLog)
+        .where(AuctionAuditLog.event_id == event_id)
+        .order_by(AuctionAuditLog.id.desc())
+        .limit(min(limit, 1000))
     )
-    team = result.scalar_one_or_none()
-    if not team:
-        raise HTTPException(status_code=404, detail="No team found for this captain")
-    return TeamOut.model_validate(team)
+    return [AuditLogOut.model_validate(row) for row in result.scalars().all()]
+
+
+# ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 
 @router.post("/events/{event_id}/start", response_model=AuctionEventOut)
 async def start_auction(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        event = await auction_service.start_auction(event_id, db)
+        event = await auction_service.start_auction(event_id, db, actor=ctx.user)
         return AuctionEventOut.model_validate(event)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except AuctionError as exc:
+        raise _handle(exc)
 
 
 @router.post("/events/{event_id}/pause", response_model=AuctionEventOut)
 async def pause_auction(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        event = await auction_service.pause_auction(event_id, db)
+        event = await auction_service.pause_auction(event_id, db, actor=ctx.user)
         return AuctionEventOut.model_validate(event)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except AuctionError as exc:
+        raise _handle(exc)
 
 
 @router.post("/events/{event_id}/finish", response_model=AuctionEventOut)
 async def finish_auction(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        event = await auction_service.finish_auction(event_id, db)
+        event = await auction_service.finish_auction(event_id, db, actor=ctx.user)
         return AuctionEventOut.model_validate(event)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except AuctionError as exc:
+        raise _handle(exc)
+
+
+# ── Running the auction ───────────────────────────────────────────────────────
 
 
 @router.post("/events/{event_id}/next-player", response_model=AuctionPlayerOut)
 async def next_player(
     event_id: int,
     payload: NextPlayerRequest,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event or event.status != AuctionStatus.active:
-        raise HTTPException(status_code=400, detail="Auction is not active")
-
     try:
-        ap = await auction_service.set_next_player(event_id, payload.player_id, db)
+        ap = await auction_service.set_next_player(
+            event_id,
+            payload.auction_player_id,
+            db,
+            actor=ctx.user,
+            idempotency_key=payload.idempotency_key,
+        )
         return AuctionPlayerOut.model_validate(ap)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except AuctionError as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/pull-player", response_model=AuctionPlayerOut)
+async def pull_player(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Take the current player off the block without selling. New in 2.0.0."""
+    try:
+        ap = await auction_service.pull_player(event_id, db, actor=ctx.user)
+        return AuctionPlayerOut.model_validate(ap)
+    except AuctionError as exc:
+        raise _handle(exc)
 
 
 @router.post("/events/{event_id}/bid", response_model=BidOut)
 async def place_bid(
     event_id: int,
     payload: BidCreate,
-    current_user: User = Depends(get_current_user),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event or event.status != AuctionStatus.active:
-        raise HTTPException(status_code=400, detail="Auction is not active")
+    """Place a bid on behalf of a team.
 
-    if current_user.has_role(ROLE_AUCTIONEER) or current_user.has_role(ROLE_ORGANIZER):
-        if not payload.captain_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Auctioneer must specify which team/captain is bidding",
-            )
-        effective_captain_id = payload.captain_id
-    elif current_user.has_role(ROLE_CAPTAIN):
-        team_res = await db.execute(
-            select(Team).where(
-                Team.event_id == event_id, Team.captain_id == current_user.id
-            )
-        )
-        if not team_res.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="You are not a captain in this event")
-        effective_captain_id = current_user.id
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized to bid")
-
-    active_player = await _get_active_player(event_id, db)
-    if not active_player:
-        raise HTTPException(status_code=400, detail="No active player to bid on")
-
+    Bids are entered by an operator at the auction. There is no captain bidding
+    path: captains are roster players, not system actors.
+    """
     try:
         bid = await auction_service.place_bid(
-            event_id, active_player.id, effective_captain_id, payload.amount, db
+            event_id,
+            payload.team_id,
+            payload.amount,
+            db,
+            actor=ctx.user,
+            idempotency_key=payload.idempotency_key,
+            expected_version=payload.expected_version,
         )
         return BidOut.model_validate(bid)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except AuctionError as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/hammer")
+async def hammer(
+    event_id: int,
+    payload: HammerRequest | None = None,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    redis_key = payload.idempotency_key if payload else None
+    active = await auction_service._load_active_player(db, event_id)
+    if not active:
+        raise HTTPException(status_code=400, detail="No player is on the block")
+    try:
+        ap = await auction_service.hammer_player(
+            event_id, active.id, db, actor=ctx.user, idempotency_key=redis_key
+        )
+    except AuctionError as exc:
+        raise _handle(exc)
+    return {
+        "detail": "hammered",
+        "status": ap.status if ap else None,
+        "sold_price": ap.current_bid if ap else None,
+        "sold_to_team_id": ap.current_bid_team_id if ap else None,
+    }
 
 
 @router.post("/events/{event_id}/bid-down")
 async def bid_down(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    """Revert the last bid on the active player (Bid Down / Undo)."""
-    active_player = await _get_active_player(event_id, db)
-    if not active_player:
-        raise HTTPException(status_code=400, detail="No active player")
+    """Revert the last bid. The bid row is marked reverted, never deleted."""
     try:
-        return await auction_service.undo_last_bid(event_id, active_player.id, db)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return await auction_service.undo_last_bid(event_id, db, actor=ctx.user)
+    except AuctionError as exc:
+        raise _handle(exc)
 
 
 @router.patch("/events/{event_id}/bid-edit")
-async def edit_current_bid(
+async def correct_bid(
     event_id: int,
-    payload: BidUpdateAmount,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    payload: BidCorrection,
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually override/edit the current bid amount on the active player."""
-    active_player = await _get_active_player(event_id, db)
-    if not active_player:
-        raise HTTPException(status_code=400, detail="No active player")
     try:
-        return await auction_service.edit_current_bid(event_id, active_player.id, payload.amount, db)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.post("/events/{event_id}/hammer")
-async def hammer(
-    event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
-    db: AsyncSession = Depends(get_db),
-):
-    active_player = await _get_active_player(event_id, db)
-    if not active_player:
-        raise HTTPException(status_code=400, detail="No active player")
-
-    await auction_service.hammer_player(event_id, active_player.id, db)
-    return {"detail": "hammered"}
+        return await auction_service.correct_current_bid(
+            event_id, payload.amount, db, actor=ctx.user
+        )
+    except AuctionError as exc:
+        raise _handle(exc)
 
 
 @router.post("/events/{event_id}/re-auction-all-unsold")
 async def re_auction_all_unsold(
     event_id: int,
-    current_user: User = Depends(require_role(ROLE_AUCTIONEER)),
+    ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return all unsold players to the pending pool so they can be
-    re-auctioned via 'Random Next' or picked individually.
-    """
-    result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    if event.status != AuctionStatus.active:
+    """Return unsold players to the pending pool for a second round."""
+    if ctx.event.status != AuctionStatus.active:
         raise HTTPException(status_code=400, detail="Auction is not active")
 
-    # Don't re-auction while a player is currently being bid on
-    active_player = await _get_active_player(event_id, db)
-    if active_player:
-        raise HTTPException(status_code=400, detail="Cannot re-auction while a player is active")
+    active = await auction_service._load_active_player(db, event_id)
+    if active:
+        raise HTTPException(
+            status_code=400, detail="Cannot re-auction while a player is on the block"
+        )
 
-    # Reset all unsold players to pending
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -339,70 +356,105 @@ async def re_auction_all_unsold(
         )
     )
     unsold = result.scalars().all()
-
-    count = len(unsold)
     for ap in unsold:
         ap.status = PlayerAuctionStatus.pending
-
+        ap.version += 1
+        ap.extension_count = 0
     await db.commit()
 
-    return {
-        "detail": f"{count} unsold player(s) returned to the pool",
-        "count": count,
-    }
+    state = await auction_service.get_auction_state(event_id, db)
+    await manager.broadcast(event_id, state)
+
+    return {"detail": f"{len(unsold)} player(s) returned to the pool", "count": len(unsold)}
 
 
-# WebSocket endpoint
+@router.post("/events/{event_id}/reset")
+async def reset_auction(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear all bids, rosters and purses and return the event to `ready`.
+
+    1.x exposed this as `reset-mock-auction` guarded only by the global
+    organizer role, so any organizer on the platform could wipe any event — and
+    nothing stopped it running mid-auction.
+    """
+    if ctx.event.status == AuctionStatus.active:
+        raise HTTPException(
+            status_code=400,
+            detail="Pause the auction before resetting it",
+        )
+    try:
+        await auction_service.reset_auction(event_id, db, actor=ctx.user)
+    except AuctionError as exc:
+        raise _handle(exc)
+    return {"status": "success", "message": "Auction reset. Budgets and rosters cleared."}
+
+
+# ── Viewer stats ──────────────────────────────────────────────────────────────
+
+
+@router.get("/events/{event_id}/viewer-stats")
+async def get_viewer_stats(
+    event_id: int,
+    ctx: EventContext = ViewerCtx,
+):
+    """Requires authentication — 1.x had no auth dependency on this at all."""
+    if ctx.event.status == AuctionStatus.completed:
+        return {"live_viewers": 0, "total_unique_viewers": ctx.event.total_viewers or 0}
+    return await manager.get_viewer_stats(event_id)
+
+
+# ── WebSocket ─────────────────────────────────────────────────────────────────
+
+
 @router.websocket("/ws/{event_id}")
 async def websocket_endpoint(event_id: int, websocket: WebSocket, token: str = ""):
-    # Validate event exists before accepting connection
+    """Live auction feed.
 
+    A valid token for a user permitted to see this event is mandatory. 1.x
+    accepted anonymous connections and pushed the full state to them.
+    """
     async with AsyncSessionLocal() as db:
-        event_result = await db.execute(
-            select(AuctionEvent).where(AuctionEvent.id == event_id)
-        )
-        event = event_result.scalar_one_or_none()
-        if not event:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
+        user = await authorize_event_socket(event_id, token, db)
 
-    # Validate token for WS connections
-    user_id = decode_token(token) if token else None
+    if user is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
-    await manager.connect(event_id, websocket, user_id)
-    
-    # Heartbeat task to detect dead connections
-    heartbeat_task = None
-    
+    await manager.connect(event_id, websocket, user.id)
+
+    heartbeat_task: asyncio.Task | None = None
+
     async def send_heartbeat():
-        """Send ping every 30 seconds to keep connection alive and detect dead clients."""
+        """Server ping every 25s. The client replies and runs its own watchdog."""
         try:
             while True:
-                await asyncio.sleep(30)
-                await websocket.send_json({"type": "ping"})
+                await asyncio.sleep(25)
+                await websocket.send_json({"type": "ping", "server_time": asyncio.get_event_loop().time()})
         except Exception:
             pass
-    
+
     try:
-        # Start heartbeat task
         heartbeat_task = asyncio.create_task(send_heartbeat())
-        
-        # Send current state on connect
+
         async with AsyncSessionLocal() as db:
             state = await auction_service.get_auction_state(event_id, db)
         await manager.send_personal(websocket, state)
 
-        # Keep connection alive and handle incoming messages
         while True:
-            data = await websocket.receive_text()
-            # Clients can send ping/pong to keep alive
+            raw = await websocket.receive_text()
+            # Clients send {"type":"pong"} or {"type":"resync"}.
+            if '"resync"' in raw:
+                async with AsyncSessionLocal() as db:
+                    state = await auction_service.get_auction_state(event_id, db)
+                await manager.send_personal(websocket, state)
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        # Log unexpected errors but don't crash
-        print(f"WebSocket error for event {event_id}: {e}")
+    except Exception as exc:
+        logger.info("WebSocket closed for event %s: %s", event_id, exc)
     finally:
-        # Always clean up - cancel heartbeat and disconnect
         if heartbeat_task:
             heartbeat_task.cancel()
             try:
@@ -410,101 +462,3 @@ async def websocket_endpoint(event_id: int, websocket: WebSocket, token: str = "
             except asyncio.CancelledError:
                 pass
         await manager.disconnect(event_id, websocket)
-
-
-@router.get("/events/{event_id}/viewer-stats")
-async def get_viewer_stats(event_id: int, db: AsyncSession = Depends(get_db)):
-    """Get live and total unique viewer counts for an event.
-    For completed events, returns persisted count from database.
-    """
-    # Check if event is completed - use persisted DB count
-    result = await db.execute(
-        select(AuctionEvent).where(AuctionEvent.id == event_id)
-    )
-    event = result.scalar_one_or_none()
-    
-    if event and event.status == AuctionStatus.completed:
-        # Return persisted count for completed events
-        return {
-            "live_viewers": 0,
-            "total_unique_viewers": event.total_viewers or 0,
-        }
-    
-    # For active/non-completed events, get from Redis
-    stats = await manager.get_viewer_stats(event_id)
-    return stats
-
-@router.post("/events/{event_id}/reset-mock-auction", response_model=dict)
-async def reset_mock_auction(
-    event_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Reset all players, team budgets, rosters, Redis active pointers, and event status
-    back to ready state. Allowed for the event's organizer or assigned auctioneer.
-    """
-    event_res = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
-    event = event_res.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    is_organizer = event.organizer_id == current_user.id
-    is_assigned_auctioneer = event.auctioneer_id == current_user.id
-    if not (is_organizer or is_assigned_auctioneer or current_user.has_role(ROLE_ORGANIZER)):
-        raise HTTPException(status_code=403, detail="Not authorized to reset this auction")
-
-    # 1. Reset event status back to ready so auctioneer can start fresh
-    event.status = AuctionStatus.ready
-
-    # 2. Reset all AuctionPlayers back to pending
-    players_res = await db.execute(select(AuctionPlayer).where(AuctionPlayer.event_id == event_id))
-    players = players_res.scalars().all()
-    for ap in players:
-        ap.status = PlayerAuctionStatus.pending
-        ap.current_bid = 0
-        ap.current_bidder_id = None
-
-    # 3. Clear all TeamPlayers (sold player rosters)
-    await db.execute(
-        TeamPlayer.__table__.delete().where(
-            TeamPlayer.team_id.in_(
-                select(Team.id).where(Team.event_id == event_id)
-            )
-        )
-    )
-
-    # 4. Reset all Team budgets and re-add captains
-    teams_res = await db.execute(select(Team).where(Team.event_id == event_id))
-    teams = teams_res.scalars().all()
-    for team in teams:
-        team.budget = event.team_budget
-        team.spent = 0
-        if team.captain_id:
-            db.add(TeamPlayer(team_id=team.id, player_id=team.captain_id, sold_price=0))
-
-            cap_ap_res = await db.execute(
-                select(AuctionPlayer).where(
-                    AuctionPlayer.event_id == event_id,
-                    AuctionPlayer.player_id == team.captain_id,
-                )
-            )
-            cap_ap = cap_ap_res.scalar_one_or_none()
-            if cap_ap:
-                cap_ap.status = PlayerAuctionStatus.sold
-                cap_ap.current_bid = 0
-                cap_ap.current_bidder_id = team.captain_id
-
-    await db.commit()
-
-    # 5. Clear Redis active player pointer & broadcast fresh state to all WebSockets
-    redis = await get_redis()
-    await redis.delete(f"auction:{event_id}:active_player")
-
-    fresh_state = await auction_service.get_auction_state(event_id, db)
-    await manager.broadcast(event_id, fresh_state)
-
-    return {
-        "status": "success",
-        "message": "Mock auction reset! All bids cleared, budgets restored, and screens synced.",
-    }
