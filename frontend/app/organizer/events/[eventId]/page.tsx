@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import api, { describeError } from "@/lib/api";
+import { derivePublishState, isDraftState } from "@/lib/eventStatus";
 import UserSearchInvite from "@/components/UserSearchInvite";
 
 interface User {
@@ -1078,6 +1079,11 @@ export default function OrganizerEventDetailPage() {
   const eid = parseInt(eventId);
 
   const [event, setEvent] = useState<EventDetail | null>(null);
+  // Without these the page rendered its status banner while `event` was still
+  // null, and the banner was derived by negation (!isDraft && !isLive) — so an
+  // unloaded or failed event read as "Published".
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 2.0.0: one list. 1.x kept "eligible players" (User rows matching the
   // event's allowed email domains) separate from the players added to the
   // auction. Players are roster records now, created straight into the event.
@@ -1120,7 +1126,9 @@ export default function OrganizerEventDetailPage() {
 
   const fetchAll = useCallback(async () => {
     const [evRes, aPlayers, teamsRes, readinessRes, slabsRes, catsRes] = await Promise.all([
-      api.get(`/auction/events/${eid}`).catch(() => null),
+      // Previously .catch(() => null), which hid a real failure and left
+      // `event` null — indistinguishable from "still loading".
+      api.get(`/auction/events/${eid}`),
       api.get(`/organizer/events/${eid}/players`),
       api.get(`/organizer/events/${eid}/teams`),
       api.get(`/events/${eid}/readiness`),
@@ -1129,6 +1137,7 @@ export default function OrganizerEventDetailPage() {
     ]);
     if (evRes) {
       setEvent(evRes.data);
+      setLoadError(null);
       setScheduleInput(toLocalDatetimeValue(evRes.data.scheduled_at));
       setSettingsForm({
         budget: evRes.data.team_budget?.toString() || "100000",
@@ -1156,12 +1165,19 @@ export default function OrganizerEventDetailPage() {
   }, [eid]);
 
   useEffect(() => {
-    fetchAll().catch((err) => {
-      // Only redirect on 401 auth errors; other errors stay visible
-      if (err.response?.status === 401) {
-        router.push("/auth/login");
-      }
-    });
+    setLoading(true);
+    fetchAll()
+      .catch((err) => {
+        if (err.response?.status === 401) {
+          router.push("/auth/login");
+          return;
+        }
+        setLoadError(
+          err.response?.data?.detail ||
+            "Could not load this event. Check the connection and reload."
+        );
+      })
+      .finally(() => setLoading(false));
   }, [eid, fetchAll]);
 
   const createTeam = async (e: React.FormEvent) => {
@@ -1370,13 +1386,13 @@ export default function OrganizerEventDetailPage() {
 
   const scheduledDate = event?.scheduled_at ? new Date(event.scheduled_at) : null;
   const now = new Date();
-  const isLive =
-    !!event &&
-    (event.status === "active" ||
-      event.status === "paused" ||
-      event.status === "completed" ||
-      (event.status === "ready" && scheduledDate !== null && scheduledDate <= now));
-  const isDraft = event?.status === "draft";
+  // Both via lib/eventStatus so the page has one definition of these, under test.
+  const isDraft = isDraftState(event);
+
+  // Derived by lib/eventStatus, which is unit-tested. Deliberately NOT derived
+  // by negating the other states — that is what made a null event read as
+  // "Published".
+  const publishState = derivePublishState(event, { loading, now });
 
   const TABS = [
     { key: "players", label: "Players", count: rosterPlayers.length },
@@ -1421,16 +1437,22 @@ export default function OrganizerEventDetailPage() {
               </p>
             </div>
 
-            {isDraft && (
-              <button
-                className="btn-primary"
-                onClick={markReady}
-                disabled={markingReady || !readiness?.ready}
-              >
-                {markingReady ? "Checking..." : "Mark Ready"}
-              </button>
+            {publishState === "loading" && (
+              <span className="text-gray-500 text-sm">Loading…</span>
             )}
-            {!isDraft && !isLive && (
+            {publishState === "draft" && (
+              <div className="flex items-center gap-3">
+                <span className="text-gray-400 text-sm font-medium">Draft</span>
+                <button
+                  className="btn-primary"
+                  onClick={markReady}
+                  disabled={markingReady || !readiness?.ready}
+                >
+                  {markingReady ? "Checking..." : "Mark Ready"}
+                </button>
+              </div>
+            )}
+            {publishState === "published" && (
               <>
                 <span className="text-amber-400 text-sm font-medium">✓ Published (waiting for start)</span>
                 <button
@@ -1442,11 +1464,32 @@ export default function OrganizerEventDetailPage() {
                 </button>
               </>
             )}
-            {isLive && (
+            {publishState === "live" && (
               <span className="text-green-400 text-sm font-medium">✓ Event is live</span>
+            )}
+            {publishState === "completed" && (
+              <span className="text-blue-400 text-sm font-medium">✓ Auction complete</span>
             )}
           </div>
         </div>
+
+        {loadError && (
+          <div className="rounded-lg p-3 mb-4 text-sm bg-red-500/20 text-red-300 flex items-center justify-between gap-4">
+            <span>{loadError}</span>
+            <button
+              onClick={() => {
+                setLoading(true);
+                setLoadError(null);
+                fetchAll()
+                  .catch(() => setLoadError("Still cannot load this event."))
+                  .finally(() => setLoading(false));
+              }}
+              className="text-xs underline shrink-0"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Toast */}
         {toast && (
@@ -1561,7 +1604,7 @@ export default function OrganizerEventDetailPage() {
                     onAssigned={async () => { await fetchAll(); showToast("ok", "Auctioneer assigned!"); }}
                   />
                 </div>
-                {!isDraft && (
+                {publishState !== "draft" && publishState !== "loading" && (
                   <p className="text-[11px] text-gray-500 mt-2">
                     Unpublish the event to change the auctioneer.
                   </p>
@@ -1877,7 +1920,7 @@ export default function OrganizerEventDetailPage() {
                     </div>
                   </div>
 
-                  {!isDraft && (
+                  {publishState !== "draft" && publishState !== "loading" && (
                     <p className="text-[11px] text-gray-500 mt-4 pt-4 border-t border-gray-800">
                       Unpublish the event to adjust settings.
                     </p>
