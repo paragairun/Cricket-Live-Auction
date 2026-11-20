@@ -96,6 +96,41 @@ router = APIRouter(prefix="/organizer", tags=["organizer"])
 SetupCtx = Depends(require_event_access(EVENT_ORGANIZER, EVENT_ADMIN))
 
 
+async def _resolve_base_price(
+    db: AsyncSession,
+    event: AuctionEvent,
+    category_id: int | None,
+    requested: int | None = None,
+) -> int:
+    """The authoritative base price for a player.
+
+    A category's price governs. When a player is in a category, the per-player
+    figure and the event default are both out of the picture entirely — the
+    whole point of a category is that everyone in it starts at the same number.
+
+    Only when there is no category (or the category has no price set) does a
+    per-player figure apply, falling back to the event default.
+    """
+    if category_id:
+        result = await db.execute(
+            select(PlayerCategory).where(
+                PlayerCategory.id == category_id,
+                PlayerCategory.event_id == event.id,
+            )
+        )
+        category = result.scalar_one_or_none()
+        if not category:
+            raise HTTPException(
+                status_code=400, detail="Category not found in this event"
+            )
+        if category.base_price and category.base_price > 0:
+            return category.base_price
+
+    if requested is not None and requested > 0:
+        return requested
+    return event.player_base_price
+
+
 def _guard_not_live(ctx: EventContext, what: str) -> None:
     """Block destructive setup changes while bidding is in progress."""
     if ctx.event.status == AuctionStatus.active:
@@ -227,18 +262,7 @@ async def add_player(
     db.add(player)
     await db.flush()
 
-    resolved_base = base_price if base_price is not None else ctx.event.player_base_price
-    if category_id:
-        cat = await db.execute(
-            select(PlayerCategory).where(
-                PlayerCategory.id == category_id, PlayerCategory.event_id == event_id
-            )
-        )
-        category = cat.scalar_one_or_none()
-        if not category:
-            raise HTTPException(status_code=400, detail="Category not found in this event")
-        if category.base_price > 0:
-            resolved_base = category.base_price
+    resolved_base = await _resolve_base_price(db, ctx.event, category_id, base_price)
 
     ap = AuctionPlayer(
         event_id=event_id,
@@ -356,6 +380,19 @@ async def edit_player_auction_settings(
 
     for field, value in data.items():
         setattr(ap, field, value)
+
+    # Recompute whenever either input changed. The edit form carries whatever
+    # base price was last stored, so without this a player moved into a
+    # category would keep the old figure — which is exactly the bug: assigning
+    # "Diamond (1000000)" left the player sitting at a base price of 1000.
+    if "category_id" in data or "base_price" in data:
+        ap.base_price = await _resolve_base_price(
+            db,
+            ctx.event,
+            ap.category_id,
+            data.get("base_price") if "base_price" in data else ap.base_price,
+        )
+
     ap.version += 1
 
     await db.commit()
@@ -498,15 +535,21 @@ async def import_players_csv(
                     f"Row {line_no}: unknown category '{category_name}' — player added without one"
                 )
 
-        base_price = ctx.event.player_base_price
+        requested_base = None
         raw_base = get(row, "base_price")
         if raw_base:
             try:
-                base_price = int(float(raw_base))
+                requested_base = int(float(raw_base))
             except ValueError:
-                errors.append(f"Row {line_no}: invalid base_price '{raw_base}' — using default")
-        elif category and category.base_price > 0:
-            base_price = category.base_price
+                errors.append(f"Row {line_no}: invalid base_price '{raw_base}' — ignored")
+        if raw_base and category and category.base_price > 0:
+            errors.append(
+                f"Row {line_no}: base_price ignored — category "
+                f"'{category.name}' sets it to {category.base_price}"
+            )
+        base_price = await _resolve_base_price(
+            db, ctx.event, category.id if category else None, requested_base
+        )
 
         age = None
         raw_age = get(row, "age")
@@ -1045,8 +1088,30 @@ async def update_player_category(
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
         setattr(category, field, value)
+
+    # The category's price governs every player in it, so a change here has to
+    # reach them. Without this the roster keeps showing the old figure and the
+    # two drift apart. Players already sold or on the block are left alone —
+    # their price is settled.
+    repriced = 0
+    if "base_price" in data and category.base_price and category.base_price > 0:
+        members = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.category_id == cat_id,
+                AuctionPlayer.status.in_(
+                    [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold]
+                ),
+            )
+        )
+        for ap in members.scalars().all():
+            if ap.base_price != category.base_price:
+                ap.base_price = category.base_price
+                ap.version += 1
+                repriced += 1
 
     try:
         await db.commit()
@@ -1054,6 +1119,12 @@ async def update_player_category(
         await db.rollback()
         raise HTTPException(status_code=409, detail="A category with that name already exists")
     await db.refresh(category)
+
+    if repriced:
+        logger.info(
+            "Category %s reprice: %s player(s) moved to %s",
+            category.name, repriced, category.base_price,
+        )
     return PlayerCategoryOut.model_validate(category)
 
 
@@ -1083,6 +1154,10 @@ async def delete_player_category(
     )
     for ap in players_result.scalars().all():
         ap.category_id = None
+        # With no category, the event default applies again.
+        if ap.status in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
+            ap.base_price = ctx.event.player_base_price
+            ap.version += 1
 
     await db.delete(category)
     await db.commit()

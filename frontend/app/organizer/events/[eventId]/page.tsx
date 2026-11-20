@@ -566,6 +566,14 @@ function PlayersTab({
     return eventBasePrice;
   };
 
+  // When a player is in a priced category, that category's price IS their base
+  // price — the per-player figure and the event default do not apply. The field
+  // is shown read-only rather than hidden, so the number is still visible.
+  const categoryGoverns = (categoryId: number | null) => {
+    const cat = categories.find((c) => c.id === categoryId);
+    return !!cat && cat.base_price > 0;
+  };
+
   const openAdd = () => {
     setForm(emptyForm);
     setEditingId(null);
@@ -607,23 +615,24 @@ function PlayersTab({
 
       if (editingId) {
         await api.patch(`/organizer/events/${eventId}/players/${editingId}`, payload);
-        const basePrice = form.base_price.trim() ? Number(form.base_price) : undefined;
-        if (basePrice !== undefined || form.category_id !== null) {
-          await api.patch(
-            `/organizer/events/${eventId}/players/${editingId}/auction-settings`,
-            {
-              ...(basePrice !== undefined ? { base_price: basePrice } : {}),
-              category_id: form.category_id,
-            }
-          );
-        }
+        // Omit base_price entirely when the category governs it — the server
+        // recomputes either way, but sending a stale figure is misleading.
+        const governed = categoryGoverns(form.category_id);
+        const basePrice =
+          !governed && form.base_price.trim() ? Number(form.base_price) : undefined;
+        await api.patch(
+          `/organizer/events/${eventId}/players/${editingId}/auction-settings`,
+          {
+            ...(basePrice !== undefined ? { base_price: basePrice } : {}),
+            category_id: form.category_id,
+          }
+        );
         onToast("ok", `${form.name.trim()} updated`);
       } else {
         const params = new URLSearchParams();
-        const basePrice = form.base_price.trim()
-          ? Number(form.base_price)
-          : resolvedBasePrice(form.category_id);
-        params.set("base_price", String(basePrice));
+        if (!categoryGoverns(form.category_id) && form.base_price.trim()) {
+          params.set("base_price", form.base_price.trim());
+        }
         if (form.category_id !== null) params.set("category_id", String(form.category_id));
         await api.post(
           `/organizer/events/${eventId}/players?${params.toString()}`,
@@ -977,13 +986,29 @@ function PlayersTab({
                 </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Base price</label>
-                  <input
-                    type="number"
-                    value={form.base_price}
-                    onChange={(e) => setForm({ ...form, base_price: e.target.value })}
-                    placeholder={String(resolvedBasePrice(form.category_id))}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
+                  {categoryGoverns(form.category_id) ? (
+                    <>
+                      <input
+                        type="number"
+                        value={resolvedBasePrice(form.category_id)}
+                        readOnly
+                        disabled
+                        className="w-full bg-gray-900 border border-gray-800 text-gray-400 rounded-lg px-3 py-2 text-sm cursor-not-allowed"
+                      />
+                      <p className="text-[11px] text-gray-500 mt-1">
+                        Set by the category. Change it on the Categories tab, or
+                        pick &ldquo;None&rdquo; to price this player individually.
+                      </p>
+                    </>
+                  ) : (
+                    <input
+                      type="number"
+                      value={form.base_price}
+                      onChange={(e) => setForm({ ...form, base_price: e.target.value })}
+                      placeholder={String(resolvedBasePrice(form.category_id))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                    />
+                  )}
                 </div>
               </div>
             </div>
