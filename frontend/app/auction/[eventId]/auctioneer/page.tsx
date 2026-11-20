@@ -2,9 +2,26 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
-import api from "@/lib/api";
-import { useAuctionStore, BidSlab, PlayerCategory } from "@/store/auction";
-import { AuctionSocket } from "@/lib/ws";
+import api, { describeError, newIdempotencyKey, postIdempotent } from "@/lib/api";
+import {
+  useAuctionStore,
+  BidSlab,
+  PlayerCategory,
+  remainingSeconds,
+} from "@/store/auction";
+import { AuctionSocket, ConnectionState } from "@/lib/ws";
+import { incrementFor, quickBidSteps } from "@/lib/bidRules";
+
+/**
+ * Auctioneer console.
+ *
+ * Version 2.0.0 (2026-11-20). Bids are placed FOR A TEAM, not for a captain:
+ * captains are roster players with no login and no dashboard. Every mutating
+ * call carries an idempotency key and the AuctionPlayer version it was computed
+ * against, so a double-tap cannot bid twice and a bid against a price that has
+ * already moved is refused rather than silently overwriting. Increments come
+ * from the event's configured slabs via lib/bidRules, never a hardcoded ladder.
+ */
 
 interface PlayerDetail {
   player_id: number;
@@ -33,7 +50,12 @@ export default function AuctioneerPage() {
   const [teamRosters, setTeamRosters] = useState<Record<number, { player_id: number; sold_price: number }[]>>({});
   const [viewerCount, setViewerCount] = useState<number>(0);
 
-  const [selectedCaptainId, setSelectedCaptainId] = useState<number | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  // Ticked locally from the server's absolute deadline. 1.x relied on a
+  // timer_tick broadcast every second, which drifted and left a reconnecting
+  // client showing a stale number.
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<"none" | "sold" | "unsold" | "available" | "teams">("none");
@@ -49,26 +71,9 @@ export default function AuctioneerPage() {
       api.get(`/auction/events/${eid}/viewer-stats`).catch(() => ({ data: null })),
     ]);
 
-    const resolvedSlabs =
-      data.bid_slabs && data.bid_slabs.length > 0
-        ? data.bid_slabs
-        : eventRes.data?.bid_slabs || [];
-
-    const resolvedCategories =
-      data.categories && data.categories.length > 0
-        ? data.categories
-        : eventRes.data?.categories || [];
-
-    store.setFullState({
-      eventId: eid,
-      status: data.status,
-      timer: data.timer || 0,
-      activePlayerId: data.active_player_id,
-      teams: data.teams || [],
-      players: data.players || [],
-      bid_slabs: resolvedSlabs,
-      categories: resolvedCategories,
-    });
+    // The state payload is now the single source of truth: slabs, categories,
+    // rules, timing, the absolute deadline and the server clock all arrive here.
+    store.setFullState(data);
 
     setStatus(data.status);
     if (teamRes.data) {
@@ -100,11 +105,23 @@ export default function AuctioneerPage() {
           api.get(`/auction/events/${eid}`),
         ]);
         const me = meRes.data as { id: number; roles: string[] };
-        const event = eventRes.data as { auctioneer_id: number | null; name: string; logo?: string | null };
+        const event = eventRes.data as {
+          auctioneer_id: number | null;
+          organizer_id: number | null;
+          admin_id: number | null;
+          name: string;
+          logo?: string | null;
+        };
 
-        const isAuctioneerRole = (me.roles || []).includes("auctioneer");
-        const isAssignedAuctioneer = event.auctioneer_id === me.id;
-        if (!isAuctioneerRole || !isAssignedAuctioneer) {
+        // Two consoles can drive one auction: the assigned auctioneer and the
+        // organizer or admin acting as assistant. Every mutating action is
+        // idempotency-guarded and version-checked, which is what makes that safe.
+        const isOperator =
+          event.auctioneer_id === me.id ||
+          event.organizer_id === me.id ||
+          event.admin_id === me.id ||
+          (me.roles || []).includes("admin");
+        if (!isOperator) {
           router.replace(`/auction/${eid}/spectate`);
           return;
         }
@@ -128,45 +145,96 @@ export default function AuctioneerPage() {
   useEffect(() => {
     if (!hasAccess || status === "completed") return;
     const token = localStorage.getItem("token") || "";
-    const ws = new AuctionSocket(eid, token);
+    const ws = new AuctionSocket(eid, token, {
+      onStateChange: (state) => store.setConnection(state),
+      onMessage: (msg) => {
+        store.noteSeq(msg.seq);
+
+        switch (msg.type) {
+          case "auction_state":
+          case "auction_reset":
+            store.setFullState(msg);
+            setStatus(msg.status);
+            break;
+
+          case "new_bid":
+            store.applyBid(
+              msg.auction_player_id,
+              msg.amount,
+              msg.team_id ?? null,
+              msg.version,
+              msg.deadline_epoch,
+              msg.server_time
+            );
+            break;
+
+          // Distinct from new_bid: 1.x broadcast both corrections as "new_bid",
+          // so an auctioneer's fix looked like a team bidding.
+          case "bid_reverted":
+          case "bid_corrected":
+            store.applyBid(
+              msg.auction_player_id,
+              msg.current_bid,
+              msg.current_bid_team_id ?? null,
+              msg.version
+            );
+            break;
+
+          case "player_up":
+            store.setActivePlayer(
+              msg.auction_player_id,
+              msg.base_price,
+              msg.version,
+              msg.deadline_epoch ?? null,
+              msg.server_time
+            );
+            setSelectedTeamId(null);
+            break;
+
+          case "player_sold":
+            store.markPlayerSold(
+              msg.auction_player_id,
+              msg.sold_to_team_id ?? null,
+              msg.sold_price
+            );
+            setSelectedTeamId(null);
+            syncState();
+            break;
+
+          case "player_unsold":
+          case "player_pulled":
+            store.markPlayerUnsold(msg.auction_player_id);
+            setSelectedTeamId(null);
+            syncState();
+            break;
+
+          case "auction_paused":
+            setStatus("paused");
+            break;
+          case "auction_resumed":
+          case "auction_started":
+            setStatus("active");
+            syncState();
+            break;
+          case "auction_completed":
+            setStatus("completed");
+            break;
+          case "viewer_count":
+            setViewerCount(msg.count as number);
+            break;
+          case "unauthorized":
+            router.replace(`/auction/${eid}/spectate`);
+            break;
+          default:
+            break;
+        }
+      },
+    });
     ws.connect();
 
-    ws.on("*", (msg) => {
-      if (msg.type === "timer_tick") store.setTimer(msg.remaining as number);
-      if (msg.type === "new_bid")
-        store.updateBid(
-          msg.auction_player_id as number,
-          msg.amount as number,
-          (msg.captain_id as number) ?? null
-        );
-      if (msg.type === "player_sold") {
-        store.markPlayerSold(
-          msg.auction_player_id as number,
-          msg.sold_to_captain_id as number,
-          msg.sold_price as number
-        );
-        syncState();
-      }
-      if (msg.type === "player_unsold") {
-        store.markPlayerUnsold(msg.auction_player_id as number);
-        syncState();
-      }
-      if (msg.type === "player_up") {
-        store.setActivePlayer(msg.auction_player_id as number, msg.base_price as number);
-        setSelectedCaptainId(null);
-      }
-      if (msg.type === "auction_paused") setStatus("paused");
-      if (msg.type === "auction_resumed") setStatus("active");
-      if (msg.type === "auction_completed") setStatus("completed");
-      if (msg.type === "viewer_count") setViewerCount(msg.count as number);
-      if (msg.status && Array.isArray(msg.players) && Array.isArray(msg.teams)) {
-        syncState();
-      }
-    });
-
     setSocket(ws);
-    return () => ws.disconnect();
-  }, [eid, hasAccess, status, syncState, store]);
+    return () => ws.close();
+  }, [eid, hasAccess, status, syncState, store, router]);
 
   useEffect(() => {
     const fetchPlayersInfo = async () => {
@@ -214,19 +282,17 @@ export default function AuctioneerPage() {
     [getCategoryObj]
   );
 
+  // Delegates to lib/bidRules, which mirrors backend/app/services/bid_rules.py.
+  // The previous local implementation treated max_value as inclusive (the
+  // server treats it as exclusive) and fell back to 10000 (the server uses
+  // 1000), so a bid at a slab boundary could be offered and then refused.
   const getBidIncrement = useCallback(
-    (currentBid: number): number => {
-      const slabs: BidSlab[] = store.bidSlabs || [];
-      if (slabs.length === 0) return 10000;
-      const sorted = [...slabs].sort((a, b) => Number(b.min_value) - Number(a.min_value));
-      for (const slab of sorted) {
-        const minVal = Number(slab.min_value);
-        const maxVal = Number(slab.max_value);
-        const inRange = currentBid >= minVal && (maxVal === 0 || currentBid <= maxVal);
-        if (inRange) return Number(slab.increment);
-      }
-      return Number(sorted[sorted.length - 1]?.increment) || 10000;
-    },
+    (currentBid: number): number => incrementFor(store.bidSlabs || [], currentBid),
+    [store.bidSlabs]
+  );
+
+  const getQuickBids = useCallback(
+    (currentBid: number): number[] => quickBidSteps(store.bidSlabs || [], currentBid),
     [store.bidSlabs]
   );
 
@@ -243,11 +309,35 @@ export default function AuctioneerPage() {
       const remainingPurse = Math.max(0, team.budget - team.spent);
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
       if (slotsLeft <= 0) return 0;
-      const reserveForOtherSlots = Math.max(0, slotsLeft - 1) * minEventBasePrice;
-      return Math.max(0, remainingPurse - reserveForOtherSlots);
+      // Reserve against the event's MINIMUM squad, matching
+      // bid_rules.reserved_budget on the server. Reserving for every empty slot
+      // up to max_players (as 1.x did) understated the ceiling and refused
+      // legal bids the server would have accepted.
+      const minSquad = store.rules?.team_min_players ?? 0;
+      const reserveSlots = minSquad > 0
+        ? Math.max(0, minSquad - team.player_count - 1)
+        : 0;
+      const reserve = reserveSlots * minEventBasePrice;
+      return Math.max(0, remainingPurse - reserve);
     },
-    [minEventBasePrice]
+    [minEventBasePrice, store.rules]
   );
+
+  // Tick locally off the server's absolute deadline. No per-second broadcast,
+  // so no drift, and a reconnecting console is immediately correct.
+  useEffect(() => {
+    if (store.deadlineEpoch == null) {
+      setSecondsLeft(null);
+      return;
+    }
+    const tick = () => {
+      const left = remainingSeconds(store.deadlineEpoch, store.clockOffset);
+      setSecondsLeft(left == null ? null : Math.ceil(left));
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [store.deadlineEpoch, store.clockOffset]);
 
   const formatMoney = (val: number) => val.toLocaleString("en-IN");
 
@@ -255,14 +345,14 @@ export default function AuctioneerPage() {
   const pauseAuction = () => api.post(`/auction/events/${eid}/pause`).then(syncState);
 
   const handleResetMock = async () => {
-    if (!confirm("Reset Mock Auction? This clears all bids and resets team purses.")) return;
+    if (!confirm("Reset the auction? This clears every bid, roster and purse. It cannot be undone.")) return;
     setBusyAction(true);
     try {
-      await api.post(`/auction/events/${eid}/reset-mock-auction`);
-      setSelectedCaptainId(null);
+      await api.post(`/auction/events/${eid}/reset`);
+      setSelectedTeamId(null);
       await syncState();
     } catch (e: any) {
-      alert(e.response?.data?.detail || "Failed to reset mock auction");
+      setActionError(describeError(e).message);
     } finally {
       setBusyAction(false);
     }
@@ -275,8 +365,8 @@ export default function AuctioneerPage() {
     }
     setBusyAction(true);
     try {
-      await api.post(`/auction/events/${eid}/next-player`, { player_id: null });
-      setSelectedCaptainId(null);
+      await postIdempotent(`/auction/events/${eid}/next-player`, { auction_player_id: null });
+      setSelectedTeamId(null);
       await syncState();
     } catch (e: any) {
       alert(e.response?.data?.detail || "No pending players available");
@@ -292,8 +382,8 @@ export default function AuctioneerPage() {
     }
     setBusyAction(true);
     try {
-      await api.post(`/auction/events/${eid}/next-player`, { player_id: auctionPlayerId });
-      setSelectedCaptainId(null);
+      await postIdempotent(`/auction/events/${eid}/next-player`, { auction_player_id: auctionPlayerId });
+      setSelectedTeamId(null);
       setActiveDrawerTab("none");
       await syncState();
     } catch (e: any) {
@@ -303,17 +393,30 @@ export default function AuctioneerPage() {
     }
   };
 
-  const placeBidForCaptain = async (captainId: number, amount: number) => {
+  const placeBidForTeam = async (teamId: number, amount: number) => {
+    if (!displayActiveAP) return;
     setBusyAction(true);
+    setActionError(null);
     try {
       await api.post(`/auction/events/${eid}/bid`, {
+        team_id: teamId,
         amount,
-        captain_id: captainId,
+        // The version this amount was computed against. If the other console's
+        // bid landed first, the server answers 409 instead of letting this
+        // overwrite it.
+        expected_version: displayActiveAP.version,
+        idempotency_key: newIdempotencyKey(),
       });
-      setSelectedCaptainId(captainId);
+      setSelectedTeamId(teamId);
       await syncState();
-    } catch (e: any) {
-      alert(e.response?.data?.detail || "Error placing bid");
+    } catch (e: unknown) {
+      const info = describeError(e);
+      setActionError(
+        info.conflict
+          ? `${info.message} (the other console bid first — price refreshed)`
+          : info.message
+      );
+      if (info.conflict) await syncState();
     } finally {
       setBusyAction(false);
     }
@@ -321,15 +424,14 @@ export default function AuctioneerPage() {
 
   const handleBidUp = async () => {
     if (!displayActiveAP) return;
-    const targetCaptain =
-      selectedCaptainId ||
-      displayActiveAP.current_bidder_id ||
-      store.teams.find((t) => t.captain_id)?.captain_id;
-    if (!targetCaptain) {
-      alert("No teams with captains available to bid.");
+    // Any team can bid; a team no longer needs a captain assigned to take part.
+    const targetTeam =
+      selectedTeamId ?? displayActiveAP.current_bid_team_id ?? store.teams[0]?.id;
+    if (!targetTeam) {
+      setActionError("No teams have been created for this event yet.");
       return;
     }
-    const isOpening = !displayActiveAP.current_bidder_id;
+    const isOpening = !displayActiveAP.current_bid_team_id;
     const activeBase = getEffectiveBasePrice(displayActiveAP);
     const referenceBid = isOpening ? activeBase : displayActiveAP.current_bid;
     const increment = getBidIncrement(referenceBid);
@@ -339,11 +441,11 @@ export default function AuctioneerPage() {
         ? activeBase
         : referenceBid + increment;
 
-    await placeBidForCaptain(targetCaptain, nextAmount);
+    await placeBidForTeam(targetTeam, nextAmount);
   };
 
   const handleBidDown = async () => {
-    if (!displayActiveAP || !displayActiveAP.current_bidder_id) return;
+    if (!displayActiveAP || !displayActiveAP.current_bid_team_id) return;
     setBusyAction(true);
     try {
       await api.post(`/auction/events/${eid}/bid-down`);
@@ -357,7 +459,7 @@ export default function AuctioneerPage() {
 
   const handleOpenEditBid = () => {
     if (!displayActiveAP) return;
-    const isOpening = !displayActiveAP.current_bidder_id;
+    const isOpening = !displayActiveAP.current_bid_team_id;
     setEditBidInput(
       String(isOpening ? getEffectiveBasePrice(displayActiveAP) : displayActiveAP.current_bid)
     );
@@ -384,18 +486,18 @@ export default function AuctioneerPage() {
 
   const handleSoldOrUnsold = async (markUnsold: boolean) => {
     if (!displayActiveAP) return;
-    if (!markUnsold && !displayActiveAP.current_bidder_id) {
+    if (!markUnsold && !displayActiveAP.current_bid_team_id) {
       alert("No team has placed a bid yet. Click UNSOLD or tap a team card first.");
       return;
     }
-    if (markUnsold && displayActiveAP.current_bidder_id) {
+    if (markUnsold && displayActiveAP.current_bid_team_id) {
       const ok = confirm("A team currently holds a bid. Are you sure you want to mark this player UNSOLD?");
       if (!ok) return;
     }
     setBusyAction(true);
     try {
       await api.post(`/auction/events/${eid}/hammer`);
-      setSelectedCaptainId(null);
+      setSelectedTeamId(null);
       await syncState();
     } catch (e: any) {
       alert(e.response?.data?.detail || "Error finalizing player");
@@ -439,7 +541,7 @@ export default function AuctioneerPage() {
 
   const activeInfo = displayActiveAP ? playerDetails[displayActiveAP.player_id] : undefined;
   const activeCategory = displayActiveAP ? getCategoryObj(displayActiveAP.category_id) : undefined;
-  const isOpeningBid = !!displayActiveAP && !displayActiveAP.current_bidder_id;
+  const isOpeningBid = !!displayActiveAP && !displayActiveAP.current_bid_team_id;
   const activeBasePrice = displayActiveAP ? getEffectiveBasePrice(displayActiveAP) : 0;
   const displayedCurrentBid = displayActiveAP
     ? isOpeningBid
@@ -457,8 +559,8 @@ export default function AuctioneerPage() {
       : (isOpeningBid ? activeBasePrice : displayActiveAP.current_bid) + currentIncrement
     : 0;
 
-  const leadingTeam = displayActiveAP?.current_bidder_id
-    ? store.teams.find((t) => t.captain_id === displayActiveAP.current_bidder_id)
+  const leadingTeam = displayActiveAP?.current_bid_team_id
+    ? store.teams.find((t) => t.id === displayActiveAP.current_bid_team_id)
     : undefined;
 
   const filteredPending =
@@ -655,14 +757,13 @@ export default function AuctioneerPage() {
               const remainingPurse = Math.max(0, team.budget - team.spent);
               const maxBid = getTeamMaxBid(team);
               const isLeading =
-                !!displayActiveAP && displayActiveAP.current_bidder_id === team.captain_id;
-              const isSelected = selectedCaptainId === team.captain_id;
+                !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
+              const isSelected = selectedTeamId === team.id;
               const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
               const isFull = team.player_count >= team.max_players;
               const disabled =
                 status !== "active" ||
                 !displayActiveAP ||
-                !team.captain_id ||
                 isLeading ||
                 cannotAfford ||
                 isFull ||
@@ -672,8 +773,8 @@ export default function AuctioneerPage() {
                 <div
                   key={team.id}
                   onClick={() => {
-                    if (!disabled && team.captain_id) {
-                      placeBidForCaptain(team.captain_id, nextBidAmount);
+                    if (!disabled) {
+                      placeBidForTeam(team.id, nextBidAmount);
                     }
                   }}
                   className={`rounded-xl bg-white text-slate-900 p-2.5 shadow-md transition relative flex items-center gap-3 ${
@@ -803,7 +904,7 @@ export default function AuctioneerPage() {
                   disabled={
                     status !== "active" ||
                     !displayActiveAP ||
-                    !displayActiveAP.current_bidder_id ||
+                    !displayActiveAP.current_bid_team_id ||
                     busyAction
                   }
                   className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black text-sm sm:text-base py-3 px-3 shadow-md flex items-center justify-center gap-1.5 transition"
@@ -817,7 +918,7 @@ export default function AuctioneerPage() {
                   disabled={
                     status !== "active" ||
                     !displayActiveAP ||
-                    !displayActiveAP.current_bidder_id ||
+                    !displayActiveAP.current_bid_team_id ||
                     busyAction
                   }
                   className="rounded-xl bg-[#65a30d] hover:bg-[#84cc16] disabled:opacity-40 text-white font-black text-sm sm:text-base py-3 px-3 shadow-md transition"
@@ -1002,7 +1103,7 @@ export default function AuctioneerPage() {
                 ) : (
                   soldPlayers.map((p) => {
                     const info = playerDetails[p.player_id];
-                    const buyer = store.teams.find((t) => t.captain_id === p.current_bidder_id);
+                    const buyer = store.teams.find((t) => t.id === p.current_bid_team_id);
                     return (
                       <div
                         key={p.id}

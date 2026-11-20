@@ -11,18 +11,20 @@ function isDark(hex: string) {
 
 interface Props {
   teams: TeamState[];
-  highlightCaptainId?: number | null;
+  /** Team to highlight — the one holding the current top bid. Was
+   *  highlightCaptainId in 1.x, when bids were attributed to captains. */
+  highlightTeamId?: number | null;
   teamRosters?: Record<number, { player_id: number; sold_price: number }[]>;
   playerNames?: Record<number, string>;
 }
 
-export default function TeamSummary({ teams, highlightCaptainId, teamRosters = {}, playerNames = {} }: Props) {
+export default function TeamSummary({ teams, highlightTeamId, teamRosters = {}, playerNames = {} }: Props) {
   return (
     <div className="grid grid-cols-2 gap-3">
       {teams.map((team) => {
         const remaining = team.budget - team.spent;
         const pct = team.budget > 0 ? (team.spent / team.budget) * 100 : 0;
-        const isHighlighted = team.captain_id === highlightCaptainId;
+        const isHighlighted = team.id === highlightTeamId;
         const color = team.color || "#3B82F6";
         const textColor = isDark(color) ? "white" : "#111827";
         const roster = teamRosters[team.id] || [];

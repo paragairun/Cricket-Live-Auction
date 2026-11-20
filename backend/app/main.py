@@ -1,16 +1,37 @@
+"""FastAPI application entrypoint.
+
+Version: 2.0.0 (2026-11-20)
+Changed from 1.x:
+  - CORS no longer uses allow_origins=["*"] with allow_credentials=True. That
+    pairing is invalid per the CORS spec (browsers reject it) and was far more
+    permissive than anything this app needs. Origins now come from settings.
+  - ensure_schema() no longer runs create_all against PostgreSQL. Previously it
+    ran on every startup in every environment, creating tables outside Alembic's
+    control; only the column backfill was SQLite-gated, not the create_all.
+  - /api/health now reports database and Redis reachability, and flags when the
+    in-memory Redis substitute is active.
+"""
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.core.config import settings
-from app.core.database import ensure_schema
-from app.core.redis import close_redis
+from app.core.database import AsyncSessionLocal, ensure_schema
+from app.core.redis import close_redis, get_redis, is_fake_redis
 from app.models import *  # noqa: F401,F403 - register all models
 from app.api import auth, admin, organizer, auction, events
 from app.ws.manager import manager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -18,19 +39,33 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     await ensure_schema()
     await manager.startup()
+    logger.info(
+        "Cricket Auction API started (environment=%s, timer=%ss, soft_close=%ss)",
+        settings.ENVIRONMENT,
+        settings.AUCTION_TIMER_SECONDS,
+        settings.SOFT_CLOSE_EXTENSION_SECONDS,
+    )
     yield
     await manager.shutdown()
     await close_redis()
 
 
-app = FastAPI(title="Cricket Auction API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Cricket Auction API",
+    version="2.0.0",
+    lifespan=lifespan,
+    # Interactive docs are a convenience, not something to expose in production.
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -46,4 +81,30 @@ if os.path.exists(settings.UPLOAD_DIR):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    """Liveness plus the two dependencies the auction engine cannot run without."""
+    db_ok = False
+    redis_ok = False
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception as exc:
+        logger.error("Health check: database unreachable: %s", exc)
+
+    try:
+        redis = await get_redis()
+        await redis.ping()
+        redis_ok = True
+    except Exception as exc:
+        logger.error("Health check: redis unreachable: %s", exc)
+
+    healthy = db_ok and redis_ok
+    return {
+        "status": "ok" if healthy else "degraded",
+        "environment": settings.ENVIRONMENT,
+        "database": "ok" if db_ok else "unreachable",
+        "redis": "ok" if redis_ok else "unreachable",
+        # True means cross-worker broadcast is NOT working.
+        "redis_is_in_memory_substitute": is_fake_redis(),
+    }

@@ -1,4 +1,5 @@
 import os
+import secrets
 import uuid
 import json
 
@@ -15,7 +16,7 @@ from app.core.deps import get_current_user
 from app.core.security import hash_password, verify_password, create_access_token
 from app.core.config import settings
 from app.core.redis import get_redis
-from app.models.user import User, ROLE_PLAYER, ROLE_ADMIN
+from app.models.user import User, ROLE_VIEWER, ROLE_ADMIN
 from app.models.auction import AuctionEvent
 
 MAGIC_CODE_TTL = 600  # 10 minutes
@@ -60,7 +61,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
-    """Public registration — always creates a player account."""
+    """Public registration. Creates a viewer account.
+
+    Players are roster records created by an organizer and never register here;
+    see POST /organizer/events/{id}/players.
+    """
     existing = await db.execute(
         select(User).where(
             User.email == payload.email,
@@ -75,12 +80,8 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
         name=payload.name,
         email=payload.email,
         phone=payload.phone,
-        age=payload.age,
         hashed_password=hash_password(payload.password),
-        roles=[ROLE_PLAYER],
-        batting_rating=payload.batting_rating or 5.0,
-        bowling_rating=payload.bowling_rating or 5.0,
-        fielding_rating=payload.fielding_rating or 5.0,
+        roles=[ROLE_VIEWER],
     )
     db.add(user)
     await db.commit()
@@ -97,7 +98,14 @@ async def godmode_register(payload: GodmodeRegister, db: AsyncSession = Depends(
     Bootstrap admin registration. Requires GODMODE_SECRET.
     If the email already exists, admin role is added to the existing account.
     """
-    if payload.secret != settings.GODMODE_SECRET:
+    # 1.x only compared the secret, so a deployment that forgot to set
+    # GODMODE_SECRET shipped with the documented default "GODMODE_CHANGEME".
+    if not settings.godmode_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="Not found",
+        )
+    if not secrets.compare_digest(payload.secret, settings.GODMODE_SECRET or ""):
         raise HTTPException(status_code=403, detail="Invalid godmode secret")
 
     result = await db.execute(
@@ -119,7 +127,7 @@ async def godmode_register(payload: GodmodeRegister, db: AsyncSession = Depends(
             name=payload.name,
             email=payload.email,
             hashed_password=hash_password(payload.password),
-            roles=[ROLE_ADMIN, ROLE_PLAYER],
+            roles=[ROLE_ADMIN],
             onboarded=True,
         )
         db.add(user)
@@ -161,9 +169,6 @@ async def onboard(
 ):
     if payload.phone is not None:
         current_user.phone = payload.phone
-    current_user.batting_rating = payload.batting_rating
-    current_user.bowling_rating = payload.bowling_rating
-    current_user.fielding_rating = payload.fielding_rating
     current_user.onboarded = True
     await db.commit()
     await db.refresh(current_user)
@@ -246,7 +251,7 @@ async def accept_invite(payload: InviteRegister, db: AsyncSession = Depends(get_
             email=email,
             phone=payload.phone,
             hashed_password=hash_password(payload.password),
-            roles=[ROLE_PLAYER, role],
+            roles=[ROLE_VIEWER, role],
             onboarded=False,
         )
         db.add(user)

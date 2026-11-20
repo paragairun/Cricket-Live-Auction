@@ -31,8 +31,8 @@ def upgrade() -> None:
         sa.Column("batting_rating", sa.Float(), nullable=False, server_default="5.0"),
         sa.Column("bowling_rating", sa.Float(), nullable=False, server_default="5.0"),
         sa.Column("fielding_rating", sa.Float(), nullable=False, server_default="5.0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("onboarded", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),  # was sa.text("1") — SQLite-only, rejected by PostgreSQL
+        sa.Column("onboarded", sa.Boolean(), nullable=False, server_default=sa.false()),  # was sa.text("0") — SQLite-only, rejected by PostgreSQL
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
 

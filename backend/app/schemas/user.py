@@ -1,20 +1,25 @@
+"""User schemas — the people who log in.
+
+Version: 2.0.0 (2026-11-20)
+
+Changed from 1.x: cricket ratings and age are gone. A User is an admin,
+organizer or auctioneer; players are roster records (schemas/player.py) and do
+not have accounts. The organizer-player create/update schemas moved there too,
+where email is optional.
+"""
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.user import ALL_ROLES
+from app.models.user import ASSIGNABLE_ROLES
 
 
 class UserRegister(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, max_length=128)
     phone: Optional[str] = None
-    age: Optional[int] = None
-    batting_rating: Optional[float] = 5.0
-    bowling_rating: Optional[float] = 5.0
-    fielding_rating: Optional[float] = 5.0
 
     @field_validator("email")
     @classmethod
@@ -26,7 +31,7 @@ class GodmodeRegister(BaseModel):
     name: str
     email: EmailStr
     password: str
-    secret: str  # must match GODMODE_SECRET
+    secret: str
 
     @field_validator("email")
     @classmethod
@@ -46,9 +51,6 @@ class UserLogin(BaseModel):
 
 class UserOnboard(BaseModel):
     phone: Optional[str] = None
-    batting_rating: float = 5.0
-    bowling_rating: float = 5.0
-    fielding_rating: float = 5.0
 
 
 class UserOut(BaseModel):
@@ -56,51 +58,12 @@ class UserOut(BaseModel):
     name: str
     email: str
     phone: Optional[str]
-    age: Optional[int]
     roles: list[str]
     profile_photo: Optional[str]
-    batting_rating: float
-    bowling_rating: float
-    fielding_rating: float
     onboarded: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-# ── Organizer-created player profile ──
-
-
-class OrganizerPlayerCreate(BaseModel):
-    name: str
-    email: EmailStr
-    phone: Optional[str] = None
-    age: Optional[int] = None
-    batting_rating: Optional[float] = 5.0
-    bowling_rating: Optional[float] = 5.0
-    fielding_rating: Optional[float] = 5.0
-    password: Optional[str] = None  # optional — player can set it later via magic code
-
-    @field_validator("email")
-    @classmethod
-    def lowercase_email(cls, v: str) -> str:
-        return v.lower()
-
-
-class OrganizerPlayerUpdate(BaseModel):
-    name: Optional[str] = None
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
-    age: Optional[int] = None
-    batting_rating: Optional[float] = None
-    bowling_rating: Optional[float] = None
-    fielding_rating: Optional[float] = None
-    category_id: Optional[int] = None  # assigned category on AuctionPlayer
-
-    @field_validator("email")
-    @classmethod
-    def lowercase_email(cls, v: str | None) -> str | None:
-        return v.lower() if v else v
 
 
 class TokenOut(BaseModel):
@@ -113,5 +76,5 @@ class AssignRolePayload(BaseModel):
     role: str
 
     def model_post_init(self, __context):
-        if self.role not in ALL_ROLES:
-            raise ValueError(f"Invalid role. Must be one of: {list(ALL_ROLES)}")
+        if self.role not in ASSIGNABLE_ROLES:
+            raise ValueError(f"Invalid role. Must be one of: {sorted(ASSIGNABLE_ROLES)}")

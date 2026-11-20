@@ -1,3 +1,18 @@
+/**
+ * Live auction client state.
+ *
+ * Version: 2.0.0 (2026-11-20)
+ *
+ * Changed from 1.x:
+ *  - `current_bidder_id` (a captain's user id) is now `current_bid_team_id`.
+ *    Bids belong to teams; captains are roster players who do not bid.
+ *  - The countdown is derived from an absolute `deadlineEpoch` plus the server
+ *    clock offset, instead of a `timer` integer pushed once a second. No drift,
+ *    and a client that reconnects mid-player shows the right number at once.
+ *  - Each player carries `version`, which goes back to the server with the next
+ *    bid so a stale price is rejected rather than silently overwriting.
+ *  - `lastSeq` tracks broadcast sequence numbers so a gap can be detected.
+ */
 import { create } from "zustand";
 
 export interface BidSlab {
@@ -20,107 +35,224 @@ export interface TeamState {
   id: number;
   name: string;
   color: string;
+  logo?: string | null;
   captain_id: number | null;
+  captain_name?: string | null;
   budget: number;
   spent: number;
+  remaining: number;
   max_players: number;
   player_count: number;
 }
 
 export interface PlayerState {
-  id: number;
+  id: number; // auction_player id
   player_id: number;
+  name?: string;
+  profile_photo?: string | null;
   base_price: number;
   category_id?: number | null;
   current_bid: number;
-  current_bidder_id: number | null;
+  current_bid_team_id: number | null;
   status: "pending" | "active" | "sold" | "unsold";
+  version: number;
 }
+
+export interface AuctionTiming {
+  base_seconds: number;
+  soft_close_threshold_seconds: number;
+  soft_close_extension_seconds: number;
+}
+
+export interface AuctionRules {
+  team_budget: number;
+  team_max_players: number;
+  team_min_players: number;
+  player_base_price: number;
+}
+
+export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
 
 interface AuctionState {
   eventId: number | null;
   status: string;
-  timer: number;
   activePlayerId: number | null;
+  noTimer: boolean;
+
+  /** Absolute server time (unix seconds) the hammer falls. */
+  deadlineEpoch: number | null;
+  /** serverTime - clientTime, so countdowns are immune to a wrong local clock. */
+  clockOffset: number;
+
   teams: TeamState[];
   players: PlayerState[];
   bidSlabs: BidSlab[];
   categories: PlayerCategory[];
+  timing: AuctionTiming | null;
+  rules: AuctionRules | null;
 
-  setFullState: (
-    state: Partial<AuctionState> & { bid_slabs?: BidSlab[]; categories?: PlayerCategory[] }
+  connection: ConnectionState;
+  lastSeq: number;
+  missedMessages: boolean;
+
+  setFullState: (payload: any) => void;
+  setConnection: (state: ConnectionState) => void;
+  noteSeq: (seq?: number) => void;
+  clearMissed: () => void;
+
+  applyBid: (
+    auctionPlayerId: number,
+    amount: number,
+    teamId: number | null,
+    version?: number,
+    deadlineEpoch?: number | null,
+    serverTime?: number
   ) => void;
-  updateBid: (auctionPlayerId: number, amount: number, captainId: number | null) => void;
-  setTimer: (remaining: number) => void;
-  markPlayerSold: (auctionPlayerId: number, captainId: number, price: number) => void;
+  setActivePlayer: (
+    auctionPlayerId: number,
+    basePrice: number,
+    version: number,
+    deadlineEpoch: number | null,
+    serverTime?: number
+  ) => void;
+  markPlayerSold: (auctionPlayerId: number, teamId: number | null, price: number) => void;
   markPlayerUnsold: (auctionPlayerId: number) => void;
-  setActivePlayer: (auctionPlayerId: number, basePrice: number) => void;
+  clearActivePlayer: () => void;
 }
 
-export const useAuctionStore = create<AuctionState>((set) => ({
+/** Seconds left on the clock, or null when no countdown is running. */
+export function remainingSeconds(
+  deadlineEpoch: number | null,
+  clockOffset: number
+): number | null {
+  if (deadlineEpoch == null) return null;
+  const nowServer = Date.now() / 1000 + clockOffset;
+  return Math.max(0, deadlineEpoch - nowServer);
+}
+
+export const useAuctionStore = create<AuctionState>((set, get) => ({
   eventId: null,
   status: "draft",
-  timer: 0,
   activePlayerId: null,
+  noTimer: false,
+  deadlineEpoch: null,
+  clockOffset: 0,
   teams: [],
   players: [],
   bidSlabs: [],
   categories: [],
+  timing: null,
+  rules: null,
+  connection: "connecting",
+  lastSeq: 0,
+  missedMessages: false,
 
-  setFullState: (state) =>
+  setFullState: (payload) =>
     set((prev) => ({
-      ...prev,
-      ...state,
-      bidSlabs: state.bid_slabs ?? state.bidSlabs ?? prev.bidSlabs,
-      categories: state.categories ?? state.categories ?? prev.categories,
+      eventId: payload.event_id ?? prev.eventId,
+      status: payload.status ?? prev.status,
+      activePlayerId:
+        payload.active_auction_player_id !== undefined
+          ? payload.active_auction_player_id
+          : prev.activePlayerId,
+      noTimer: payload.no_timer ?? prev.noTimer,
+      deadlineEpoch:
+        payload.deadline_epoch !== undefined ? payload.deadline_epoch : prev.deadlineEpoch,
+      clockOffset: payload.server_time
+        ? payload.server_time - Date.now() / 1000
+        : prev.clockOffset,
+      teams: payload.teams ?? prev.teams,
+      players: payload.players ?? prev.players,
+      bidSlabs: payload.bid_slabs ?? prev.bidSlabs,
+      categories: payload.categories ?? prev.categories,
+      timing: payload.timing ?? prev.timing,
+      rules: payload.rules ?? prev.rules,
+      // A full snapshot closes any gap.
+      lastSeq: payload.seq ?? prev.lastSeq,
+      missedMessages: false,
     })),
 
-  updateBid: (auctionPlayerId, amount, captainId) =>
+  setConnection: (connection) => set({ connection }),
+
+  noteSeq: (seq) => {
+    if (seq == null) return;
+    const { lastSeq } = get();
+    // Non-consecutive sequence means at least one broadcast was missed.
+    const gap = lastSeq > 0 && seq > lastSeq + 1;
+    set({ lastSeq: Math.max(seq, lastSeq), missedMessages: gap });
+  },
+
+  clearMissed: () => set({ missedMessages: false }),
+
+  applyBid: (auctionPlayerId, amount, teamId, version, deadlineEpoch, serverTime) =>
     set((prev) => ({
       players: prev.players.map((p) =>
         p.id === auctionPlayerId
-          ? { ...p, current_bid: amount, current_bidder_id: captainId }
+          ? {
+              ...p,
+              current_bid: amount,
+              current_bid_team_id: teamId,
+              version: version ?? p.version + 1,
+            }
+          : p
+      ),
+      deadlineEpoch: deadlineEpoch !== undefined ? deadlineEpoch : prev.deadlineEpoch,
+      clockOffset: serverTime ? serverTime - Date.now() / 1000 : prev.clockOffset,
+    })),
+
+  setActivePlayer: (auctionPlayerId, basePrice, version, deadlineEpoch, serverTime) =>
+    set((prev) => ({
+      activePlayerId: auctionPlayerId,
+      deadlineEpoch,
+      clockOffset: serverTime ? serverTime - Date.now() / 1000 : prev.clockOffset,
+      players: prev.players.map((p) =>
+        p.id === auctionPlayerId
+          ? {
+              ...p,
+              base_price: basePrice || p.base_price,
+              status: "active" as const,
+              current_bid: basePrice || p.base_price,
+              current_bid_team_id: null,
+              version,
+            }
           : p
       ),
     })),
 
-  setTimer: (remaining) => set({ timer: remaining }),
-
-  markPlayerSold: (auctionPlayerId, captainId, price) =>
+  markPlayerSold: (auctionPlayerId, teamId, price) =>
     set((prev) => ({
+      activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
+      deadlineEpoch: null,
       players: prev.players.map((p) =>
         p.id === auctionPlayerId
-          ? { ...p, status: "sold" as const, current_bid: price, current_bidder_id: captainId }
+          ? {
+              ...p,
+              status: "sold" as const,
+              current_bid: price,
+              current_bid_team_id: teamId,
+            }
           : p
       ),
       teams: prev.teams.map((t) =>
-        t.captain_id === captainId
-          ? { ...t, spent: t.spent + price, player_count: t.player_count + 1 }
+        t.id === teamId
+          ? {
+              ...t,
+              spent: t.spent + price,
+              remaining: t.budget - (t.spent + price),
+              player_count: t.player_count + 1,
+            }
           : t
       ),
     })),
 
   markPlayerUnsold: (auctionPlayerId) =>
     set((prev) => ({
+      activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
+      deadlineEpoch: null,
       players: prev.players.map((p) =>
         p.id === auctionPlayerId ? { ...p, status: "unsold" as const } : p
       ),
     })),
 
-  setActivePlayer: (auctionPlayerId, basePrice) =>
-    set((prev) => ({
-      activePlayerId: auctionPlayerId,
-      players: prev.players.map((p) => {
-        if (p.id !== auctionPlayerId) return p;
-        const cat = prev.categories.find((c) => c.id === p.category_id);
-        const resolvedBase = cat && cat.base_price > 0 ? cat.base_price : basePrice || p.base_price;
-        return {
-          ...p,
-          base_price: resolvedBase,
-          status: "active" as const,
-          current_bid: resolvedBase,
-          current_bidder_id: null,
-        };
-      }),
-    })),
+  clearActivePlayer: () => set({ activePlayerId: null, deadlineEpoch: null }),
 }));

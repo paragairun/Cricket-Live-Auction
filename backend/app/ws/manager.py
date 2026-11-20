@@ -183,13 +183,20 @@ class ConnectionManager:
         }
 
     async def broadcast(self, event_id: int, message: dict[str, Any]):
-        # Instead of sending directly, publish to Redis so ALL workers receive it
+        """Publish to Redis so every worker's sockets receive it.
+
+        Version 2.0.0: each message carries a monotonic `seq` and a `ts`. A
+        client that reconnects can tell whether it missed anything and ask for a
+        resync; previously there was no way to distinguish a stale snapshot from
+        a current one.
+        """
         redis = await get_redis()
-        payload = {
-            "event_id": event_id,
-            "payload": message
-        }
-        await redis.publish("auction_events_channel", json.dumps(payload))
+        seq = await redis.incr(f"auction:{event_id}:seq")
+        enriched = {**message, "seq": seq, "ts": time.time()}
+        await redis.publish(
+            "auction_events_channel",
+            json.dumps({"event_id": event_id, "payload": enriched}),
+        )
 
     async def _local_broadcast(self, event_id: int, message: dict[str, Any]):
         # Send to WebSockets connected to this specific worker process
