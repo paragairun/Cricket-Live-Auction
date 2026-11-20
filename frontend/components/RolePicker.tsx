@@ -22,15 +22,16 @@ const ROLE_CONFIG: Record<string, { label: string; description: string; icon: st
     icon: "🔨",
     href: "/organizer/events",
   },
-  captain: {
-    label: "Captain View",
-    description: "Bid for players, track your squad",
-    icon: "⚡",
+  viewer: {
+    label: "Dashboard",
+    description: "Browse events, spectate live auctions",
+    icon: "🏏",
     href: "/dashboard",
   },
+  // Legacy role name, kept so existing accounts still resolve a panel.
   player: {
-    label: "Player Dashboard",
-    description: "Browse events, spectate auctions",
+    label: "Dashboard",
+    description: "Browse events, spectate live auctions",
     icon: "🏏",
     href: "/dashboard",
   },
@@ -43,7 +44,7 @@ interface Props {
 export default function RolePicker({ onClose }: Props) {
   const router = useRouter();
   const { user, setActivePanel } = useAuthStore();
-  const roles = Array.from(new Set(user?.roles ?? ["player"])); // de-dupe roles
+  const roles = Array.from(new Set(user?.roles ?? ["viewer"])); // de-dupe roles
 
   const handlePick = (role: string) => {
     setActivePanel(role);

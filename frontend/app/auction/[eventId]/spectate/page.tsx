@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Image from "next/image";
 import api from "@/lib/api";
-import { useAuctionStore } from "@/store/auction";
+import { useAuctionStore, remainingSeconds } from "@/store/auction";
 import { AuctionSocket } from "@/lib/ws";
 import brandLogo from "@/asset/Logo Png (3).png";
 
@@ -37,9 +37,11 @@ export default function SpectatePage() {
   const store = useAuctionStore();
   const [playerNames, setPlayerNames] = useState<Record<number, string>>({});
   const [playerPhotos, setPlayerPhotos] = useState<Record<number, string | null>>({});
-  const [lastBidInfo, setLastBidInfo] = useState<{ captain_id: number; amount: number } | null>(null);
+  const [lastBidInfo, setLastBidInfo] = useState<{ team_id: number; amount: number } | null>(null);
+  // Local countdown, ticked from the server's absolute deadline.
+  const [spectateSecondsLeft, setSpectateSecondsLeft] = useState<number | null>(null);
   const [bidHistory, setBidHistory] = useState<
-    { id: number; auction_player_id: number; captain_id: number; amount: number; time: string }[]
+    { id: number; auction_player_id: number; team_id: number | null; amount: number; time: string }[]
   >([]);
   const [showHistory, setShowHistory] = useState(false);
   const [teamRosters, setTeamRosters] = useState<
@@ -123,65 +125,138 @@ export default function SpectatePage() {
     if (store.status === "completed") return;
 
     const token = localStorage.getItem("token") || "";
-    const ws = new AuctionSocket(eid, token);
+    const ws = new AuctionSocket(eid, token, {
+      onStateChange: (state) => store.setConnection(state),
+      onMessage: (msg: any) => {
+        store.noteSeq(msg.seq);
+
+        switch (msg.type) {
+          case "auction_state":
+          case "auction_reset":
+            store.setFullState(msg);
+            break;
+
+          case "new_bid": {
+            const auction_player_id = msg.auction_player_id as number;
+            const amount = msg.amount as number;
+            const team_id = (msg.team_id as number) ?? null;
+            store.applyBid(
+              auction_player_id,
+              amount,
+              team_id,
+              msg.version,
+              msg.deadline_epoch,
+              msg.server_time
+            );
+            const time = new Date().toLocaleTimeString("en-IN", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            });
+            setLastBidInfo({ team_id, amount });
+            setBidHistory((prev) => {
+              const top = prev[0];
+              // Guard against duplicate delivery of the same bid.
+              if (
+                top &&
+                top.auction_player_id === auction_player_id &&
+                top.team_id === team_id &&
+                top.amount === amount
+              ) {
+                return prev;
+              }
+              return [
+                { id: Date.now(), auction_player_id, team_id, amount, time },
+                ...prev,
+              ].slice(0, 20);
+            });
+            break;
+          }
+
+          // An auctioneer correction is not a team bidding, so it does not go
+          // into the bid feed. 1.x broadcast both of these as "new_bid".
+          case "bid_reverted":
+          case "bid_corrected":
+            store.applyBid(
+              msg.auction_player_id,
+              msg.current_bid,
+              msg.current_bid_team_id ?? null,
+              msg.version
+            );
+            setLastBidInfo(
+              msg.current_bid_team_id
+                ? { team_id: msg.current_bid_team_id, amount: msg.current_bid }
+                : null
+            );
+            break;
+
+          case "player_sold":
+            store.markPlayerSold(
+              msg.auction_player_id,
+              msg.sold_to_team_id ?? null,
+              msg.sold_price
+            );
+            syncState();
+            break;
+
+          case "player_unsold":
+          case "player_pulled":
+            store.markPlayerUnsold(msg.auction_player_id);
+            setLastBidInfo(null);
+            break;
+
+          case "player_up":
+            store.setActivePlayer(
+              msg.auction_player_id,
+              msg.base_price,
+              msg.version,
+              msg.deadline_epoch ?? null,
+              msg.server_time
+            );
+            setLastShownAuctionPlayerId(msg.auction_player_id as number);
+            setLastBidInfo(null);
+            break;
+
+          case "auction_started":
+          case "auction_resumed":
+            store.setFullState({ status: "active" });
+            syncState();
+            break;
+          case "auction_paused":
+            store.setFullState({ status: "paused" });
+            break;
+          case "auction_completed":
+            store.setFullState({ status: "completed" });
+            break;
+          case "viewer_count":
+            setViewerCount(msg.count as number);
+            break;
+          default:
+            break;
+        }
+      },
+    });
     ws.connect();
 
-    ws.on("*", (msg) => {
-      if (msg.type === "timer_tick") store.setTimer(msg.remaining as number);
-      if (msg.type === "new_bid") {
-        store.updateBid(msg.auction_player_id as number, msg.amount as number, msg.captain_id as number);
-        const auction_player_id = msg.auction_player_id as number;
-        const amount = msg.amount as number;
-        const captain_id = msg.captain_id as number;
-        const time = new Date().toLocaleTimeString("en-IN", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        });
-        setLastBidInfo({ captain_id, amount });
-        setBidHistory((prev) => {
-          const top = prev[0];
-          // Guard against duplicate websocket delivery for the same bid event.
-          if (
-            top &&
-            top.auction_player_id === auction_player_id &&
-            top.captain_id === captain_id &&
-            top.amount === amount
-          ) {
-            return prev;
-          }
-          return [{ id: Date.now(), auction_player_id, captain_id, amount, time }, ...prev].slice(0, 20);
-        });
-      }
-      if (msg.type === "player_sold") {
-        store.markPlayerSold(msg.auction_player_id as number, msg.sold_to_captain_id as number, msg.sold_price as number);
-        syncState();
-      }
-      if (msg.type === "player_unsold") {
-        store.markPlayerUnsold(msg.auction_player_id as number);
-        setLastBidInfo(null);
-      }
-      if (msg.type === "player_up") {
-        store.setActivePlayer(msg.auction_player_id as number, msg.base_price as number);
-        setLastShownAuctionPlayerId(msg.auction_player_id as number);
-        setLastBidInfo(null);
-      }
-      if (msg.type === "auction_resumed") {
-        store.setFullState({ status: "active" });
-      }
-      if (msg.type === "auction_paused") {
-        store.setFullState({ status: "paused" });
-      }
-      if (msg.type === "auction_completed") {
-        store.setFullState({ status: "completed" });
-      }
-      if (msg.type === "viewer_count") {
-        setViewerCount(msg.count as number);
-      }
-    });
+    return () => ws.close();
+  }, [eid, store.status, store, syncState]);
 
-    return () => ws.disconnect();
-  }, [eid, store.status]);
+  // Derived from the server's absolute deadline (see store/auction.ts), so the
+  // clock does not drift and a reconnecting viewer is immediately correct.
+  // 1.x relied on a timer_tick broadcast once a second.
+  useEffect(() => {
+    if (store.deadlineEpoch == null) {
+      setSpectateSecondsLeft(null);
+      return;
+    }
+    const tick = () => {
+      const left = remainingSeconds(store.deadlineEpoch, store.clockOffset);
+      setSpectateSecondsLeft(left == null ? null : Math.ceil(left));
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [store.deadlineEpoch, store.clockOffset]);
 
   const activeAP = store.players.find((p) => p.id === store.activePlayerId);
   const displayAP =
@@ -189,7 +264,7 @@ export default function SpectatePage() {
     (lastShownAuctionPlayerId
       ? store.players.find((p) => p.id === lastShownAuctionPlayerId)
       : undefined);
-  const timer = store.timer;
+  const timer = spectateSecondsLeft ?? 0;
   const timerColor = timer > 30 ? "text-green-400" : timer > 10 ? "text-amber-400" : "text-red-400 animate-pulse";
   const captainIds = new Set(
     store.teams
@@ -203,9 +278,11 @@ export default function SpectatePage() {
   const unsoldPlayers = store.players.filter((p) => p.status === "unsold");
   const pendingCount = pendingPlayers.length;
 
-  const getTeamName = (captainId: number) => {
-    const team = store.teams.find((t) => t.captain_id === captainId);
-    return team ? team.name : playerNames[captainId] || `Captain #${captainId}`;
+  // Teams are identified by their own id now, not by their captain's user id.
+  const getTeamName = (teamId: number | null) => {
+    if (teamId == null) return "—";
+    const team = store.teams.find((t) => t.id === teamId);
+    return team ? team.name : `Team #${teamId}`;
   };
 
   const getTeamNameForPlayer = (playerId: number): string | null => {
@@ -406,7 +483,7 @@ export default function SpectatePage() {
                   </p>
                   <p className="text-sm text-gray-300 mt-3">
                     {displayAP.status === "sold"
-                      ? `${playerNames[displayAP.player_id] || `Player #${displayAP.player_id}`} sold to ${getTeamName(displayAP.current_bidder_id as number)} for ₹${displayAP.current_bid}`
+                      ? `${playerNames[displayAP.player_id] || `Player #${displayAP.player_id}`} sold to ${getTeamName(displayAP.current_bid_team_id as number)} for ₹${displayAP.current_bid}`
                       : `${playerNames[displayAP.player_id] || `Player #${displayAP.player_id}`} remains UNSOLD.`}
                   </p>
                   <p className="text-xs text-gray-500 mt-2">Waiting for auctioneer to move next player...</p>
@@ -419,7 +496,7 @@ export default function SpectatePage() {
                   </p>
                   {lastBidInfo && (
                     <p className="text-xl text-gray-300 mt-3">
-                      by <span className="font-bold text-white bg-gray-800 px-3 py-1 rounded-lg ml-2">{getTeamName(lastBidInfo.captain_id)}</span>
+                      by <span className="font-bold text-white bg-gray-800 px-3 py-1 rounded-lg ml-2">{getTeamName(lastBidInfo.team_id)}</span>
                     </p>
                   )}
                 </div>
@@ -439,7 +516,7 @@ export default function SpectatePage() {
                     <div className="mt-3 max-h-40 overflow-y-auto text-xs bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1.5">
                       {currentPlayerBidHistory.map((b) => (
                         <div key={b.id} className="flex justify-between items-center py-1 border-b border-gray-800 last:border-0">
-                          <span className="text-gray-300 truncate max-w-[55%]">{getTeamName(b.captain_id)}</span>
+                          <span className="text-gray-300 truncate max-w-[55%]">{getTeamName(b.team_id)}</span>
                           <span className="text-amber-300 font-medium">₹{b.amount}</span>
                           <span className="text-gray-500 text-[10px]">{b.time}</span>
                         </div>

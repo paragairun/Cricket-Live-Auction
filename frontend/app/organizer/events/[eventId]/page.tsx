@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import api from "@/lib/api";
+import api, { describeError } from "@/lib/api";
 import UserSearchInvite from "@/components/UserSearchInvite";
 
 interface User {
@@ -178,7 +178,7 @@ function TeamColorPicker({
 function TeamsTab({
   eventId,
   teams,
-  eligiblePlayers,
+  rosterPlayers,
   teamForm,
   setTeamForm,
   onCreateTeam,
@@ -189,7 +189,7 @@ function TeamsTab({
 }: {
   eventId: number;
   teams: Team[];
-  eligiblePlayers: User[];
+  rosterPlayers: EventPlayer[];
   teamForm: { name: string; color: string; budget?: string; max_players?: string };
   setTeamForm: (f: { name: string; color: string; budget?: string; max_players?: string }) => void;
   onCreateTeam: (e: React.FormEvent) => void;
@@ -201,7 +201,7 @@ function TeamsTab({
   const [showForm, setShowForm] = useState(editable && teams.length === 0);
   const [editingTeamId, setEditingTeamId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ name: "", color: "" });
-  const playerMap = Object.fromEntries(eligiblePlayers.map((p) => [p.id, p]));
+  const playerMap = Object.fromEntries(rosterPlayers.map((p) => [p.id, p]));
   
   // Get all captain IDs that are already assigned to other teams
   const assignedCaptainIds = new Set(
@@ -225,7 +225,7 @@ function TeamsTab({
             const isEditing = editingTeamId === team.id;
             
             // Filter out captains assigned to OTHER teams (but keep current team's captain in the list)
-            const availableCaptains = eligiblePlayers.filter(
+            const availableCaptains = rosterPlayers.filter(
               (p) => !assignedCaptainIds.has(p.id) || p.id === team.captain_id
             );
 
@@ -435,6 +435,27 @@ function TeamsTab({
 
 // ─── Players Tab ──────────────────────────────────────────────────────────────
 
+/** A roster player plus their state in this event. New in 2.0.0. */
+interface EventPlayer {
+  id: number;               // players.id
+  name: string;
+  email: string | null;
+  phone: string | null;
+  age: number | null;
+  profile_photo: string | null;
+  notes: string | null;
+  batting_rating: number;
+  bowling_rating: number;
+  fielding_rating: number;
+  created_at: string;
+  auction_player_id: number | null;
+  base_price: number | null;
+  category_id: number | null;
+  status: string | null;
+  sold_price: number | null;
+  sold_to_team_id: number | null;
+}
+
 function isValidEmail(val: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
 }
@@ -447,638 +468,599 @@ function toLocalDatetimeValue(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * Players tab.
+ *
+ * Version 2.0.0 (2026-11-20). Rewritten for the live-auction model: a player is
+ * a roster record the organizer types in, not a User account.
+ *
+ * 1.x worked the other way round. It listed "eligible players" — User rows
+ * whose email matched the event's allowed domains — and you added one to the
+ * event. Registering someone new meant inviting them by email and, in the CSV
+ * path, supplying a password column. For an auction that happens in a room,
+ * with players who never log in, that was the wrong shape: it forced an
+ * organizer to invent an address for every person on the list.
+ *
+ * Now `name` is the only required field.
+ */
 function PlayersTab({
   eventId,
-  eligiblePlayers,
-  auctionPlayers,
-  onAdd,
-  onRemove,
-  onInvited,
+  players,
+  onChanged,
   onToast,
   editable,
   eventStatus,
   categories,
-  createProfileOpen,
-  setCreateProfileOpen,
-  profileForm,
-  setProfileForm,
-  creatingProfile,
-  createPlayerProfile,
+  teams,
+  eventBasePrice,
 }: {
   eventId: number;
-  eligiblePlayers: User[];
-  auctionPlayers: AuctionPlayer[];
-  onAdd: (id: number, categoryId?: number) => void;
-  onRemove: (id: number) => void;
-  onInvited: () => void;
+  players: EventPlayer[];
+  onChanged: () => void;
   onToast: (type: "ok" | "err", text: string) => void;
   editable: boolean;
   eventStatus: string | undefined;
   categories: PlayerCategory[];
-  createProfileOpen: boolean;
-  setCreateProfileOpen: (v: boolean) => void;
-  profileForm: {
-    name: string;
-    email: string;
-    phone: string;
-    age: string;
-    batting_rating: number;
-    bowling_rating: number;
-    fielding_rating: number;
-    password: string;
-  };
-  setProfileForm: (f: {
-    name: string;
-    email: string;
-    phone: string;
-    age: string;
-    batting_rating: number;
-    bowling_rating: number;
-    fielding_rating: number;
-    password: string;
-  }) => void;
-  creatingProfile: boolean;
-  createPlayerProfile: () => Promise<void>;
+  teams: Team[];
+  eventBasePrice: number;
 }) {
-  const [search, setSearch] = useState("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviting, setInviting] = useState(false);
-  const [displayCount, setDisplayCount] = useState(15);
-  const [filter, setFilter] = useState<"all" | "added" | "not_added">("all");
-  const [importOpen, setImportOpen] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [pendingAdd, setPendingAdd] = useState<number | null>(null); // player waiting for category selection
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-  const [editPlayerId, setEditPlayerId] = useState<number | null>(null);
-  const [editProfileOpen, setEditProfileOpen] = useState(false);
-  const [editProfileForm, setEditProfileForm] = useState({
+  const emptyForm = {
     name: "",
-    email: "",
     phone: "",
+    email: "",
     age: "",
     batting_rating: 5,
     bowling_rating: 5,
     fielding_rating: 5,
     category_id: null as number | null,
-  });
-  const [editingProfile, setEditingProfile] = useState(false);
-  const addedIds = new Set(auctionPlayers.map((ap) => ap.player_id));
+    base_price: "" as string,
+  };
 
-  // If the event is completed, only show the players who were actually added to the auction
-  let basePlayers = eventStatus === "completed" 
-    ? eligiblePlayers.filter((p) => addedIds.has(p.id))
-    : eligiblePlayers;
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "sold" | "unsold" | "pending">("all");
+  const [displayCount, setDisplayCount] = useState(25);
+  const [addOpen, setAddOpen] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importReport, setImportReport] = useState<{
+    imported: number;
+    skipped: number;
+    errors: string[];
+  } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [busyRow, setBusyRow] = useState<number | null>(null);
 
-  if (filter === "added") {
-    basePlayers = basePlayers.filter((p) => addedIds.has(p.id));
-  } else if (filter === "not_added") {
-    basePlayers = basePlayers.filter((p) => !addedIds.has(p.id));
-  }
-
-  const filtered = basePlayers.filter(
-    (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.email.toLowerCase().includes(search.toLowerCase())
+  const captainIds = new Set(
+    teams.map((t) => t.captain_id).filter((id): id is number => id !== null)
   );
+  const teamNameById = Object.fromEntries(teams.map((t) => [t.id, t.name]));
 
-  // Is the typed search text an email not already in the list?
-  const notFound =
-    search.length > 3 &&
-    isValidEmail(search) &&
-    !basePlayers.some((p) => p.email.toLowerCase() === search.toLowerCase());
+  let visible = players;
+  if (filter !== "all") visible = visible.filter((p) => (p.status ?? "pending") === filter);
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    visible = visible.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.phone ?? "").includes(q) ||
+        (p.email ?? "").toLowerCase().includes(q)
+    );
+  }
+  const shown = visible.slice(0, displayCount);
 
-  const sendInvite = async (email: string) => {
-    setInviting(true);
+  const counts = {
+    all: players.length,
+    pending: players.filter((p) => (p.status ?? "pending") === "pending").length,
+    sold: players.filter((p) => p.status === "sold").length,
+    unsold: players.filter((p) => p.status === "unsold").length,
+  };
+
+  const resolvedBasePrice = (categoryId: number | null) => {
+    const cat = categories.find((c) => c.id === categoryId);
+    if (cat && cat.base_price > 0) return cat.base_price;
+    return eventBasePrice;
+  };
+
+  const openAdd = () => {
+    setForm(emptyForm);
+    setEditingId(null);
+    setAddOpen(true);
+  };
+
+  const openEdit = (player: EventPlayer) => {
+    setForm({
+      name: player.name,
+      phone: player.phone ?? "",
+      email: player.email ?? "",
+      age: player.age ? String(player.age) : "",
+      batting_rating: player.batting_rating,
+      bowling_rating: player.bowling_rating,
+      fielding_rating: player.fielding_rating,
+      category_id: player.category_id ?? null,
+      base_price: player.base_price ? String(player.base_price) : "",
+    });
+    setEditingId(player.auction_player_id ?? null);
+    setAddOpen(true);
+  };
+
+  const save = async () => {
+    if (!form.name.trim()) {
+      onToast("err", "A player needs a name");
+      return;
+    }
+    setSaving(true);
     try {
-      const { data } = await api.post(`/organizer/events/${eventId}/invite-player`, { email });
-      onToast("ok", data.message);
-      setSearch("");
-      if (data.status === "added") onInvited();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onToast("err", msg || "Failed to invite");
+      // Only `name` is sent unconditionally. Everything else is omitted when
+      // blank, so no empty strings reach the API.
+      const payload: Record<string, unknown> = { name: form.name.trim() };
+      if (form.phone.trim()) payload.phone = form.phone.trim();
+      if (form.email.trim()) payload.email = form.email.trim();
+      if (form.age.trim()) payload.age = Number(form.age);
+      payload.batting_rating = form.batting_rating;
+      payload.bowling_rating = form.bowling_rating;
+      payload.fielding_rating = form.fielding_rating;
+
+      if (editingId) {
+        await api.patch(`/organizer/events/${eventId}/players/${editingId}`, payload);
+        const basePrice = form.base_price.trim() ? Number(form.base_price) : undefined;
+        if (basePrice !== undefined || form.category_id !== null) {
+          await api.patch(
+            `/organizer/events/${eventId}/players/${editingId}/auction-settings`,
+            {
+              ...(basePrice !== undefined ? { base_price: basePrice } : {}),
+              category_id: form.category_id,
+            }
+          );
+        }
+        onToast("ok", `${form.name.trim()} updated`);
+      } else {
+        const params = new URLSearchParams();
+        const basePrice = form.base_price.trim()
+          ? Number(form.base_price)
+          : resolvedBasePrice(form.category_id);
+        params.set("base_price", String(basePrice));
+        if (form.category_id !== null) params.set("category_id", String(form.category_id));
+        await api.post(
+          `/organizer/events/${eventId}/players?${params.toString()}`,
+          payload
+        );
+        onToast("ok", `${form.name.trim()} added`);
+      }
+      setAddOpen(false);
+      setForm(emptyForm);
+      setEditingId(null);
+      onChanged();
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
     } finally {
-      setInviting(false);
+      setSaving(false);
     }
   };
 
-  const handleImportCsv = async () => {
+  const remove = async (player: EventPlayer) => {
+    if (!player.auction_player_id) return;
+    if (!confirm(`Remove ${player.name} from this auction?`)) return;
+    setBusyRow(player.auction_player_id);
+    try {
+      await api.delete(`/organizer/events/${eventId}/players/${player.auction_player_id}`);
+      onToast("ok", `${player.name} removed`);
+      onChanged();
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
+    } finally {
+      setBusyRow(null);
+    }
+  };
+
+  const runImport = async () => {
     if (!csvFile) return;
     setImporting(true);
-    const formData = new FormData();
-    formData.append("file", csvFile);
+    setImportReport(null);
     try {
-      const { data } = await api.post(`/organizer/events/${eventId}/import-players`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      onToast("ok", `Imported ${data.imported} players${data.skipped ? ` (${data.skipped} skipped)` : ""}`);
-      if (data.errors.length) {
-        console.warn("Import warnings:", data.errors);
-      }
-      setImportOpen(false);
+      const formData = new FormData();
+      formData.append("file", csvFile);
+      const { data } = await api.post(
+        `/organizer/events/${eventId}/import-players`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      );
+      setImportReport(data);
+      onToast("ok", `Imported ${data.imported} player(s)`);
       setCsvFile(null);
-      onInvited();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onToast("err", msg || "Import failed");
+      onChanged();
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
     } finally {
       setImporting(false);
     }
   };
 
-  const handleExportXlsx = async () => {
+  const exportXlsx = async () => {
     setExporting(true);
     try {
       const res = await api.get(`/organizer/events/${eventId}/players/export-xlsx`, {
         responseType: "blob",
       });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const url = URL.createObjectURL(res.data as Blob);
       const a = document.createElement("a");
       a.href = url;
-      const disposition = res.headers["content-disposition"] || "";
-      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-      a.download = filenameMatch ? filenameMatch[1] : `event_${eventId}_players.xlsx`;
-      document.body.appendChild(a);
+      a.download = `players-event-${eventId}.xlsx`;
       a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      onToast("ok", "Players exported to Excel");
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onToast("err", msg || "Export failed");
+      URL.revokeObjectURL(url);
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
     } finally {
       setExporting(false);
     }
   };
 
-  const openEditProfile = (player: User) => {
-    const ap = auctionPlayers.find((a) => a.player_id === player.id);
-    setEditProfileForm({
-      name: player.name,
-      email: player.email,
-      phone: player.phone || "",
-      age: player.age ? String(player.age) : "",
-      batting_rating: player.batting_rating,
-      bowling_rating: player.bowling_rating,
-      fielding_rating: player.fielding_rating,
-      category_id: ap?.category_id ?? null,
-    });
-    setEditPlayerId(player.id);
-    setEditProfileOpen(true);
-  };
-
-  const editPlayerProfile = async () => {
-    if (!editPlayerId) return;
-    setEditingProfile(true);
-    try {
-      const payload: Record<string, unknown> = {};
-      if (editProfileForm.name) payload.name = editProfileForm.name;
-      if (editProfileForm.email) payload.email = editProfileForm.email;
-      if (editProfileForm.phone) payload.phone = editProfileForm.phone;
-      if (editProfileForm.age) payload.age = Number(editProfileForm.age);
-      payload.batting_rating = editProfileForm.batting_rating;
-      payload.bowling_rating = editProfileForm.bowling_rating;
-      payload.fielding_rating = editProfileForm.fielding_rating;
-      if (editProfileForm.category_id !== null && editProfileForm.category_id !== undefined) {
-        payload.category_id = editProfileForm.category_id;
-      }
-
-      const { data } = await api.patch(
-        `/organizer/events/${eventId}/players/${editPlayerId}/profile`,
-        payload
-      );
-      onToast("ok", `Updated ${data.name}`);
-      setEditProfileOpen(false);
-      setEditPlayerId(null);
-      onInvited();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      onToast("err", msg || "Failed to update profile");
-    } finally {
-      setEditingProfile(false);
-    }
+  const statusChip = (player: EventPlayer) => {
+    const status = player.status ?? "pending";
+    const map: Record<string, string> = {
+      pending: "bg-gray-700/50 text-gray-300",
+      active: "bg-amber-500/20 text-amber-300",
+      sold: "bg-green-500/20 text-green-300",
+      unsold: "bg-red-500/20 text-red-300",
+    };
+    return (
+      <span className={`px-2 py-0.5 rounded text-xs font-medium ${map[status] ?? map.pending}`}>
+        {status}
+      </span>
+    );
   };
 
   return (
     <div className="space-y-4">
-      {/* Filters and Search */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</div>
-          <input
-            className="input pl-9"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or email — or type a full email to invite"
-          />
-        </div>
-        
-        {eventStatus !== "completed" && (
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, phone or email"
+          className="flex-1 min-w-[220px] bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm"
+        />
+        <select
+          value={filter}
+          onChange={(e) => setFilter(e.target.value as typeof filter)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="all">All ({counts.all})</option>
+          <option value="pending">Pending ({counts.pending})</option>
+          <option value="sold">Sold ({counts.sold})</option>
+          <option value="unsold">Unsold ({counts.unsold})</option>
+        </select>
+
+        {editable && (
           <>
-            <select
-              className="input w-full sm:w-40 text-sm bg-gray-900"
-              value={filter}
-              onChange={(e) => {
-                setFilter(e.target.value as "all" | "added" | "not_added");
-                setDisplayCount(15);
-              }}
+            <button
+              onClick={openAdd}
+              className="bg-amber-500 hover:bg-amber-400 text-black font-semibold px-4 py-2 rounded-lg text-sm"
             >
-              <option value="all">All Players</option>
-              <option value="added">Added ({auctionPlayers.length})</option>
-              <option value="not_added">Not Added ({eligiblePlayers.length - auctionPlayers.length})</option>
-            </select>
-            {editable && (
-              <>
-                <a
-                  href="/sample-players.csv"
-                  download
-                  className="btn-secondary text-sm px-4 py-2 shrink-0"
-                >
-                  📄 Download Sample CSV
-                </a>
-                <button
-                  type="button"
-                  className="btn-primary text-sm px-4 py-2 shrink-0"
-                  onClick={() => setImportOpen(true)}
-                  disabled={importing}
-                >
-                  {importing ? "Importing..." : "Import CSV"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary text-sm px-4 py-2 shrink-0 border-green-500/30 hover:border-green-500 hover:bg-green-500/10"
-                  disabled={auctionPlayers.length === 0 || exporting}
-                  onClick={handleExportXlsx}
-                >
-                  {exporting ? "Exporting..." : "Export XLSX"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary text-sm px-4 py-2 shrink-0 border-amber-500/30 hover:border-amber-500 hover:bg-amber-500/10"
-                  onClick={() => setCreateProfileOpen(true)}
-                  disabled={creatingProfile}
-                >
-                  {creatingProfile ? "Creating..." : "+ Create Player Profile"}
-                </button>
-              </>
-            )}
+              + Add player
+            </button>
+            <button
+              onClick={() => setImportOpen(true)}
+              className="bg-gray-800 hover:bg-gray-700 border border-gray-700 px-4 py-2 rounded-lg text-sm"
+            >
+              Import CSV
+            </button>
           </>
         )}
+        <button
+          onClick={exportXlsx}
+          disabled={players.length === 0 || exporting}
+          className="bg-gray-800 hover:bg-gray-700 border border-gray-700 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+        >
+          {exporting ? "Exporting…" : "Export XLSX"}
+        </button>
       </div>
 
-      {/* Invite unregistered email prompt */}
-      {editable && notFound && (
-        <div className="flex items-center justify-between bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3">
-          <div>
-            <p className="text-sm text-amber-300 font-medium">Not registered yet</p>
-            <p className="text-xs text-gray-500 mt-0.5">{search}</p>
-          </div>
-          <button
-            className="btn-primary text-sm py-1.5 px-4 shrink-0"
-            disabled={inviting}
-            onClick={() => sendInvite(search)}
-          >
-            {inviting ? "Sending..." : "Send Invite"}
-          </button>
-        </div>
-      )}
-
-      {/* Player grid */}
-      {eligiblePlayers.length === 0 ? (
-        <div className="card text-center py-10 text-gray-500 text-sm">
-          No eligible players found. Make sure allowed email domains are configured in the admin panel.
-        </div>
-      ) : filtered.length === 0 && !notFound ? (
-        <div className="text-center py-8 text-gray-600 text-sm">
-          No players match &ldquo;{search}&rdquo;
+      {/* Roster */}
+      {players.length === 0 ? (
+        <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
+          <p className="text-4xl mb-3">🏏</p>
+          <p className="text-gray-400 font-medium">No players yet.</p>
+          <p className="text-sm text-gray-600 mt-1">
+            A name is all you need — phone, email and ratings are optional.
+          </p>
+          {editable && (
+            <button
+              onClick={openAdd}
+              className="mt-4 bg-amber-500 hover:bg-amber-400 text-black font-semibold px-5 py-2 rounded-lg text-sm"
+            >
+              Add the first player
+            </button>
+          )}
         </div>
       ) : (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.slice(0, displayCount).map((player) => {
-              const added = addedIds.has(player.id);
-              return (
-                <div
-                  key={player.id}
-                  className={`flex items-center gap-3 bg-gray-900 border rounded-xl p-3 transition-colors ${
-                    added ? "border-green-800/50" : "border-gray-800"
-                  }`}
-                >
-                  <div className="w-10 h-10 rounded-full bg-gray-800 overflow-hidden shrink-0 flex items-center justify-center">
-                    {player.profile_photo ? (
-                      <img src={player.profile_photo} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-lg">👤</span>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{player.name}</p>
-                    <p className="text-xs text-gray-500 truncate">{player.email}</p>
-                    <div className="flex gap-2 text-xs text-gray-600 mt-0.5">
-                      <span>🏏 {player.batting_rating}</span>
-                      <span>🎯 {player.bowling_rating}</span>
-                      <span>🤸 {player.fielding_rating}</span>
-                    </div>
-                  </div>
-                  {added ? (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="badge-sold">Added ✓</span>
-                      {editable && (
-                        <>
-                          <button
-                            className="text-blue-400 hover:text-blue-300 transition-colors text-lg leading-none"
-                            onClick={() => openEditProfile(player)}
-                            title="Edit profile"
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            className="text-gray-600 hover:text-red-400 transition-colors text-lg leading-none"
-                            onClick={() => onRemove(player.id)}
-                            title="Remove from event"
-                          >
-                            ×
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  ) : editable && categories.length > 0 ? (
-                    <button
-                      className="btn-primary text-xs px-3 py-1.5 shrink-0"
-                      onClick={() => { setPendingAdd(player.id); setSelectedCategory(null); }}
-                    >
-                      Add
-                    </button>
-                  ) : editable ? (
-                    <button
-                      className="btn-primary text-xs px-3 py-1.5 shrink-0"
-                      onClick={() => onAdd(player.id)}
-                    >
-                      Add
-                    </button>
+        <div className="border border-gray-800 rounded-xl overflow-hidden">
+          {shown.map((player) => {
+            const isCaptain = captainIds.has(player.id);
+            return (
+              <div
+                key={player.id}
+                className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 last:border-0 hover:bg-gray-900/50"
+              >
+                <div className="w-9 h-9 rounded-full bg-gray-800 overflow-hidden flex items-center justify-center text-sm font-semibold shrink-0">
+                  {player.profile_photo ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={player.profile_photo}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
-                    <span className="text-xs text-gray-600">Locked</span>
+                    player.name.charAt(0).toUpperCase()
                   )}
                 </div>
-              );
-            })}
-          </div>
-          {displayCount < filtered.length && (
-            <div className="text-center mt-6">
-              <button
-                className="btn-secondary text-sm px-6 py-2"
-                onClick={() => setDisplayCount(v => v + 15)}
-              >
-                Load More ({filtered.length - displayCount} remaining)
-              </button>
-            </div>
-          )}
 
-          {/* Category selection dialog for adding a player */}
-          {pendingAdd && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-                <h3 className="text-lg font-bold text-white mb-1">Assign Category</h3>
-                <p className="text-sm text-gray-400 mb-4">
-                  Select a category for this player to set their base price.
-                </p>
-
-                <div className="space-y-3 mb-6">
-                  <label className="block text-xs font-medium text-gray-400 uppercase">Category</label>
-                  <select
-                    className="input w-full text-sm bg-gray-800 border-gray-700"
-                    value={selectedCategory || ""}
-                    onChange={(e) => setSelectedCategory(e.target.value ? Number(e.target.value) : null)}
-                  >
-                    <option value="">None (use event base price)</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} — ₹{c.base_price.toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium truncate">{player.name}</p>
+                    {isCaptain && (
+                      <span className="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-300">
+                        captain
+                      </span>
+                    )}
+                    {statusChip(player)}
+                  </div>
+                  <p className="text-xs text-gray-500 truncate">
+                    {[player.phone, player.email].filter(Boolean).join(" · ") || "No contact details"}
+                    {" · "}
+                    bat {player.batting_rating} / bowl {player.bowling_rating} / field{" "}
+                    {player.fielding_rating}
+                  </p>
                 </div>
 
-                <div className="flex justify-end gap-3">
-                  <button
-                    type="button"
-                    className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
-                    onClick={() => { setPendingAdd(null); setSelectedCategory(null); }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary px-6 py-2"
-                    disabled={selectedCategory === null}
-                    onClick={() => {
-                      if (pendingAdd) {
-                        onAdd(pendingAdd, selectedCategory || undefined);
-                        setPendingAdd(null);
-                        setSelectedCategory(null);
-                      }
-                    }}
-                  >
-                    Assign & Add
-                  </button>
+                <div className="text-right shrink-0">
+                  {player.status === "sold" ? (
+                    <>
+                      <p className="text-sm font-semibold text-green-400">
+                        ₹{(player.sold_price ?? 0).toLocaleString("en-IN")}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {player.sold_to_team_id
+                          ? teamNameById[player.sold_to_team_id] ?? "—"
+                          : "—"}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500">
+                      base ₹{(player.base_price ?? 0).toLocaleString("en-IN")}
+                    </p>
+                  )}
                 </div>
+
+                {editable && (
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={() => openEdit(player)}
+                      className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => remove(player)}
+                      disabled={busyRow === player.auction_player_id}
+                      className="px-2 py-1 text-xs bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 rounded disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
+            );
+          })}
+
+          {visible.length > shown.length && (
+            <button
+              onClick={() => setDisplayCount((c) => c + 25)}
+              className="w-full py-3 text-sm text-gray-400 hover:text-white hover:bg-gray-900"
+            >
+              Show more ({visible.length - shown.length} remaining)
+            </button>
           )}
-        </>
+        </div>
       )}
 
-      {/* Summary footer */}
-      <p className="text-xs text-gray-600 text-right mt-4">
-        {auctionPlayers.length} of {basePlayers.length} eligible players added
+      <p className="text-xs text-gray-600">
+        {players.length} player{players.length === 1 ? "" : "s"} in this auction
+        {eventStatus === "completed" && " · auction complete"}
       </p>
 
-      {/* Edit Player Profile dialog */}
-      {editProfileOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-1">Edit Player Profile</h3>
-            <p className="text-sm text-gray-400 mb-6">
-              Update the player's details. Email changes must be unique.
+      {/* Add / edit modal */}
+      {addOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-bold mb-1">
+              {editingId ? "Edit player" : "Add player"}
+            </h3>
+            <p className="text-xs text-gray-500 mb-5">
+              Only the name is required.
             </p>
 
-            <form onSubmit={(e) => { e.preventDefault(); editPlayerProfile(); }} className="space-y-3">
+            <div className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Full Name</label>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Name <span className="text-amber-400">*</span>
+                </label>
                 <input
-                  type="text"
-                  className="input w-full text-sm"
-                  value={editProfileForm.name}
-                  onChange={(e) => setEditProfileForm({ ...editProfileForm, name: e.target.value })}
-                  placeholder="Virat Kohli"
-                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Ramesh Kumar"
                   autoFocus
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
                 />
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Phone</label>
+                  <input
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    placeholder="Optional"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Age</label>
+                  <input
+                    type="number"
+                    value={form.age}
+                    onChange={(e) => setForm({ ...form, age: e.target.value })}
+                    placeholder="Optional"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+
               <div>
-                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Email</label>
+                <label className="block text-xs text-gray-400 mb-1">Email</label>
                 <input
                   type="email"
-                  className="input w-full text-sm"
-                  value={editProfileForm.email}
-                  onChange={(e) => setEditProfileForm({ ...editProfileForm, email: e.target.value })}
-                  placeholder="virat@example.com"
-                  required
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  placeholder="Optional — players do not log in"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Phone</label>
-                <input
-                  type="tel"
-                  className="input w-full text-sm"
-                  value={editProfileForm.phone}
-                  onChange={(e) => setEditProfileForm({ ...editProfileForm, phone: e.target.value })}
-                  placeholder="+91 98765 43210"
-                />
+
+              <div className="grid grid-cols-3 gap-3">
+                {(["batting_rating", "bowling_rating", "fielding_rating"] as const).map(
+                  (field) => (
+                    <div key={field}>
+                      <label className="block text-xs text-gray-400 mb-1 capitalize">
+                        {field.replace("_rating", "")}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={10}
+                        step={0.5}
+                        value={form[field]}
+                        onChange={(e) =>
+                          setForm({ ...form, [field]: Number(e.target.value) })
+                        }
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                      />
+                    </div>
+                  )
+                )}
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Age</label>
-                <input
-                  type="number"
-                  className="input w-full text-sm"
-                  value={editProfileForm.age}
-                  onChange={(e) => setEditProfileForm({ ...editProfileForm, age: e.target.value })}
-                  placeholder="25"
-                  min={1}
-                  max={100}
-                />
-              </div>
-              {categories.length > 0 && (
+
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Category</label>
+                  <label className="block text-xs text-gray-400 mb-1">Category</label>
                   <select
-                    className="input w-full text-sm bg-gray-800 border-gray-700"
-                    value={editProfileForm.category_id ?? ""}
+                    value={form.category_id ?? ""}
                     onChange={(e) =>
-                      setEditProfileForm({
-                        ...editProfileForm,
+                      setForm({
+                        ...form,
                         category_id: e.target.value ? Number(e.target.value) : null,
                       })
                     }
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
                   >
                     <option value="">None</option>
                     {categories.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.name} (₹{c.base_price.toLocaleString()})
+                        {c.name} {c.base_price > 0 ? `(₹${c.base_price})` : ""}
                       </option>
                     ))}
                   </select>
                 </div>
-              )}
-              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Batting Rating</label>
+                  <label className="block text-xs text-gray-400 mb-1">Base price</label>
                   <input
                     type="number"
-                    className="input w-full text-sm"
-                    value={editProfileForm.batting_rating}
-                    onChange={(e) => setEditProfileForm({ ...editProfileForm, batting_rating: Number(e.target.value) || 5 })}
-                    min={1}
-                    max={10}
-                    step={0.5}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Bowling Rating</label>
-                  <input
-                    type="number"
-                    className="input w-full text-sm"
-                    value={editProfileForm.bowling_rating}
-                    onChange={(e) => setEditProfileForm({ ...editProfileForm, bowling_rating: Number(e.target.value) || 5 })}
-                    min={1}
-                    max={10}
-                    step={0.5}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Fielding Rating</label>
-                  <input
-                    type="number"
-                    className="input w-full text-sm"
-                    value={editProfileForm.fielding_rating}
-                    onChange={(e) => setEditProfileForm({ ...editProfileForm, fielding_rating: Number(e.target.value) || 5 })}
-                    min={1}
-                    max={10}
-                    step={0.5}
+                    value={form.base_price}
+                    onChange={(e) => setForm({ ...form, base_price: e.target.value })}
+                    placeholder={String(resolvedBasePrice(form.category_id))}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
                   />
                 </div>
               </div>
-
-              <div className="mt-6 flex justify-end gap-3">
-                <button
-                  type="button"
-                  className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
-                  onClick={() => { setEditProfileOpen(false); setEditPlayerId(null); }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn-primary px-6 py-2"
-                  disabled={editingProfile}
-                >
-                  {editingProfile ? "Saving..." : "Save Changes"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* CSV Import Dialog */}
-      {importOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-            <h3 className="text-lg font-bold text-white mb-1">Import Players from CSV</h3>
-            <p className="text-sm text-gray-400 mb-4">
-              Upload a CSV with columns: <code className="text-gray-300">name,email,password,phone,batting_rating,bowling_rating,fielding_rating</code>
-              <br />
-              <span className="text-xs text-gray-500 block mt-1">Only <b>name</b> and <b>email</b> are required.</span>
-            </p>
-
-            <div className="space-y-3">
-              <label className="block text-xs font-medium text-gray-400 uppercase">CSV File</label>
-              <input
-                type="file"
-                accept=".csv"
-                className="block w-full text-sm text-gray-400
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-full file:border-0
-                  file:text-sm file:font-semibold
-                  file:bg-amber-500/10 file:text-amber-400
-                  hover:file:bg-amber-500/20"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) setCsvFile(f);
-                }}
-              />
-              {csvFile && (
-                <p className="text-xs text-gray-500">{csvFile.name}</p>
-              )}
             </div>
 
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="flex gap-3 mt-6">
               <button
-                type="button"
-                className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
-                onClick={() => { setImportOpen(false); setCsvFile(null); }}
+                onClick={() => {
+                  setAddOpen(false);
+                  setEditingId(null);
+                  setForm(emptyForm);
+                }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 py-2 rounded-lg text-sm"
               >
                 Cancel
               </button>
               <button
-                type="button"
-                className="btn-primary px-6 py-2"
-                disabled={!csvFile || importing}
-                onClick={handleImportCsv}
+                onClick={save}
+                disabled={saving || !form.name.trim()}
+                className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-semibold py-2 rounded-lg text-sm disabled:opacity-40"
               >
-                {importing ? "Importing..." : "Import Players"}
+                {saving ? "Saving…" : editingId ? "Save changes" : "Add player"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CSV import modal */}
+      {importOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-lg">
+            <h3 className="text-lg font-bold mb-1">Import players from CSV</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              The only required column is <code className="text-gray-300">name</code>.
+              Optional: <code className="text-gray-300">email, phone, age,
+              batting_rating, bowling_rating, fielding_rating, category, base_price</code>.
+            </p>
+
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+            />
+
+            {importReport && (
+              <div className="mt-4 text-sm space-y-2">
+                <p className="text-green-400">Imported {importReport.imported}</p>
+                {importReport.skipped > 0 && (
+                  <p className="text-amber-400">Skipped {importReport.skipped}</p>
+                )}
+                {importReport.errors.length > 0 && (
+                  <ul className="text-xs text-gray-400 max-h-40 overflow-y-auto space-y-1">
+                    {importReport.errors.map((err, i) => (
+                      <li key={i}>• {err}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setImportOpen(false);
+                  setCsvFile(null);
+                  setImportReport(null);
+                }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 py-2 rounded-lg text-sm"
+              >
+                Close
+              </button>
+              <button
+                onClick={runImport}
+                disabled={!csvFile || importing}
+                className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-semibold py-2 rounded-lg text-sm disabled:opacity-40"
+              >
+                {importing ? "Importing…" : "Import"}
               </button>
             </div>
           </div>
@@ -1096,8 +1078,10 @@ export default function OrganizerEventDetailPage() {
   const eid = parseInt(eventId);
 
   const [event, setEvent] = useState<EventDetail | null>(null);
-  const [eligiblePlayers, setEligiblePlayers] = useState<User[]>([]);
-  const [auctionPlayers, setAuctionPlayers] = useState<AuctionPlayer[]>([]);
+  // 2.0.0: one list. 1.x kept "eligible players" (User rows matching the
+  // event's allowed email domains) separate from the players added to the
+  // auction. Players are roster records now, created straight into the event.
+  const [rosterPlayers, setRosterPlayers] = useState<EventPlayer[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [bidSlabs, setBidSlabs] = useState<BidSlab[]>([]);
@@ -1114,18 +1098,6 @@ export default function OrganizerEventDetailPage() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [creatingSlab, setCreatingSlab] = useState(false);
   const [creatingCat, setCreatingCat] = useState(false);
-  const [createProfileOpen, setCreateProfileOpen] = useState(false);
-  const [profileForm, setProfileForm] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    age: "",
-    batting_rating: 5,
-    bowling_rating: 5,
-    fielding_rating: 5,
-    password: "",
-  });
-  const [creatingProfile, setCreatingProfile] = useState(false);
 
   const showToast = (type: "ok" | "err", text: string) => {
     setToast({ type, text });
@@ -1133,9 +1105,8 @@ export default function OrganizerEventDetailPage() {
   };
 
   const fetchAll = useCallback(async () => {
-    const [evRes, eligible, aPlayers, teamsRes, readinessRes, slabsRes, catsRes] = await Promise.all([
+    const [evRes, aPlayers, teamsRes, readinessRes, slabsRes, catsRes] = await Promise.all([
       api.get(`/auction/events/${eid}`).catch(() => null),
-      api.get(`/organizer/events/${eid}/eligible-players`),
       api.get(`/organizer/events/${eid}/players`),
       api.get(`/organizer/events/${eid}/teams`),
       api.get(`/events/${eid}/readiness`),
@@ -1152,8 +1123,7 @@ export default function OrganizerEventDetailPage() {
         no_timer: evRes.data.no_timer ?? false,
       });
     }
-    setEligiblePlayers(eligible.data);
-    setAuctionPlayers(aPlayers.data);
+    setRosterPlayers(aPlayers.data);
     setTeams(teamsRes.data);
     setReadiness(readinessRes.data);
     setBidSlabs(slabsRes.data);
@@ -1168,26 +1138,6 @@ export default function OrganizerEventDetailPage() {
       }
     });
   }, [eid, fetchAll]);
-
-  const addPlayer = async (playerId: number, categoryId?: number) => {
-    try {
-      await api.post(`/organizer/events/${eid}/players`, { player_id: playerId, category_id: categoryId });
-      await fetchAll();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      showToast("err", msg || "Failed to add player");
-    }
-  };
-
-  const removePlayer = async (playerId: number) => {
-    try {
-      await api.delete(`/organizer/events/${eid}/players/${playerId}`);
-      await fetchAll();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      showToast("err", msg || "Failed to remove player");
-    }
-  };
 
   const createTeam = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1383,35 +1333,6 @@ export default function OrganizerEventDetailPage() {
     }
   };
 
-  const createPlayerProfile = async () => {
-    setCreatingProfile(true);
-    try {
-      const { data } = await api.post(`/organizer/events/${eid}/players/create-profile`, {
-        name: profileForm.name,
-        email: profileForm.email,
-        phone: profileForm.phone || undefined,
-        age: profileForm.age ? Number(profileForm.age) : undefined,
-        batting_rating: profileForm.batting_rating,
-        bowling_rating: profileForm.bowling_rating,
-        fielding_rating: profileForm.fielding_rating,
-        password: profileForm.password || undefined,
-      });
-      showToast("ok", `Player profile created: ${data.name}`);
-      setProfileForm({
-        name: "", email: "", phone: "", age: "", batting_rating: 5, bowling_rating: 5, fielding_rating: 5, password: "",
-      });
-      setCreateProfileOpen(false);
-      await fetchAll();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      showToast("err", msg || "Failed to create player profile");
-    } finally {
-      setCreatingProfile(false);
-    }
-  };
-
-  const addedPlayerIds = new Set(auctionPlayers.map((ap) => ap.player_id));
-  const playerMap = Object.fromEntries(eligiblePlayers.map((p) => [p.id, p]));
 
   const scheduledDate = event?.scheduled_at ? new Date(event.scheduled_at) : null;
   const now = new Date();
@@ -1424,7 +1345,7 @@ export default function OrganizerEventDetailPage() {
   const isDraft = event?.status === "draft";
 
   const TABS = [
-    { key: "players", label: "Players", count: auctionPlayers.length },
+    { key: "players", label: "Players", count: rosterPlayers.length },
     { key: "teams", label: "Teams", count: teams.length },
     { key: "auctioneer", label: "Auctioneer", count: readiness?.auctioneer_id ? 1 : 0 },
     { key: "bid-slabs", label: "Bid Slabs", count: bidSlabs.length },
@@ -1558,21 +1479,14 @@ export default function OrganizerEventDetailPage() {
             {tab === "players" && (
               <PlayersTab
                 eventId={eid}
-                eligiblePlayers={eligiblePlayers}
-                auctionPlayers={auctionPlayers}
-                onAdd={addPlayer}
-                onRemove={removePlayer}
-                onInvited={fetchAll}
+                players={rosterPlayers}
+                onChanged={fetchAll}
                 onToast={showToast}
                 editable={isDraft}
                 eventStatus={event?.status}
                 categories={categories}
-                createProfileOpen={createProfileOpen}
-                setCreateProfileOpen={setCreateProfileOpen}
-                profileForm={profileForm}
-                setProfileForm={setProfileForm}
-                creatingProfile={creatingProfile}
-                createPlayerProfile={createPlayerProfile}
+                teams={teams}
+                eventBasePrice={event?.player_base_price ?? 1000}
               />
             )}
 
@@ -1581,7 +1495,7 @@ export default function OrganizerEventDetailPage() {
               <TeamsTab
                 eventId={eid}
                 teams={teams}
-                eligiblePlayers={eligiblePlayers}
+                rosterPlayers={rosterPlayers}
                 teamForm={teamForm}
                 setTeamForm={setTeamForm}
                 onCreateTeam={createTeam}
@@ -1974,134 +1888,6 @@ export default function OrganizerEventDetailPage() {
               </div>
             )}
 
-            {/* Create Player Profile dialog */}
-            {createProfileOpen && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-                  <h3 className="text-lg font-bold text-white mb-1">Create Player Profile</h3>
-                  <p className="text-sm text-gray-400 mb-6">
-                    The organiser creates the player account directly. The player can log in later
-                    with the password below (or via magic code / reset password).
-                  </p>
-
-                  <form onSubmit={(e) => { e.preventDefault(); createPlayerProfile(); }} className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Full Name</label>
-                      <input
-                        type="text"
-                        className="input w-full text-sm"
-                        value={profileForm.name}
-                        onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
-                        placeholder="Virat Kohli"
-                        required
-                        autoFocus
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Email</label>
-                      <input
-                        type="email"
-                        className="input w-full text-sm"
-                        value={profileForm.email}
-                        onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
-                        placeholder="virat@example.com"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Phone</label>
-                      <input
-                        type="tel"
-                        className="input w-full text-sm"
-                        value={profileForm.phone}
-                        onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
-                        placeholder="+91 98765 43210"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Age</label>
-                      <input
-                        type="number"
-                        className="input w-full text-sm"
-                        value={profileForm.age}
-                        onChange={(e) => setProfileForm({ ...profileForm, age: e.target.value })}
-                        placeholder="25"
-                        min={1}
-                        max={100}
-                      />
-                    </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Batting Rating</label>
-                        <input
-                          type="number"
-                          className="input w-full text-sm"
-                          value={profileForm.batting_rating}
-                          onChange={(e) => setProfileForm({ ...profileForm, batting_rating: Number(e.target.value) || 5 })}
-                          min={1}
-                          max={10}
-                          step={0.5}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Bowling Rating</label>
-                        <input
-                          type="number"
-                          className="input w-full text-sm"
-                          value={profileForm.bowling_rating}
-                          onChange={(e) => setProfileForm({ ...profileForm, bowling_rating: Number(e.target.value) || 5 })}
-                          min={1}
-                          max={10}
-                          step={0.5}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Fielding Rating</label>
-                        <input
-                          type="number"
-                          className="input w-full text-sm"
-                          value={profileForm.fielding_rating}
-                          onChange={(e) => setProfileForm({ ...profileForm, fielding_rating: Number(e.target.value) || 5 })}
-                          min={1}
-                          max={10}
-                          step={0.5}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Password</label>
-                      <input
-                        type="password"
-                        className="input w-full text-sm"
-                        value={profileForm.password}
-                        onChange={(e) => setProfileForm({ ...profileForm, password: e.target.value })}
-                        placeholder="password123 (optional)"
-                      />
-                      <p className="text-[10px] text-gray-500 mt-0.5">
-                        Leave blank to set a default; player can reset via magic code.
-                      </p>
-                    </div>
-
-                    <div className="mt-6 flex justify-end gap-3">
-                      <button
-                        type="button"
-                        className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors"
-                        onClick={() => { setCreateProfileOpen(false); }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        className="btn-primary px-6 py-2"
-                        disabled={creatingProfile}
-                      >
-                        {creatingProfile ? "Creating..." : "Create Player"}
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

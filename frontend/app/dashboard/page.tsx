@@ -91,19 +91,12 @@ export default function DashboardPage() {
   // Filter draft and completed events from "Upcoming Events" tab (only show ready/active/paused)
   const filteredAllEvents = allEvents.filter((e) => e.status !== "completed" && e.status !== "draft");
   
-  // If activePanel is "captain", filter to only show events where user is captain
-  const getFilteredMyEvents = () => {
-    if (activePanel === "captain") {
-      return myEvents.filter((e) => e.my_roles.includes("captain"));
-    }
-    return myEvents;
-  };
-  
-  // When in captain mode, always show captain events; otherwise use tab selection
+  // The captain panel was removed in 2.0.0: captains are roster players with no
+  // login, so there is no captain-scoped view of events any more.
+  const getFilteredMyEvents = () => myEvents;
+
   const displayEvents = sortEvents(
-    activePanel === "captain" 
-      ? getFilteredMyEvents() 
-      : (activeTab === "mine" ? getFilteredMyEvents() : filteredAllEvents)
+    activeTab === "mine" ? getFilteredMyEvents() : filteredAllEvents
   );
 
   return (
@@ -204,35 +197,31 @@ export default function DashboardPage() {
           {/* Hero greeting */}
           <div className="mb-8">
             <h1 className="text-3xl font-extrabold mb-1">
-              {activePanel === "captain" ? "Captain Dashboard ⚡" : `Hey ${user?.name?.split(" ")[0]} 👋`}
+              {`Hey ${user?.name?.split(" ")[0]} 👋`}
             </h1>
             <p className="text-gray-500">
-              {activePanel === "captain"
-                ? `You're captain in ${getFilteredMyEvents().length} event${getFilteredMyEvents().length !== 1 ? "s" : ""}.`
-                : myEvents.length > 0
+              {myEvents.length > 0
                 ? `You're part of ${myEvents.length} auction event${myEvents.length > 1 ? "s" : ""}.`
                 : "Browse events below or wait to be added by an organizer."}
             </p>
           </div>
 
-          {/* Tab switcher - hide when in captain mode */}
-          {activePanel !== "captain" && (
-            <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit mb-6">
-              {(["all", "mine"] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    activeTab === tab
-                      ? "bg-amber-500 text-black"
-                      : "text-gray-400 hover:text-white"
-                  }`}
-                >
-                  {tab === "all" ? "Upcoming Events" : `My Events${myEvents.length > 0 ? ` (${myEvents.length})` : ""}`}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Tab switcher */}
+          <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit mb-6">
+            {(["all", "mine"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === tab
+                    ? "bg-amber-500 text-black"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                {tab === "all" ? "Upcoming Events" : `My Events${myEvents.length > 0 ? ` (${myEvents.length})` : ""}`}
+              </button>
+            ))}
+          </div>
 
           {/* Events grid */}
           {loading ? (

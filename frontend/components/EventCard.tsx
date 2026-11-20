@@ -58,12 +58,13 @@ const ROLE_BADGE: Record<string, string> = {
   admin: "bg-purple-500/20 text-purple-300",
   organizer: "bg-blue-500/20 text-blue-300",
   auctioneer: "bg-amber-500/20 text-amber-300",
-  captain: "bg-green-500/20 text-green-300",
+  viewer: "bg-gray-500/20 text-gray-300",
   player: "bg-gray-500/20 text-gray-300",
 };
 
-// Priority order — highest priority role drives the primary CTA
-const ROLE_PRIORITY = ["auctioneer", "captain", "organizer", "admin", "player"];
+// Priority order — highest priority role drives the primary CTA.
+// "captain" was removed in 2.0.0: captains are roster players with no login.
+const ROLE_PRIORITY = ["auctioneer", "organizer", "admin", "viewer", "player"];
 
 interface RoleAction {
   label: string;
@@ -74,11 +75,6 @@ function getRoleAction(role: string, eventId: number, status: string): RoleActio
   switch (role) {
     case "auctioneer":
       return { label: "Control Panel", href: `/auction/${eventId}/auctioneer` };
-    case "captain":
-      return {
-        label: status === "active" ? "Enter Bid Room" : "Captain View",
-        href: `/auction/${eventId}/captain`,
-      };
     case "organizer":
       return { label: "Setup Event", href: `/organizer/events/${eventId}` };
     case "admin":
