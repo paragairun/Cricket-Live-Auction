@@ -126,21 +126,21 @@ export default function SpectatePage() {
 
     const token = localStorage.getItem("token") || "";
     const ws = new AuctionSocket(eid, token, {
-      onStateChange: (state) => store.setConnection(state),
+      onStateChange: (state) => useAuctionStore.getState().setConnection(state),
       onMessage: (msg: any) => {
-        store.noteSeq(msg.seq);
+        useAuctionStore.getState().noteSeq(msg.seq);
 
         switch (msg.type) {
           case "auction_state":
           case "auction_reset":
-            store.setFullState(msg);
+            useAuctionStore.getState().setFullState(msg);
             break;
 
           case "new_bid": {
             const auction_player_id = msg.auction_player_id as number;
             const amount = msg.amount as number;
             const team_id = (msg.team_id as number) ?? null;
-            store.applyBid(
+            useAuctionStore.getState().applyBid(
               auction_player_id,
               amount,
               team_id,
@@ -177,7 +177,7 @@ export default function SpectatePage() {
           // into the bid feed. 1.x broadcast both of these as "new_bid".
           case "bid_reverted":
           case "bid_corrected":
-            store.applyBid(
+            useAuctionStore.getState().applyBid(
               msg.auction_player_id,
               msg.current_bid,
               msg.current_bid_team_id ?? null,
@@ -191,7 +191,7 @@ export default function SpectatePage() {
             break;
 
           case "player_sold":
-            store.markPlayerSold(
+            useAuctionStore.getState().markPlayerSold(
               msg.auction_player_id,
               msg.sold_to_team_id ?? null,
               msg.sold_price
@@ -201,7 +201,7 @@ export default function SpectatePage() {
 
           case "player_unsold":
           case "player_pulled":
-            store.markPlayerUnsold(msg.auction_player_id);
+            useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setLastBidInfo(null);
             break;
 
@@ -211,7 +211,7 @@ export default function SpectatePage() {
           case "rtm_offered":
           case "rtm_exercised":
           case "rtm_raised":
-            store.setRtm({
+            useAuctionStore.getState().setRtm({
               auction_player_id: msg.auction_player_id,
               player_id: msg.player_id,
               player_name: msg.player_name,
@@ -226,7 +226,7 @@ export default function SpectatePage() {
             break;
 
           case "player_up":
-            store.setActivePlayer(
+            useAuctionStore.getState().setActivePlayer(
               msg.auction_player_id,
               msg.base_price,
               msg.version,
@@ -239,14 +239,14 @@ export default function SpectatePage() {
 
           case "auction_started":
           case "auction_resumed":
-            store.setFullState({ status: "active" });
+            useAuctionStore.getState().setFullState({ status: "active" });
             syncState();
             break;
           case "auction_paused":
-            store.setFullState({ status: "paused" });
+            useAuctionStore.getState().setFullState({ status: "paused" });
             break;
           case "auction_completed":
-            store.setFullState({ status: "completed" });
+            useAuctionStore.getState().setFullState({ status: "completed" });
             break;
           case "viewer_count":
             setViewerCount(msg.count as number);
@@ -259,7 +259,9 @@ export default function SpectatePage() {
     ws.connect();
 
     return () => ws.close();
-  }, [eid, store.status, store, syncState]);
+    // See the auctioneer page: `store` must not be a dependency here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eid]);
 
   // Derived from the server's absolute deadline (see store/auction.ts), so the
   // clock does not drift and a reconnecting viewer is immediately correct.

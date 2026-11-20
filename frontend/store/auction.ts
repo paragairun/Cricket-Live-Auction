@@ -210,7 +210,16 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
       missedMessages: false,
     })),
 
-  setConnection: (connection) => set({ connection }),
+  // No-op when unchanged. Zustand notifies every subscriber on every set(),
+  // so a component that subscribes to the whole store gets a new reference
+  // each time — and if that reference is in a useEffect dependency list, the
+  // effect re-runs, reconnects, sets the state again, and loops forever
+  // (React error #185). The dependency lists are fixed too, but guarding here
+  // means a future one cannot resurrect this.
+  setConnection: (connection) => {
+    if (get().connection === connection) return;
+    set({ connection });
+  },
 
   setRtm: (rtm) => set({ rtm }),
 

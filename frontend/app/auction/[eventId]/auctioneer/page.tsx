@@ -74,7 +74,9 @@ export default function AuctioneerPage() {
 
     // The state payload is now the single source of truth: slabs, categories,
     // rules, timing, the absolute deadline and the server clock all arrive here.
-    store.setFullState(data);
+    // getState() rather than the subscribed `store`, so this callback stays
+    // stable — see the dependency note on the socket effect below.
+    useAuctionStore.getState().setFullState(data);
 
     setStatus(data.status);
     if (teamRes.data) {
@@ -91,7 +93,7 @@ export default function AuctioneerPage() {
           : viewerStatsRes.data.live_viewers;
       setViewerCount(count || 0);
     }
-  }, [eid, store]);
+  }, [eid]);
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -147,19 +149,19 @@ export default function AuctioneerPage() {
     if (!hasAccess || status === "completed") return;
     const token = localStorage.getItem("token") || "";
     const ws = new AuctionSocket(eid, token, {
-      onStateChange: (state) => store.setConnection(state),
+      onStateChange: (state) => useAuctionStore.getState().setConnection(state),
       onMessage: (msg) => {
-        store.noteSeq(msg.seq);
+        useAuctionStore.getState().noteSeq(msg.seq);
 
         switch (msg.type) {
           case "auction_state":
           case "auction_reset":
-            store.setFullState(msg);
+            useAuctionStore.getState().setFullState(msg);
             setStatus(msg.status);
             break;
 
           case "new_bid":
-            store.applyBid(
+            useAuctionStore.getState().applyBid(
               msg.auction_player_id,
               msg.amount,
               msg.team_id ?? null,
@@ -173,7 +175,7 @@ export default function AuctioneerPage() {
           // so an auctioneer's fix looked like a team bidding.
           case "bid_reverted":
           case "bid_corrected":
-            store.applyBid(
+            useAuctionStore.getState().applyBid(
               msg.auction_player_id,
               msg.current_bid,
               msg.current_bid_team_id ?? null,
@@ -186,7 +188,7 @@ export default function AuctioneerPage() {
           case "rtm_offered":
           case "rtm_exercised":
           case "rtm_raised":
-            store.setRtm({
+            useAuctionStore.getState().setRtm({
               auction_player_id: msg.auction_player_id,
               player_id: msg.player_id,
               player_name: msg.player_name,
@@ -207,7 +209,7 @@ export default function AuctioneerPage() {
             break;
 
           case "player_up":
-            store.setActivePlayer(
+            useAuctionStore.getState().setActivePlayer(
               msg.auction_player_id,
               msg.base_price,
               msg.version,
@@ -218,7 +220,7 @@ export default function AuctioneerPage() {
             break;
 
           case "player_sold":
-            store.markPlayerSold(
+            useAuctionStore.getState().markPlayerSold(
               msg.auction_player_id,
               msg.sold_to_team_id ?? null,
               msg.sold_price
@@ -229,7 +231,7 @@ export default function AuctioneerPage() {
 
           case "player_unsold":
           case "player_pulled":
-            store.markPlayerUnsold(msg.auction_player_id);
+            useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
             syncState();
             break;
@@ -260,7 +262,14 @@ export default function AuctioneerPage() {
 
     setSocket(ws);
     return () => ws.close();
-  }, [eid, hasAccess, status, syncState, store, router]);
+    // Deliberately NOT depending on `store`. useAuctionStore() subscribes to
+    // the whole store, so that reference changes on every state update —
+    // including the setConnection() call this effect's own handler makes. With
+    // `store` listed here the effect tore down and rebuilt the socket on every
+    // message, which is what produced the flood of "WebSocket is closed before
+    // the connection is established" and the infinite render loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eid, hasAccess]);
 
   useEffect(() => {
     const fetchPlayersInfo = async () => {
