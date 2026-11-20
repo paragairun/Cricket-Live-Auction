@@ -69,9 +69,37 @@ export interface AuctionRules {
   team_max_players: number;
   team_min_players: number;
   player_base_price: number;
+  auction_mode?: "random" | "nomination";
+  rtm_enabled?: boolean;
+  rtm_cards_per_team?: number;
 }
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
+
+/** A pending Right-to-Match negotiation. New in 2.1.0. */
+export interface RtmState {
+  auction_player_id: number;
+  player_id: number;
+  player_name?: string | null;
+  /** offered -> holder decides; raise_offered -> bidder may raise; match_offered -> holder must match */
+  stage: "offered" | "raise_offered" | "match_offered" | null;
+  rights_team_id: number | null;
+  rights_team_name?: string | null;
+  top_team_id: number | null;
+  top_team_name?: string | null;
+  top_amount: number | null;
+  version: number;
+}
+
+export interface Nomination {
+  id: number;
+  auction_player_id: number;
+  player_id?: number | null;
+  player_name?: string | null;
+  team_id: number;
+  team_name?: string | null;
+  created_at?: string | null;
+}
 
 interface AuctionState {
   eventId: number | null;
@@ -95,7 +123,13 @@ interface AuctionState {
   lastSeq: number;
   missedMessages: boolean;
 
+  /** Non-null while a Right-to-Match decision is outstanding. New in 2.1.0. */
+  rtm: RtmState | null;
+  nominations: Nomination[];
+
   setFullState: (payload: any) => void;
+  setRtm: (rtm: RtmState | null) => void;
+  setNominations: (nominations: Nomination[]) => void;
   setConnection: (state: ConnectionState) => void;
   noteSeq: (seq?: number) => void;
   clearMissed: () => void;
@@ -146,6 +180,8 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
   connection: "connecting",
   lastSeq: 0,
   missedMessages: false,
+  rtm: null,
+  nominations: [],
 
   setFullState: (payload) =>
     set((prev) => ({
@@ -167,12 +203,18 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
       categories: payload.categories ?? prev.categories,
       timing: payload.timing ?? prev.timing,
       rules: payload.rules ?? prev.rules,
+      rtm: payload.rtm !== undefined ? payload.rtm : prev.rtm,
+      nominations: payload.nominations ?? prev.nominations,
       // A full snapshot closes any gap.
       lastSeq: payload.seq ?? prev.lastSeq,
       missedMessages: false,
     })),
 
   setConnection: (connection) => set({ connection }),
+
+  setRtm: (rtm) => set({ rtm }),
+
+  setNominations: (nominations) => set({ nominations }),
 
   noteSeq: (seq) => {
     if (seq == null) return;
@@ -223,6 +265,7 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
     set((prev) => ({
       activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
       deadlineEpoch: null,
+      rtm: null,
       players: prev.players.map((p) =>
         p.id === auctionPlayerId
           ? {
@@ -249,6 +292,7 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
     set((prev) => ({
       activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
       deadlineEpoch: null,
+      rtm: null,
       players: prev.players.map((p) =>
         p.id === auctionPlayerId ? { ...p, status: "unsold" as const } : p
       ),

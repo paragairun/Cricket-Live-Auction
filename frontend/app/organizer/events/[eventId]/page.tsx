@@ -1088,7 +1088,21 @@ export default function OrganizerEventDetailPage() {
   const [categories, setCategories] = useState<PlayerCategory[]>([]);
   const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings" | "bid-slabs" | "categories">("players");
   const [teamForm, setTeamForm] = useState({ name: "", color: "#3B82F6" });
-  const [settingsForm, setSettingsForm] = useState({ budget: "100000", max_players: "15", base_price: "100", no_timer: false });
+  // 2.1.0: minimum squad, soft-close timing, auction mode and RTM were
+  // reachable only via the API. They are editable here now.
+  const [settingsForm, setSettingsForm] = useState({
+    budget: "100000",
+    max_players: "15",
+    min_players: "0",
+    base_price: "100",
+    no_timer: false,
+    timer_seconds: "30",
+    soft_close_threshold_seconds: "10",
+    soft_close_extension_seconds: "10",
+    auction_mode: "random",
+    rtm_enabled: false,
+    rtm_cards_per_team: "0",
+  });
   const [slabForm, setSlabForm] = useState({ min_value: 0, max_value: 0, increment: 1000, sort_order: 0 });
   const [catForm, setCatForm] = useState({ name: "", base_price: 1000, sort_order: 0, auction_first: false });
   const [toast, setToast] = useState<{ type: "ok" | "err"; text: string } | null>(null);
@@ -1119,8 +1133,19 @@ export default function OrganizerEventDetailPage() {
       setSettingsForm({
         budget: evRes.data.team_budget?.toString() || "100000",
         max_players: evRes.data.team_max_players?.toString() || "15",
+        min_players: (evRes.data.team_min_players ?? 0).toString(),
         base_price: evRes.data.player_base_price?.toString() || "100",
         no_timer: evRes.data.no_timer ?? false,
+        timer_seconds: (evRes.data.timer_seconds ?? 30).toString(),
+        soft_close_threshold_seconds: (
+          evRes.data.soft_close_threshold_seconds ?? 10
+        ).toString(),
+        soft_close_extension_seconds: (
+          evRes.data.soft_close_extension_seconds ?? 10
+        ).toString(),
+        auction_mode: evRes.data.auction_mode ?? "random",
+        rtm_enabled: evRes.data.rtm_enabled ?? false,
+        rtm_cards_per_team: (evRes.data.rtm_cards_per_team ?? 0).toString(),
       });
     }
     setRosterPlayers(aPlayers.data);
@@ -1214,8 +1239,17 @@ export default function OrganizerEventDetailPage() {
         scheduled_at: scheduleInput ? new Date(scheduleInput).toISOString() : null,
         team_budget: parseInt(settingsForm.budget),
         team_max_players: parseInt(settingsForm.max_players),
+        team_min_players: parseInt(settingsForm.min_players) || 0,
         player_base_price: parseInt(settingsForm.base_price),
         no_timer: settingsForm.no_timer,
+        timer_seconds: parseInt(settingsForm.timer_seconds) || 30,
+        soft_close_threshold_seconds:
+          parseInt(settingsForm.soft_close_threshold_seconds) || 0,
+        soft_close_extension_seconds:
+          parseInt(settingsForm.soft_close_extension_seconds) || 10,
+        auction_mode: settingsForm.auction_mode,
+        rtm_enabled: settingsForm.rtm_enabled,
+        rtm_cards_per_team: parseInt(settingsForm.rtm_cards_per_team) || 0,
       };
       const { data } = await api.patch(`/organizer/events/${eid}/settings`, payload);
       setEvent(data);
@@ -1671,33 +1705,176 @@ export default function OrganizerEventDetailPage() {
                           disabled={!isDraft}
                         />
                       </div>
-                      <div className="flex items-center gap-2 mt-2">
+                      <div>
+                        <label className="label text-gray-300 mb-1 block">Minimum Squad Size</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          Budget is held back so a team that spends heavily early can
+                          still fill this many players. 0 disables the reserve.
+                        </p>
+                        <input
+                          className={`input max-w-sm ${!isDraft ? "bg-gray-900 text-gray-500 cursor-not-allowed" : ""}`}
+                          type="number"
+                          min={0}
+                          max={parseInt(settingsForm.max_players) || 25}
+                          value={settingsForm.min_players}
+                          onChange={(e) => isDraft && setSettingsForm({ ...settingsForm, min_players: e.target.value })}
+                          disabled={!isDraft}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="h-px bg-gray-800 w-full"></div>
+
+                    {/* Timing — editable while the auction runs */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-200 mb-1">Clock</h4>
+                      <p className="text-xs text-gray-500 mb-4">
+                        A bid landing inside the soft-close window extends the clock
+                        rather than resetting it, and each successive extension is
+                        shorter — so a two-team bidding war still ends. These can be
+                        tuned while the auction is running.
+                      </p>
+
+                      <div className="flex items-center gap-2 mb-4">
                         <input
                           type="checkbox"
                           checked={settingsForm.no_timer}
                           onChange={(e) =>
-                            isDraft && setSettingsForm({ ...settingsForm, no_timer: e.target.checked })
+                            setSettingsForm({ ...settingsForm, no_timer: e.target.checked })
+                          }
+                        />
+                        <span className="text-xs text-gray-300">
+                          No clock — the auctioneer hammers manually
+                        </span>
+                      </div>
+
+                      {!settingsForm.no_timer && (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <div>
+                            <label className="label text-gray-300 mb-1 block text-xs">
+                              Base countdown (s)
+                            </label>
+                            <input
+                              className="input"
+                              type="number"
+                              min={5}
+                              max={600}
+                              value={settingsForm.timer_seconds}
+                              onChange={(e) => setSettingsForm({ ...settingsForm, timer_seconds: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="label text-gray-300 mb-1 block text-xs">
+                              Extend if under (s)
+                            </label>
+                            <input
+                              className="input"
+                              type="number"
+                              min={0}
+                              max={120}
+                              value={settingsForm.soft_close_threshold_seconds}
+                              onChange={(e) => setSettingsForm({ ...settingsForm, soft_close_threshold_seconds: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="label text-gray-300 mb-1 block text-xs">
+                              Extend by (s)
+                            </label>
+                            <input
+                              className="input"
+                              type="number"
+                              min={1}
+                              max={120}
+                              value={settingsForm.soft_close_extension_seconds}
+                              onChange={(e) => setSettingsForm({ ...settingsForm, soft_close_extension_seconds: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="h-px bg-gray-800 w-full"></div>
+
+                    {/* Order of play */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-200 mb-1">Order of Play</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Random draws from the pending pool, honouring any
+                        &ldquo;auction first&rdquo; categories. Nomination is the
+                        accelerated round: teams pick who comes up next.
+                      </p>
+                      <select
+                        className={`input max-w-sm ${!isDraft ? "bg-gray-900 text-gray-500 cursor-not-allowed" : ""}`}
+                        value={settingsForm.auction_mode}
+                        onChange={(e) => isDraft && setSettingsForm({ ...settingsForm, auction_mode: e.target.value })}
+                        disabled={!isDraft}
+                      >
+                        <option value="random">Random draw</option>
+                        <option value="nomination">Teams nominate (accelerated round)</option>
+                      </select>
+                    </div>
+
+                    <div className="h-px bg-gray-800 w-full"></div>
+
+                    {/* Right to Match */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-200 mb-1">Right to Match</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Lets the team holding rights on a player reclaim them by
+                        matching the winning bid. Assign rights per player on the
+                        Players tab. Leave this off for a first season — there are no
+                        prior rights to match.
+                      </p>
+
+                      <div className="flex items-center gap-2 mb-4">
+                        <input
+                          type="checkbox"
+                          checked={settingsForm.rtm_enabled}
+                          onChange={(e) =>
+                            isDraft && setSettingsForm({ ...settingsForm, rtm_enabled: e.target.checked })
                           }
                           disabled={!isDraft}
                         />
-                        <span className="text-xs text-gray-300">
-                          Disable auction timer (hammer manually)
-                        </span>
+                        <span className="text-xs text-gray-300">Enable Right to Match</span>
                       </div>
+
+                      {settingsForm.rtm_enabled && (
+                        <div>
+                          <label className="label text-gray-300 mb-1 block text-xs">
+                            Cards per team
+                          </label>
+                          <p className="text-xs text-gray-500 mb-2">
+                            How many times a team may use it. 0 means unlimited.
+                          </p>
+                          <input
+                            className={`input max-w-xs ${!isDraft ? "bg-gray-900 text-gray-500 cursor-not-allowed" : ""}`}
+                            type="number"
+                            min={0}
+                            max={20}
+                            value={settingsForm.rtm_cards_per_team}
+                            onChange={(e) => isDraft && setSettingsForm({ ...settingsForm, rtm_cards_per_team: e.target.value })}
+                            disabled={!isDraft}
+                          />
+                        </div>
+                      )}
                     </div>
 
-                    {isDraft && (
-                      <div className="pt-2">
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={saveSettings}
-                          disabled={savingSettings}
-                        >
-                          {savingSettings ? "Saving..." : "Save Settings"}
-                        </button>
-                      </div>
-                    )}
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={saveSettings}
+                        disabled={savingSettings}
+                      >
+                        {savingSettings ? "Saving..." : "Save Settings"}
+                      </button>
+                      {!isDraft && (
+                        <p className="text-[11px] text-gray-500 mt-2">
+                          Money and squad rules are locked once the event is published.
+                          Clock settings can still be changed.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
                   {!isDraft && (

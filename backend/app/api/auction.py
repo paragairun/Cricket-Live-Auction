@@ -56,10 +56,14 @@ from app.schemas.auction import (
     BidOut,
     HammerRequest,
     NextPlayerRequest,
+    NominationCreate,
+    NominationOut,
+    RtmRaiseRequest,
     TeamOut,
 )
 from app.services import auction_service
 from app.services.auction_service import AuctionError, ConcurrentUpdate
+from app.services.rtm_service import RtmConflict, RtmError
 from app.ws.manager import manager
 
 logger = logging.getLogger(__name__)
@@ -73,7 +77,7 @@ ViewerCtx = Depends(require_event_access())
 
 
 def _handle(exc: Exception) -> HTTPException:
-    if isinstance(exc, ConcurrentUpdate):
+    if isinstance(exc, (ConcurrentUpdate, RtmConflict)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -462,3 +466,156 @@ async def websocket_endpoint(event_id: int, websocket: WebSocket, token: str = "
             except asyncio.CancelledError:
                 pass
         await manager.disconnect(event_id, websocket)
+
+
+# ── Right to Match (new in 2.1.0) ────────────────────────────────────────────
+#
+# Each step is its own endpoint so the console can only offer the decision that
+# is actually available, and every transition lands in the audit log.
+
+
+@router.get("/events/{event_id}/rtm")
+async def get_rtm(
+    event_id: int,
+    ctx: EventContext = ViewerCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The pending Right-to-Match negotiation, or null."""
+    return await auction_service.get_rtm_state(event_id, db)
+
+
+@router.post("/events/{event_id}/rtm/exercise")
+async def rtm_exercise(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rights holder exercises. The top bidder then gets one chance to raise."""
+    try:
+        return await auction_service.rtm_exercise(event_id, db, actor=ctx.user)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/rtm/decline", response_model=AuctionPlayerOut)
+async def rtm_decline(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rights holder passes. The player goes to the top bidder at their bid."""
+    try:
+        ap = await auction_service.rtm_decline(event_id, db, actor=ctx.user)
+        return AuctionPlayerOut.model_validate(ap)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/rtm/raise")
+async def rtm_raise(
+    event_id: int,
+    payload: RtmRaiseRequest,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The top bidder's single raise. The rights holder must then match it."""
+    try:
+        return await auction_service.rtm_raise(event_id, payload.amount, db, actor=ctx.user)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/rtm/skip-raise", response_model=AuctionPlayerOut)
+async def rtm_skip_raise(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The top bidder stands pat. The rights holder takes the player at the bid."""
+    try:
+        ap = await auction_service.rtm_skip_raise(event_id, db, actor=ctx.user)
+        return AuctionPlayerOut.model_validate(ap)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/rtm/match", response_model=AuctionPlayerOut)
+async def rtm_match(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The rights holder matches the raised figure and takes the player."""
+    try:
+        ap = await auction_service.rtm_match(event_id, db, actor=ctx.user)
+        return AuctionPlayerOut.model_validate(ap)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+@router.post("/events/{event_id}/rtm/no-match", response_model=AuctionPlayerOut)
+async def rtm_no_match(
+    event_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The rights holder will not match. The top bidder keeps the player."""
+    try:
+        ap = await auction_service.rtm_no_match(event_id, db, actor=ctx.user)
+        return AuctionPlayerOut.model_validate(ap)
+    except (AuctionError, RtmError) as exc:
+        raise _handle(exc)
+
+
+# ── Nomination round (new in 2.1.0) ──────────────────────────────────────────
+
+
+@router.get("/events/{event_id}/nominations", response_model=list[NominationOut])
+async def list_nominations(
+    event_id: int,
+    ctx: EventContext = ViewerCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """The queue, oldest first — the order players will come up."""
+    rows = await auction_service.list_nominations(event_id, db)
+    return [NominationOut.model_validate(r) for r in rows]
+
+
+@router.post("/events/{event_id}/nominations", response_model=NominationOut, status_code=201)
+async def nominate_player(
+    event_id: int,
+    payload: NominationCreate,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a team's nomination of who comes up next."""
+    try:
+        nomination = await auction_service.nominate_player(
+            event_id, payload.team_id, payload.auction_player_id, db, actor=ctx.user
+        )
+    except AuctionError as exc:
+        raise _handle(exc)
+
+    rows = await auction_service.list_nominations(event_id, db)
+    match = next((r for r in rows if r["id"] == nomination.id), None)
+    return NominationOut.model_validate(
+        match
+        or {
+            "id": nomination.id,
+            "auction_player_id": nomination.auction_player_id,
+            "team_id": nomination.team_id,
+        }
+    )
+
+
+@router.delete("/events/{event_id}/nominations/{nomination_id}", status_code=204)
+async def withdraw_nomination(
+    event_id: int,
+    nomination_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await auction_service.withdraw_nomination(event_id, nomination_id, db, actor=ctx.user)
+    except AuctionError as exc:
+        raise _handle(exc)

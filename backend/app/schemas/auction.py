@@ -15,7 +15,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from app.models.auction import AuctionStatus, PlayerAuctionStatus
+from app.models.auction import AuctionMode, AuctionStatus, PlayerAuctionStatus, RtmStage
 
 
 class AuctionEventCreate(BaseModel):
@@ -40,6 +40,10 @@ class AuctionEventUpdate(BaseModel):
     timer_seconds: Optional[int] = Field(default=None, ge=5, le=600)
     soft_close_threshold_seconds: Optional[int] = Field(default=None, ge=0, le=120)
     soft_close_extension_seconds: Optional[int] = Field(default=None, ge=1, le=120)
+    # New in 2.1.0
+    auction_mode: Optional[AuctionMode] = None
+    rtm_enabled: Optional[bool] = None
+    rtm_cards_per_team: Optional[int] = Field(default=None, ge=0, le=20)
 
 
 class AuctionEventOut(BaseModel):
@@ -60,6 +64,9 @@ class AuctionEventOut(BaseModel):
     timer_seconds: Optional[int] = None
     soft_close_threshold_seconds: Optional[int] = None
     soft_close_extension_seconds: Optional[int] = None
+    auction_mode: AuctionMode = AuctionMode.random
+    rtm_enabled: bool = False
+    rtm_cards_per_team: int = 0
     logo: Optional[str] = None
     created_at: datetime
 
@@ -125,6 +132,11 @@ class AuctionPlayerOut(BaseModel):
     status: PlayerAuctionStatus
     auction_order: int
     version: int
+    # New in 2.1.0
+    rtm_team_id: Optional[int] = None
+    rtm_stage: Optional[RtmStage] = None
+    rtm_top_team_id: Optional[int] = None
+    rtm_top_amount: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -139,6 +151,9 @@ class AuctionPlayerUpdate(BaseModel):
     base_price: Optional[int] = Field(default=None, ge=0)
     category_id: Optional[int] = None
     auction_order: Optional[int] = None
+    # The team holding Right to Match on this player. New in 2.1.0.
+    # Set during setup; None clears the rights.
+    rtm_team_id: Optional[int] = None
 
 
 # ── Bidding ───────────────────────────────────────────────────────────────────
@@ -253,3 +268,43 @@ class AuditLogOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Right to Match (new in 2.1.0) ────────────────────────────────────────────
+
+
+class RtmRaiseRequest(BaseModel):
+    """The top bidder's single permitted raise after RTM is exercised."""
+
+    amount: int = Field(gt=0)
+
+
+class RtmStateOut(BaseModel):
+    auction_player_id: int
+    player_id: int
+    player_name: Optional[str] = None
+    stage: Optional[RtmStage]
+    rights_team_id: Optional[int]
+    rights_team_name: Optional[str] = None
+    top_team_id: Optional[int]
+    top_team_name: Optional[str] = None
+    top_amount: Optional[int]
+    version: int
+
+
+# ── Nomination round (new in 2.1.0) ──────────────────────────────────────────
+
+
+class NominationCreate(BaseModel):
+    team_id: int
+    auction_player_id: int
+
+
+class NominationOut(BaseModel):
+    id: int
+    auction_player_id: int
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
+    team_id: int
+    team_name: Optional[str] = None
+    created_at: Optional[str] = None

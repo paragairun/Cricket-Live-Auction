@@ -205,6 +205,26 @@ export default function SpectatePage() {
             setLastBidInfo(null);
             break;
 
+          // Right to Match (new in 2.1.0). Bidding closed but the player is
+          // neither sold nor unsold yet — say so, rather than leaving the
+          // screen looking frozen.
+          case "rtm_offered":
+          case "rtm_exercised":
+          case "rtm_raised":
+            store.setRtm({
+              auction_player_id: msg.auction_player_id,
+              player_id: msg.player_id,
+              player_name: msg.player_name,
+              stage: msg.stage,
+              rights_team_id: msg.rights_team_id ?? null,
+              rights_team_name: msg.rights_team_name ?? null,
+              top_team_id: msg.top_team_id ?? null,
+              top_team_name: msg.top_team_name ?? null,
+              top_amount: msg.top_amount ?? null,
+              version: msg.version,
+            });
+            break;
+
           case "player_up":
             store.setActivePlayer(
               msg.auction_player_id,
@@ -335,8 +355,28 @@ export default function SpectatePage() {
       .catch(() => setCompletedSummary(null));
   }, [eid, store.status]);
 
+  const rtmBanner = store.rtm ? (
+    <div className="px-4 py-3 bg-blue-950/70 border-b border-blue-500/40 text-center">
+      <p className="text-sm text-blue-100">
+        <span className="font-bold">Right to Match</span> —{" "}
+        {store.rtm.player_name ?? "this player"} drew{" "}
+        <span className="font-semibold text-white">
+          ₹{(store.rtm.top_amount ?? 0).toLocaleString("en-IN")}
+        </span>{" "}
+        from {store.rtm.top_team_name ?? "the top bidder"}.{" "}
+        {store.rtm.stage === "offered" &&
+          `${store.rtm.rights_team_name ?? "The rights holder"} is deciding whether to match.`}
+        {store.rtm.stage === "raise_offered" &&
+          `RTM exercised — ${store.rtm.top_team_name ?? "the top bidder"} may raise once.`}
+        {store.rtm.stage === "match_offered" &&
+          `${store.rtm.rights_team_name ?? "The rights holder"} must match the raise.`}
+      </p>
+    </div>
+  ) : null;
+
   return (
     <div className="h-screen bg-gray-950 flex flex-col">
+      {rtmBanner}
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-8 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">

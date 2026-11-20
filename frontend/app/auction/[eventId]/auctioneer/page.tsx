@@ -56,6 +56,7 @@ export default function AuctioneerPage() {
   // client showing a stale number.
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [rtmRaiseAmount, setRtmRaiseAmount] = useState("");
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<"none" | "sold" | "unsold" | "available" | "teams">("none");
@@ -178,6 +179,31 @@ export default function AuctioneerPage() {
               msg.current_bid_team_id ?? null,
               msg.version
             );
+            break;
+
+          // Right to Match (new in 2.1.0). Bidding has closed but no sale has
+          // happened yet — the operator must resolve the negotiation.
+          case "rtm_offered":
+          case "rtm_exercised":
+          case "rtm_raised":
+            store.setRtm({
+              auction_player_id: msg.auction_player_id,
+              player_id: msg.player_id,
+              player_name: msg.player_name,
+              stage: msg.stage,
+              rights_team_id: msg.rights_team_id ?? null,
+              rights_team_name: msg.rights_team_name ?? null,
+              top_team_id: msg.top_team_id ?? null,
+              top_team_name: msg.top_team_name ?? null,
+              top_amount: msg.top_amount ?? null,
+              version: msg.version,
+            });
+            syncState();
+            break;
+
+          case "player_nominated":
+          case "nomination_withdrawn":
+            syncState();
             break;
 
           case "player_up":
@@ -338,6 +364,22 @@ export default function AuctioneerPage() {
     const id = setInterval(tick, 250);
     return () => clearInterval(id);
   }, [store.deadlineEpoch, store.clockOffset]);
+
+  // Each RTM step is a distinct endpoint, so the console can only offer the
+  // decision that is actually available at this stage.
+  const rtmAction = async (path: string, body?: Record<string, unknown>) => {
+    setBusyAction(true);
+    setActionError(null);
+    try {
+      await api.post(`/auction/events/${eid}/rtm/${path}`, body ?? {});
+      await syncState();
+    } catch (e: unknown) {
+      setActionError(describeError(e).message);
+      await syncState();
+    } finally {
+      setBusyAction(false);
+    }
+  };
 
   const formatMoney = (val: number) => val.toLocaleString("en-IN");
 
@@ -636,6 +678,128 @@ export default function AuctioneerPage() {
           </div>
         </div>
       </header>
+
+      {/* ── RIGHT TO MATCH DECISION PANEL (new in 2.1.0) ──
+          Bidding has closed but no sale has happened: the rights holder, and
+          then the top bidder, have decisions to make. Only the step that is
+          actually available at the current stage is offered. */}
+      {store.rtm && (
+        <div className="px-6 py-4 bg-blue-950/60 border-y border-blue-500/40">
+          <div className="max-w-5xl mx-auto">
+            <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
+              <h3 className="text-sm font-bold text-blue-200 uppercase tracking-wide">
+                Right to Match — {store.rtm.player_name ?? `Player #${store.rtm.player_id}`}
+              </h3>
+              <p className="text-xs text-blue-300/80">
+                {store.rtm.top_team_name ?? "Top bidder"} bid{" "}
+                <span className="font-bold text-white">
+                  ₹{formatMoney(store.rtm.top_amount ?? 0)}
+                </span>
+                {" · "}rights held by{" "}
+                <span className="font-semibold text-white">
+                  {store.rtm.rights_team_name ?? "—"}
+                </span>
+              </p>
+            </div>
+
+            {store.rtm.stage === "offered" && (
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm text-blue-100 mr-2">
+                  Does {store.rtm.rights_team_name} exercise its Right to Match?
+                </p>
+                <button
+                  onClick={() => rtmAction("exercise")}
+                  disabled={busyAction}
+                  className="bg-blue-500 hover:bg-blue-400 text-white font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  Exercise RTM
+                </button>
+                <button
+                  onClick={() => rtmAction("decline")}
+                  disabled={busyAction}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  Decline — sell to {store.rtm.top_team_name}
+                </button>
+              </div>
+            )}
+
+            {store.rtm.stage === "raise_offered" && (
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm text-blue-100 mr-2">
+                  RTM exercised. {store.rtm.top_team_name} may raise once.
+                </p>
+                <input
+                  type="number"
+                  value={rtmRaiseAmount}
+                  onChange={(e) => setRtmRaiseAmount(e.target.value)}
+                  placeholder={`> ${store.rtm.top_amount ?? 0}`}
+                  className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-36"
+                />
+                <button
+                  onClick={() => {
+                    const amount = parseInt(rtmRaiseAmount, 10);
+                    if (!Number.isFinite(amount)) {
+                      setActionError("Enter the raised amount");
+                      return;
+                    }
+                    rtmAction("raise", { amount }).then(() => setRtmRaiseAmount(""));
+                  }}
+                  disabled={busyAction}
+                  className="bg-amber-500 hover:bg-amber-400 text-black font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  Raise
+                </button>
+                <button
+                  onClick={() => rtmAction("skip-raise")}
+                  disabled={busyAction}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  No raise — {store.rtm.rights_team_name} takes the player
+                </button>
+              </div>
+            )}
+
+            {store.rtm.stage === "match_offered" && (
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm text-blue-100 mr-2">
+                  Raised to ₹{formatMoney(store.rtm.top_amount ?? 0)}. Does{" "}
+                  {store.rtm.rights_team_name} match?
+                </p>
+                <button
+                  onClick={() => rtmAction("match")}
+                  disabled={busyAction}
+                  className="bg-blue-500 hover:bg-blue-400 text-white font-semibold px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  Match — takes the player
+                </button>
+                <button
+                  onClick={() => rtmAction("no-match")}
+                  disabled={busyAction}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-lg text-sm disabled:opacity-40"
+                >
+                  No match — sell to {store.rtm.top_team_name}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── OPERATOR ERROR BANNER ── */}
+      {actionError && (
+        <div className="px-6 py-2 bg-red-950/70 border-y border-red-500/40">
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
+            <p className="text-sm text-red-200">{actionError}</p>
+            <button
+              onClick={() => setActionError(null)}
+              className="text-xs text-red-300 hover:text-white shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── MAIN BROADCAST STAGE ── */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-4 flex flex-col justify-between gap-4">

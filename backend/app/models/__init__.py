@@ -2,6 +2,7 @@ from app.models.user import User
 from app.models.auction import (
     AuctionAuditLog,
     AuctionEvent,
+    AuctionMode,
     AuctionPlayer,
     AuditAction,
     AuctionStatus,
@@ -10,6 +11,8 @@ from app.models.auction import (
     Player,
     PlayerAuctionStatus,
     PlayerCategory,
+    PlayerNomination,
+    RtmStage,
     Team,
     TeamPlayer,
 )
@@ -28,4 +31,7 @@ __all__ = [
     "PlayerCategory",
     "AuctionAuditLog",
     "AuditAction",
+    "AuctionMode",
+    "RtmStage",
+    "PlayerNomination",
 ]

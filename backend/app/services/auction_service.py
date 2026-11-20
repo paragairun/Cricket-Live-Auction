@@ -49,6 +49,7 @@ from app.core.redis import get_redis
 from app.models.auction import (
     AuctionAuditLog,
     AuctionEvent,
+    AuctionMode,
     AuctionPlayer,
     AuctionStatus,
     AuditAction,
@@ -57,11 +58,13 @@ from app.models.auction import (
     Player,
     PlayerAuctionStatus,
     PlayerCategory,
+    PlayerNomination,
+    RtmStage,
     Team,
     TeamPlayer,
 )
 from app.models.user import User
-from app.services import bid_rules
+from app.services import bid_rules, rtm_service
 from app.services.bid_rules import Slab
 from app.ws.manager import manager
 
@@ -298,7 +301,17 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
             "team_max_players": event.team_max_players,
             "team_min_players": event.team_min_players,
             "player_base_price": event.player_base_price,
+            # New in 2.1.0
+            "auction_mode": event.auction_mode,
+            "rtm_enabled": event.rtm_enabled,
+            "rtm_cards_per_team": event.rtm_cards_per_team,
         },
+        "rtm": await get_rtm_state(event_id, db),
+        "nominations": (
+            await list_nominations(event_id, db)
+            if event.auction_mode == AuctionMode.nomination
+            else []
+        ),
         "bid_slabs": [
             {
                 "id": idx,
@@ -332,6 +345,7 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
                 "remaining": t.budget - t.spent,
                 "max_players": t.max_players,
                 "player_count": len(t.players),
+                "rtm_cards_used": t.rtm_cards_used,
             }
             for t in teams
         ],
@@ -351,6 +365,10 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
                 "current_bid_team_id": ap.current_bid_team_id,
                 "status": ap.status,
                 "version": ap.version,
+                "rtm_team_id": ap.rtm_team_id,
+                "rtm_stage": ap.rtm_stage,
+                "rtm_top_team_id": ap.rtm_top_team_id,
+                "rtm_top_amount": ap.rtm_top_amount,
             }
             for ap in auction_players
         ],
@@ -663,7 +681,11 @@ async def set_next_player(
         )
 
     if auction_player_id is None:
-        ap = await _pick_random_pending(db, event_id)
+        # New in 2.1.0: in nomination mode the queue decides, not the draw.
+        if event.auction_mode == AuctionMode.nomination:
+            ap = await _next_nominated(db, event_id)
+        else:
+            ap = await _pick_random_pending(db, event_id)
     else:
         result = await db.execute(
             select(AuctionPlayer).where(
@@ -1013,9 +1035,21 @@ async def hammer_player(
         return ap
 
     sold = ap.current_bid_team_id is not None
-    new_status = PlayerAuctionStatus.sold if sold else PlayerAuctionStatus.unsold
     sale_price = ap.current_bid
     winning_team_id = ap.current_bid_team_id
+
+    # New in 2.1.0: if a team holds Right to Match on this player, bidding
+    # closing does not complete a sale — it opens a negotiation. The player sits
+    # in rtm_pending with the clock stopped until the operator resolves it.
+    event = await _get_event(db, event_id)
+    holder = await rtm_service.rights_holder_for(db, event, ap, winning_team_id)
+    if holder is not None:
+        return await _open_rtm(
+            db, event_id=event_id, ap=ap, holder=holder,
+            top_team_id=winning_team_id, top_amount=sale_price, actor=actor,
+        )
+
+    new_status = PlayerAuctionStatus.sold if sold else PlayerAuctionStatus.unsold
 
     # Only one caller wins this.
     claim = await db.execute(
@@ -1036,35 +1070,14 @@ async def hammer_player(
     await redis.delete(_deadline_key(event_id))
     await redis.delete(_active_key(event_id))
 
-    if sold and winning_team_id:
-        team_result = await db.execute(select(Team).where(Team.id == winning_team_id))
-        team = team_result.scalar_one_or_none()
-        if team:
-            # Guarded by uq_team_player_event_player, so even a concurrent
-            # duplicate cannot create a second sale row.
-            db.add(
-                TeamPlayer(
-                    event_id=event_id,
-                    team_id=team.id,
-                    player_id=ap.player_id,
-                    sold_price=sale_price,
-                )
-            )
-            await db.execute(
-                update(Team).where(Team.id == team.id).values(spent=Team.spent + sale_price)
-            )
-
-        await record_audit(
-            db, event_id=event_id, action=AuditAction.player_sold,
-            actor_user_id=actor.id if actor else None,
-            auction_player_id=ap.id, team_id=winning_team_id, amount=sale_price,
-        )
-    else:
-        await record_audit(
-            db, event_id=event_id, action=AuditAction.player_unsold,
-            actor_user_id=actor.id if actor else None,
-            auction_player_id=ap.id,
-        )
+    await _record_outcome(
+        db,
+        event_id=event_id,
+        ap=ap,
+        team_id=winning_team_id if sold else None,
+        amount=sale_price if sold else None,
+        actor=actor,
+    )
 
     try:
         await db.commit()
@@ -1078,8 +1091,66 @@ async def hammer_player(
         return ap
 
     await db.refresh(ap)
+    await _broadcast_outcome(
+        event_id, ap, winning_team_id if sold else None, sale_price if sold else None
+    )
+    return ap
 
-    if sold:
+
+async def _record_outcome(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    ap: AuctionPlayer,
+    team_id: int | None,
+    amount: int | None,
+    actor: User | None,
+    rtm_used: bool = False,
+) -> None:
+    """Write the sale rows and the audit entry. Caller commits.
+
+    Extracted in 2.1.0 so the hammer and every Right-to-Match resolution apply a
+    sale the same way, rather than each reimplementing the purse arithmetic.
+    """
+    if team_id is not None and amount is not None:
+        # Guarded by uq_team_player_event_player, so even a concurrent duplicate
+        # cannot create a second sale row.
+        db.add(
+            TeamPlayer(
+                event_id=event_id,
+                team_id=team_id,
+                player_id=ap.player_id,
+                sold_price=amount,
+            )
+        )
+        values: dict = {"spent": Team.spent + amount}
+        if rtm_used:
+            values["rtm_cards_used"] = Team.rtm_cards_used + 1
+        await db.execute(update(Team).where(Team.id == team_id).values(**values))
+
+        await record_audit(
+            db, event_id=event_id, action=AuditAction.player_sold,
+            actor_user_id=actor.id if actor else None,
+            auction_player_id=ap.id, team_id=team_id, amount=amount,
+            detail="Acquired via Right to Match" if rtm_used else None,
+        )
+    else:
+        await record_audit(
+            db, event_id=event_id, action=AuditAction.player_unsold,
+            actor_user_id=actor.id if actor else None,
+            auction_player_id=ap.id,
+        )
+
+
+async def _broadcast_outcome(
+    event_id: int,
+    ap: AuctionPlayer,
+    team_id: int | None,
+    amount: int | None,
+    *,
+    via_rtm: bool = False,
+) -> None:
+    if team_id is not None:
         await manager.broadcast(
             event_id,
             {
@@ -1088,8 +1159,9 @@ async def hammer_player(
                 "auction_player_id": ap.id,
                 "player_id": ap.player_id,
                 "player_name": ap.player.name if ap.player else None,
-                "sold_to_team_id": winning_team_id,
-                "sold_price": sale_price,
+                "sold_to_team_id": team_id,
+                "sold_price": amount,
+                "via_rtm": via_rtm,
             },
         )
     else:
@@ -1103,7 +1175,6 @@ async def hammer_player(
                 "player_name": ap.player.name if ap.player else None,
             },
         )
-    return ap
 
 
 # ── Operator corrections ──────────────────────────────────────────────────────
@@ -1342,7 +1413,13 @@ async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = No
         ap.current_bid_team_id = None
         ap.version += 1
         ap.extension_count = 0
+        ap.rtm_stage = None
+        ap.rtm_top_team_id = None
+        ap.rtm_top_amount = None
 
+    await db.execute(
+        PlayerNomination.__table__.delete().where(PlayerNomination.event_id == event_id)
+    )
     await db.execute(
         TeamPlayer.__table__.delete().where(TeamPlayer.event_id == event_id)
     )
@@ -1350,7 +1427,9 @@ async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = No
         Bid.__table__.delete().where(Bid.event_id == event_id)
     )
     await db.execute(
-        update(Team).where(Team.event_id == event_id).values(spent=0, budget=event.team_budget)
+        update(Team)
+        .where(Team.event_id == event_id)
+        .values(spent=0, budget=event.team_budget, rtm_cards_used=0)
     )
 
     event.status = AuctionStatus.ready
@@ -1366,3 +1445,497 @@ async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = No
 
     state = await get_auction_state(event_id, db)
     await manager.broadcast(event_id, {**state, "type": "auction_reset"})
+
+
+# ── Right to Match (new in 2.1.0) ────────────────────────────────────────────
+
+
+async def _open_rtm(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    ap: AuctionPlayer,
+    holder: Team,
+    top_team_id: int | None,
+    top_amount: int,
+    actor: User | None,
+) -> AuctionPlayer:
+    """Bidding closed and a team holds rights: open the negotiation."""
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.version == ap.version,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
+        )
+        .values(
+            status=PlayerAuctionStatus.rtm_pending,
+            rtm_stage=RtmStage.offered,
+            rtm_top_team_id=top_team_id,
+            rtm_top_amount=top_amount,
+            version=AuctionPlayer.version + 1,
+        )
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        await db.refresh(ap)
+        return ap
+
+    # The clock is stopped: an RTM decision is not on a timer.
+    redis = await get_redis()
+    await redis.delete(_deadline_key(event_id))
+    await redis.delete(_active_key(event_id))
+
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.rtm_offered,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=holder.id, amount=top_amount,
+        detail=f"RTM offered to {holder.name} against a bid of {top_amount}",
+    )
+    await db.commit()
+    await db.refresh(ap)
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "rtm_offered",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "player_id": ap.player_id,
+            "player_name": ap.player.name if ap.player else None,
+            "rights_team_id": holder.id,
+            "rights_team_name": holder.name,
+            "top_team_id": top_team_id,
+            "top_amount": top_amount,
+            "stage": RtmStage.offered.value,
+            "version": ap.version,
+        },
+    )
+    return ap
+
+
+async def _load_rtm_player(db: AsyncSession, event_id: int) -> AuctionPlayer:
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.rtm_pending,
+        )
+    )
+    ap = result.scalars().first()
+    if not ap:
+        raise AuctionError("No Right-to-Match decision is pending")
+    return ap
+
+
+async def _settle_rtm(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    ap: AuctionPlayer,
+    team_id: int,
+    amount: int,
+    actor: User | None,
+    rtm_used: bool,
+    action: AuditAction,
+    detail: str,
+) -> AuctionPlayer:
+    """End the negotiation with a sale."""
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.version == ap.version,
+            AuctionPlayer.status == PlayerAuctionStatus.rtm_pending,
+        )
+        .values(
+            status=PlayerAuctionStatus.sold,
+            current_bid=amount,
+            current_bid_team_id=team_id,
+            rtm_stage=None,
+            version=AuctionPlayer.version + 1,
+        )
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        raise ConcurrentUpdate("The other console resolved this first")
+
+    await record_audit(
+        db, event_id=event_id, action=action,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=team_id, amount=amount, detail=detail,
+    )
+    await _record_outcome(
+        db, event_id=event_id, ap=ap, team_id=team_id, amount=amount,
+        actor=actor, rtm_used=rtm_used,
+    )
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        logger.warning("Duplicate RTM sale blocked: event=%s ap=%s", event_id, ap.id)
+        await db.refresh(ap)
+        return ap
+
+    await db.refresh(ap)
+    await _broadcast_outcome(event_id, ap, team_id, amount, via_rtm=rtm_used)
+    return ap
+
+
+async def rtm_decline(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> AuctionPlayer:
+    """The rights holder passes: the player goes to the top bidder."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.offered)
+
+    amount = ap.rtm_top_amount or ap.current_bid
+    if ap.rtm_top_team_id is None:
+        raise AuctionError("There is no winning bidder to sell to")
+
+    return await _settle_rtm(
+        db, event_id=event_id, ap=ap, team_id=ap.rtm_top_team_id, amount=amount,
+        actor=actor, rtm_used=False, action=AuditAction.rtm_declined,
+        detail="Rights holder declined to match",
+    )
+
+
+async def rtm_exercise(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> dict:
+    """The rights holder exercises: the top bidder now gets one chance to raise."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.offered)
+
+    event = await _get_event(db, event_id)
+    holder = await rtm_service.validate_match(db, event, ap)
+
+    await rtm_service._advance(db, ap, stage=RtmStage.raise_offered)
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.rtm_exercised,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=holder.id,
+        amount=ap.rtm_top_amount,
+        detail=f"{holder.name} exercised RTM; top bidder may raise once",
+    )
+    await db.commit()
+    await db.refresh(ap)
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "rtm_exercised",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "rights_team_id": holder.id,
+            "top_team_id": ap.rtm_top_team_id,
+            "top_amount": ap.rtm_top_amount,
+            "stage": RtmStage.raise_offered.value,
+            "version": ap.version,
+        },
+    )
+    return {"stage": ap.rtm_stage, "top_amount": ap.rtm_top_amount, "version": ap.version}
+
+
+async def rtm_raise(
+    event_id: int, amount: int, db: AsyncSession, actor: User | None = None
+) -> dict:
+    """The top bidder raises once; the rights holder must now match the new figure."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.raise_offered)
+
+    event = await _get_event(db, event_id)
+    await rtm_service.validate_raise(db, event, ap, amount)
+
+    previous = ap.rtm_top_amount
+    await rtm_service._advance(db, ap, stage=RtmStage.match_offered, top_amount=amount)
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.rtm_raised,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=ap.rtm_top_team_id,
+        amount=amount, previous_amount=previous,
+        detail="Top bidder raised; rights holder must match",
+    )
+    await db.commit()
+    await db.refresh(ap)
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "rtm_raised",
+            "event_id": event_id,
+            "auction_player_id": ap.id,
+            "rights_team_id": ap.rtm_team_id,
+            "top_team_id": ap.rtm_top_team_id,
+            "top_amount": amount,
+            "previous_amount": previous,
+            "stage": RtmStage.match_offered.value,
+            "version": ap.version,
+        },
+    )
+    return {"stage": ap.rtm_stage, "top_amount": amount, "version": ap.version}
+
+
+async def rtm_skip_raise(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> AuctionPlayer:
+    """The top bidder stands pat: the rights holder takes the player at the bid."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.raise_offered)
+
+    event = await _get_event(db, event_id)
+    holder = await rtm_service.validate_match(db, event, ap)
+    amount = ap.rtm_top_amount or ap.current_bid
+
+    return await _settle_rtm(
+        db, event_id=event_id, ap=ap, team_id=holder.id, amount=amount,
+        actor=actor, rtm_used=True, action=AuditAction.rtm_raise_skipped,
+        detail=f"Top bidder did not raise; {holder.name} matched at {amount}",
+    )
+
+
+async def rtm_match(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> AuctionPlayer:
+    """The rights holder matches the raised figure and takes the player."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.match_offered)
+
+    event = await _get_event(db, event_id)
+    holder = await rtm_service.validate_match(db, event, ap)
+    amount = ap.rtm_top_amount or ap.current_bid
+
+    return await _settle_rtm(
+        db, event_id=event_id, ap=ap, team_id=holder.id, amount=amount,
+        actor=actor, rtm_used=True, action=AuditAction.rtm_matched,
+        detail=f"{holder.name} matched the raised figure of {amount}",
+    )
+
+
+async def rtm_no_match(
+    event_id: int, db: AsyncSession, actor: User | None = None
+) -> AuctionPlayer:
+    """The rights holder cannot or will not match: the top bidder keeps the player."""
+    ap = await _load_rtm_player(db, event_id)
+    rtm_service._require_stage(ap, RtmStage.match_offered)
+
+    if ap.rtm_top_team_id is None:
+        raise AuctionError("There is no winning bidder to sell to")
+    amount = ap.rtm_top_amount or ap.current_bid
+
+    return await _settle_rtm(
+        db, event_id=event_id, ap=ap, team_id=ap.rtm_top_team_id, amount=amount,
+        actor=actor, rtm_used=False, action=AuditAction.rtm_not_matched,
+        detail=f"Rights holder did not match {amount}",
+    )
+
+
+async def get_rtm_state(event_id: int, db: AsyncSession) -> dict | None:
+    """The pending negotiation, for the console and spectator views."""
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.rtm_pending,
+        )
+    )
+    ap = result.scalars().first()
+    if not ap:
+        return None
+
+    teams = (
+        await db.execute(
+            select(Team).where(Team.id.in_([
+                tid for tid in (ap.rtm_team_id, ap.rtm_top_team_id) if tid
+            ]))
+        )
+    ).scalars().all()
+    names = {t.id: t.name for t in teams}
+
+    return {
+        "auction_player_id": ap.id,
+        "player_id": ap.player_id,
+        "player_name": ap.player.name if ap.player else None,
+        "stage": ap.rtm_stage,
+        "rights_team_id": ap.rtm_team_id,
+        "rights_team_name": names.get(ap.rtm_team_id),
+        "top_team_id": ap.rtm_top_team_id,
+        "top_team_name": names.get(ap.rtm_top_team_id),
+        "top_amount": ap.rtm_top_amount,
+        "version": ap.version,
+    }
+
+
+# ── Nomination round (new in 2.1.0) ──────────────────────────────────────────
+
+
+async def nominate_player(
+    event_id: int,
+    team_id: int,
+    auction_player_id: int,
+    db: AsyncSession,
+    actor: User | None = None,
+) -> PlayerNomination:
+    """A team nominates who comes up next.
+
+    This is the accelerated round: franchises pick from the remaining list
+    rather than the auctioneer drawing at random. 1.x only had
+    re-auction-all-unsold, which returned everyone to the random pool at once.
+    """
+    event = await _get_event(db, event_id)
+
+    team = (
+        await db.execute(select(Team).where(Team.id == team_id, Team.event_id == event_id))
+    ).scalar_one_or_none()
+    if not team:
+        raise AuctionError("That team is not in this event")
+
+    ap = (
+        await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.id == auction_player_id,
+                AuctionPlayer.event_id == event_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not ap:
+        raise AuctionError("Player is not registered in this event")
+    if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
+        raise AuctionError("That player is not available to nominate")
+
+    existing = (
+        await db.execute(
+            select(PlayerNomination).where(
+                PlayerNomination.event_id == event_id,
+                PlayerNomination.auction_player_id == auction_player_id,
+                PlayerNomination.consumed_at.is_(None),
+            )
+        )
+    ).scalars().first()
+    if existing:
+        raise AuctionError("That player has already been nominated")
+
+    nomination = PlayerNomination(
+        event_id=event_id, team_id=team_id, auction_player_id=auction_player_id
+    )
+    db.add(nomination)
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.player_nominated,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=auction_player_id, team_id=team_id,
+        detail=f"Nominated by {team.name}",
+    )
+    await db.commit()
+    await db.refresh(nomination)
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "player_nominated",
+            "event_id": event_id,
+            "nomination_id": nomination.id,
+            "auction_player_id": auction_player_id,
+            "player_id": ap.player_id,
+            "player_name": ap.player.name if ap.player else None,
+            "team_id": team_id,
+            "team_name": team.name,
+        },
+    )
+    return nomination
+
+
+async def withdraw_nomination(
+    event_id: int, nomination_id: int, db: AsyncSession, actor: User | None = None
+) -> None:
+    nomination = (
+        await db.execute(
+            select(PlayerNomination).where(
+                PlayerNomination.id == nomination_id,
+                PlayerNomination.event_id == event_id,
+                PlayerNomination.consumed_at.is_(None),
+            )
+        )
+    ).scalars().first()
+    if not nomination:
+        raise AuctionError("That nomination is not in the queue")
+
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.nomination_withdrawn,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=nomination.auction_player_id, team_id=nomination.team_id,
+    )
+    await db.delete(nomination)
+    await db.commit()
+
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "nomination_withdrawn",
+            "event_id": event_id,
+            "nomination_id": nomination_id,
+        },
+    )
+
+
+async def list_nominations(event_id: int, db: AsyncSession) -> list[dict]:
+    """The queue, oldest first — the order players will come up."""
+    result = await db.execute(
+        select(PlayerNomination)
+        .where(
+            PlayerNomination.event_id == event_id,
+            PlayerNomination.consumed_at.is_(None),
+        )
+        .order_by(PlayerNomination.id)
+    )
+    nominations = result.scalars().all()
+    return [
+        {
+            "id": n.id,
+            "auction_player_id": n.auction_player_id,
+            "player_id": n.auction_player.player_id if n.auction_player else None,
+            "player_name": (
+                n.auction_player.player.name
+                if n.auction_player and n.auction_player.player
+                else None
+            ),
+            "team_id": n.team_id,
+            "team_name": n.team.name if n.team else None,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in nominations
+    ]
+
+
+async def _next_nominated(db: AsyncSession, event_id: int) -> AuctionPlayer:
+    """Pop the oldest live nomination."""
+    result = await db.execute(
+        select(PlayerNomination)
+        .where(
+            PlayerNomination.event_id == event_id,
+            PlayerNomination.consumed_at.is_(None),
+        )
+        .order_by(PlayerNomination.id)
+    )
+    nomination = result.scalars().first()
+    if not nomination:
+        raise AuctionError(
+            "The nomination queue is empty. A team must nominate the next player, "
+            "or switch the event back to random order."
+        )
+
+    ap = (
+        await db.execute(
+            select(AuctionPlayer).where(AuctionPlayer.id == nomination.auction_player_id)
+        )
+    ).scalar_one_or_none()
+    if not ap or ap.status not in (
+        PlayerAuctionStatus.pending,
+        PlayerAuctionStatus.unsold,
+    ):
+        # Stale entry (the player was sold another way): drop it and try again.
+        nomination.consumed_at = datetime.now(timezone.utc)
+        await db.flush()
+        return await _next_nominated(db, event_id)
+
+    nomination.consumed_at = datetime.now(timezone.utc)
+    await db.flush()
+    return ap

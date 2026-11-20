@@ -41,6 +41,7 @@ from app.core.queue import enqueue
 from app.core.redis import get_redis
 from app.models.auction import (
     AuctionEvent,
+    AuctionMode,
     AuctionPlayer,
     AuctionStatus,
     Bid,
@@ -125,6 +126,10 @@ class EventSettingsUpdatePayload(BaseModel):
     timer_seconds: int | None = Field(default=None, ge=5, le=600)
     soft_close_threshold_seconds: int | None = Field(default=None, ge=0, le=120)
     soft_close_extension_seconds: int | None = Field(default=None, ge=1, le=120)
+    # New in 2.1.0
+    auction_mode: AuctionMode | None = None
+    rtm_enabled: bool | None = None
+    rtm_cards_per_team: int | None = Field(default=None, ge=0, le=20)
 
 
 # ── Users (for assigning an auctioneer) ───────────────────────────────────────
@@ -334,7 +339,22 @@ async def edit_player_auction_settings(
             status_code=409, detail="Cannot change auction settings for this player now"
         )
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+
+    # Right to Match rights: the team entitled to reclaim this player. Must be a
+    # team in this event. New in 2.1.0.
+    if "rtm_team_id" in data and data["rtm_team_id"] is not None:
+        holder = await db.execute(
+            select(Team).where(
+                Team.id == data["rtm_team_id"], Team.event_id == event_id
+            )
+        )
+        if not holder.scalar_one_or_none():
+            raise HTTPException(
+                status_code=400, detail="RTM rights must belong to a team in this event"
+            )
+
+    for field, value in data.items():
         setattr(ap, field, value)
     ap.version += 1
 

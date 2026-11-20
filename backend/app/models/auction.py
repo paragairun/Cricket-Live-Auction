@@ -52,8 +52,36 @@ class AuctionStatus(str, enum.Enum):
 class PlayerAuctionStatus(str, enum.Enum):
     pending = "pending"
     active = "active"
+    # Bidding has closed but a Right-to-Match decision is outstanding, so the
+    # player is neither sold nor back in the pool. New in 2.1.0.
+    rtm_pending = "rtm_pending"
     sold = "sold"
     unsold = "unsold"
+
+
+class RtmStage(str, enum.Enum):
+    """Where an RTM negotiation has got to.
+
+    The sequence follows the current IPL rules: the rights holder is asked
+    whether to exercise, the highest bidder then gets one chance to raise, and
+    the holder must match that raised figure to acquire the player.
+    """
+
+    # Waiting on the rights holder: exercise or decline.
+    offered = "offered"
+    # Holder exercised; the top bidder may raise once, or stand pat.
+    raise_offered = "raise_offered"
+    # Top bidder raised; the holder must match the new figure or lose the player.
+    match_offered = "match_offered"
+
+
+class AuctionMode(str, enum.Enum):
+    """How the next player is chosen."""
+
+    # Drawn at random from the pending pool, honouring auction_first categories.
+    random = "random"
+    # Teams nominate who comes up next — the "accelerated round" in IPL terms.
+    nomination = "nomination"
 
 
 class AuditAction(str, enum.Enum):
@@ -72,6 +100,17 @@ class AuditAction(str, enum.Enum):
     player_unsold = "player_unsold"
     sale_reversed = "sale_reversed"
     auction_reset = "auction_reset"
+    # Right to Match (new in 2.1.0)
+    rtm_offered = "rtm_offered"
+    rtm_exercised = "rtm_exercised"
+    rtm_declined = "rtm_declined"
+    rtm_raised = "rtm_raised"
+    rtm_raise_skipped = "rtm_raise_skipped"
+    rtm_matched = "rtm_matched"
+    rtm_not_matched = "rtm_not_matched"
+    # Nomination round (new in 2.1.0)
+    player_nominated = "player_nominated"
+    nomination_withdrawn = "nomination_withdrawn"
 
 
 class Player(Base):
@@ -166,6 +205,17 @@ class AuctionEvent(Base):
     soft_close_threshold_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     soft_close_extension_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # How the next player is picked. New in 2.1.0.
+    auction_mode: Mapped[AuctionMode] = mapped_column(
+        EnumString(AuctionMode, length=20), default=AuctionMode.random
+    )
+
+    # Right to Match. New in 2.1.0. Off by default: a club league that has never
+    # had a previous season has no rights to match.
+    rtm_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Cards per team. 0 means unlimited while rtm_enabled is true.
+    rtm_cards_per_team: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     total_viewers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     logo: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
@@ -207,6 +257,9 @@ class Team(Base):
     budget: Mapped[int] = mapped_column(Integer, default=1000)
     spent: Mapped[int] = mapped_column(Integer, default=0)
     max_players: Mapped[int] = mapped_column(Integer, default=11)
+
+    # Right-to-Match cards this team has spent. New in 2.1.0.
+    rtm_cards_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     event: Mapped["AuctionEvent"] = relationship("AuctionEvent", back_populates="teams")
     players: Mapped[list["TeamPlayer"]] = relationship(
@@ -281,6 +334,23 @@ class AuctionPlayer(Base):
     # to shrink each successive extension so a bidding war terminates.
     extension_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # ── Right to Match (new in 2.1.0) ──────────────────────────────────────
+    # The team holding RTM rights on this player — typically the side they
+    # played for last season. Set during event setup, not during the auction.
+    rtm_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    # Where the negotiation has got to; None when no RTM is in progress.
+    rtm_stage: Mapped[RtmStage | None] = mapped_column(
+        EnumString(RtmStage, length=20), nullable=True, default=None
+    )
+    # Snapshot of the bid that closed, carried through the negotiation. The
+    # live current_bid is left alone so a reverted RTM can restore it.
+    rtm_top_team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id"), nullable=True
+    )
+    rtm_top_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     event: Mapped["AuctionEvent"] = relationship("AuctionEvent", back_populates="auction_players")
     player: Mapped["Player"] = relationship("Player", lazy="selectin")
     category: Mapped["PlayerCategory | None"] = relationship("PlayerCategory", lazy="selectin")
@@ -352,6 +422,39 @@ class PlayerCategory(Base):
     auction_first: Mapped[bool] = mapped_column(default=False)
 
     event: Mapped["AuctionEvent"] = relationship("AuctionEvent")
+
+
+class PlayerNomination(Base):
+    """A team's nomination of who comes up next.
+
+    New in 2.1.0. The IPL accelerated round works this way: rather than drawing
+    from the pool at random, franchises nominate players from the remaining
+    list. 1.x only had `re-auction-all-unsold`, which dumped everyone back into
+    the random pool at once.
+    """
+
+    __tablename__ = "player_nominations"
+    __table_args__ = (
+        # One live nomination per player; a consumed one no longer blocks.
+        Index("ix_nominations_event_consumed", "event_id", "consumed_at"),
+        Index("ix_nominations_player", "auction_player_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id"), index=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    auction_player_id: Mapped[int] = mapped_column(ForeignKey("auction_players.id"))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    # Set when the player was actually put on the block.
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+
+    team: Mapped["Team"] = relationship("Team", lazy="selectin")
+    auction_player: Mapped["AuctionPlayer"] = relationship("AuctionPlayer", lazy="selectin")
 
 
 class AuctionAuditLog(Base):
