@@ -72,11 +72,12 @@ export default function AuctioneerPage() {
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<number | "all">("all");
   const [inspectTeamId, setInspectTeamId] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState(false);
+  // Count of players marked NO BID this session, shown in the header chip.
+  const [noBidCount, setNoBidCount] = useState(0);
 
   const syncState = useCallback(async () => {
-    const [{ data }, eventRes, teamRes] = await Promise.all([
+    const [{ data }, teamRes] = await Promise.all([
       api.get(`/auction/events/${eid}/state`),
-      api.get(`/auction/events/${eid}`).catch(() => ({ data: null })),
       api.get(`/auction/events/${eid}/teams`).catch(() => ({ data: [] })),
     ]);
 
@@ -184,6 +185,14 @@ export default function AuctioneerPage() {
           event.admin_id === me.id ||
           (me.roles || []).includes("admin");
         if (!isOperator) {
+          router.replace(`/auction/${eid}/spectate`);
+          return;
+        }
+        // The auctioneer console runs a live auction. It opens when the event is
+        // READY (about to start) or LIVE (active/paused); a draft event has
+        // nothing on the block yet and a completed event is a record.
+        const eventStatus = eventRes.data?.status as string | undefined;
+        if (eventStatus === "draft" || eventStatus === "completed") {
           router.replace(`/auction/${eid}/spectate`);
           return;
         }
@@ -618,14 +627,10 @@ export default function AuctioneerPage() {
   // figure.
   const canCorrectPrice = !!displayActiveAP && status === "active";
 
-  const handleSoldOrUnsold = async (markUnsold: boolean) => {
+  const handleNoBid = async () => {
     if (!displayActiveAP) return;
-    if (!markUnsold && !displayActiveAP.current_bid_team_id) {
-      alert("No team has placed a bid yet. Click UNSOLD or tap a team card first.");
-      return;
-    }
-    if (markUnsold && displayActiveAP.current_bid_team_id) {
-      const ok = confirm("A team currently holds a bid. Are you sure you want to mark this player UNSOLD?");
+    if (displayActiveAP.current_bid_team_id) {
+      const ok = confirm("A team currently holds a bid. Are you sure you want to mark this player NO BID?");
       if (!ok) return;
     }
     setBusyAction(true);
@@ -633,8 +638,29 @@ export default function AuctioneerPage() {
       await api.post(`/auction/events/${eid}/hammer`);
       setSelectedTeamId(null);
       await syncState();
+      // NO BID marks the player unsold but does NOT advance — the auctioneer
+      // must press SUBMIT to bring up the next player.
+      setNoBidCount((n) => n + 1);
     } catch (e: any) {
-      alert(e.response?.data?.detail || "Error finalizing player");
+      alert(e.response?.data?.detail || "Error marking no bid");
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!displayActiveAP) return;
+    setBusyAction(true);
+    try {
+      // Hammer is idempotent: if NO BID already marked the player unsold this
+      // is a no-op; otherwise it sells to the top bidder (or marks unsold).
+      await api.post(`/auction/events/${eid}/hammer`);
+      setSelectedTeamId(null);
+      await syncState();
+      // SUBMIT always advances to the next player, even after NO BID.
+      await handleRandomNext();
+    } catch (e: any) {
+      alert(e.response?.data?.detail || "Error submitting");
     } finally {
       setBusyAction(false);
     }
@@ -752,47 +778,26 @@ export default function AuctioneerPage() {
               {eventName}
             </h1>
             <div className="text-[10px] leading-tight">
-              <span className="uppercase font-bold text-amber-300 tracking-wider">{status}</span>
+              <span className={`uppercase font-bold tracking-wider ${
+                status === "active" || status === "paused" ? "text-green-400" : "text-amber-300"
+              }`}>
+                {status === "paused" ? "LIVE" : status === "active" ? "LIVE" : "READY"}
+              </span>
             </div>
           </div>
 
-          {/*
-            LOT COUNTER — borrowed from broadcast auction boards. It tells the
-            room, and the auctioneer, exactly how far through the evening we are.
-          */}
+          {/* Players counter */}
           <div className="shrink-0 px-2.5 py-1 rounded-lg bg-black/35 border border-amber-300/30 text-center leading-none">
-            <div className="text-[8px] font-bold uppercase tracking-[0.15em] text-amber-200/80">Lot</div>
+            <div className="text-[8px] font-bold uppercase tracking-[0.15em] text-amber-200/80">Players</div>
             <div className="text-xs sm:text-sm font-black text-amber-300 tabular-nums">
-              {lotIndex} / {lotTotal}
+              {soldPlayers.length + unsoldPlayers.length} / {lotTotal}
             </div>
           </div>
 
-          {/*
-            PROGRESS CHIPS — these are the four drawer buttons that used to sit
-            in a footer strip. Nothing was removed: they moved up here, took on
-            the stat-chip treatment, and gave their entire row back to the stage.
-          */}
-          <div className="flex items-stretch gap-1.5 shrink-0">
-            {([
-              { key: "sold", label: "Sold", value: soldPlayers.length, tone: "bg-[#4d7c0f] hover:bg-[#65a30d]", on: "bg-emerald-400 text-slate-950" },
-              { key: "unsold", label: "Unsold", value: unsoldPlayers.length, tone: "bg-[#b91c1c] hover:bg-[#dc2626]", on: "bg-red-300 text-slate-950" },
-              { key: "available", label: "To Go", value: pendingPlayers.length, tone: "bg-[#ca8a04] hover:bg-[#eab308]", on: "bg-amber-300 text-slate-950" },
-              { key: "teams", label: "Teams", value: store.teams.length, tone: "bg-[#0d9488] hover:bg-[#14b8a6]", on: "bg-teal-300 text-slate-950" },
-            ] as const).map((chip) => (
-              <button
-                key={chip.key}
-                onClick={() => setActiveDrawerTab(activeDrawerTab === chip.key ? "none" : chip.key)}
-                className={`px-2.5 py-1 rounded-lg leading-none text-center transition font-black ${
-                  activeDrawerTab === chip.key ? chip.on : `${chip.tone} text-white`
-                }`}
-                title={`Open ${chip.label}`}
-              >
-                <div className="text-sm sm:text-base tabular-nums">{chip.value}</div>
-                <div className="text-[8px] font-bold uppercase tracking-[0.12em] opacity-90">
-                  {chip.label}
-                </div>
-              </button>
-            ))}
+          {/* No Bid counter */}
+          <div className="shrink-0 px-2.5 py-1 rounded-lg bg-black/35 border border-blue-300/30 text-center leading-none ml-2">
+            <div className="text-[8px] font-bold uppercase tracking-[0.15em] text-blue-200/80">No Bid</div>
+            <div className="text-xs sm:text-sm font-black text-blue-400 tabular-nums">{noBidCount}</div>
           </div>
 
           {status !== "completed" && (
@@ -801,7 +806,7 @@ export default function AuctioneerPage() {
                 onClick={handleResetMock}
                 disabled={busyAction}
                 className="bg-black/30 hover:bg-black/50 border border-amber-400/40 text-amber-300 px-2 py-1.5 rounded-lg text-[11px] font-bold transition disabled:opacity-40"
-                title="Reset Mock Auction"
+                title="Restart"
               >
                 ↻
               </button>
@@ -946,39 +951,21 @@ export default function AuctioneerPage() {
       </div>
 
       {/* ── ROW 3 · STAGE ──
-          Two columns on a laptop and up: the lot on the left, the paddles on
-          the right. The operator's eye lives on the paddles, so they get the
-          wider half — this console is not the audience screen. */}
+          Per template: player card + bid panel on top, teams full-width below. */}
       <main className="min-h-0 overflow-hidden px-3 py-2">
-        <div className="mx-auto w-full max-w-[1800px] h-full grid gap-2.5 grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          {/* ── LOT PANEL ── */}
-          {displayActiveAP ? (
-            <section className="min-h-0 rounded-2xl bg-gradient-to-br from-[#1c2533] to-[#141a25] border border-white/10 shadow-2xl p-3 flex flex-col gap-2.5 overflow-hidden">
-              {/* Category / base / slab micro-bar */}
-              <div className="flex flex-wrap items-center justify-between gap-1.5 shrink-0">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="bg-amber-400 text-red-950 text-[10px] font-black uppercase tracking-wide px-2 py-0.5 rounded-full">
-                    {activeCategory ? activeCategory.name : "Standard Pool"}
-                  </span>
-                  <span className="text-[11px] text-slate-300 font-semibold whitespace-nowrap">
-                    Base ₹{formatMoney(activeBasePrice)}
-                  </span>
-                </div>
-                <span className="text-[10px] font-black text-amber-300 bg-black/35 px-2 py-0.5 rounded-full whitespace-nowrap">
-                  {isOpeningBid
-                    ? `Opening ₹${formatMoney(nextBidAmount)}`
-                    : `Slab +₹${formatMoney(currentIncrement)}`}
-                </span>
-              </div>
-
-              {/* PHOTO — takes whatever height the stack leaves it. */}
-              <div className="flex-1 min-h-0 flex items-center justify-center">
-                <div className="relative h-full max-h-[46vh] max-w-full aspect-[3/4]">
-                  <div
-                    className="absolute -inset-1 rounded-2xl bg-gradient-to-b from-amber-300/35 to-amber-500/10 blur-[7px]"
-                    aria-hidden="true"
-                  />
-                  <div className="relative w-full h-full rounded-2xl border-2 border-amber-300/70 bg-slate-950 overflow-hidden shadow-[0_12px_40px_rgba(0,0,0,0.55)] flex items-center justify-center">
+        <div className="mx-auto w-full max-w-[1800px] h-full grid gap-3 grid-rows-[auto_minmax(0,1fr)]">
+          {/* Lot panel — player card + bid panel side by side */}
+          <section className="min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {displayActiveAP ? (
+              <>
+                {/* Player card — left */}
+                <section className="min-h-0 rounded-2xl bg-gradient-to-br from-[#1c2533] to-[#141a25] border border-white/10 shadow-2xl overflow-hidden">
+                  {/* PHOTO — fills the top ~70% of the card */}
+                  <div className="relative h-[52vh] w-full overflow-hidden bg-slate-900">
+                    <div
+                      className="absolute inset-0 rounded-2xl bg-gradient-to-b from-amber-300/10 to-amber-500/10 blur-[7px]"
+                      aria-hidden="true"
+                    />
                     {activeInfo?.profile_photo ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -987,119 +974,149 @@ export default function AuctioneerPage() {
                         className="w-full h-full object-cover object-top"
                       />
                     ) : (
-                      <span className="text-[clamp(2rem,7vh,4rem)] font-black text-amber-300/90">
-                        {(activeInfo?.name || "P")[0]?.toUpperCase()}
-                      </span>
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-[clamp(3rem,10vh,5rem)] font-black text-amber-300/90">
+                          {(activeInfo?.name || "P")[0]?.toUpperCase()}
+                        </span>
+                      </div>
                     )}
                   </div>
-                </div>
-              </div>
 
-              {/* NAME — below the photo, above the price, and never cropped:
-                  useFitText shrinks it until it fits this fixed box. */}
-              <div className="shrink-0 flex items-stretch gap-2">
-                <span className="shrink-0 self-center text-[clamp(0.85rem,2vh,1.3rem)] font-black text-amber-300">
-                  #{displayActiveAP.player_id}
-                </span>
-                {/* The h2 fills a box of definite height, so its clientHeight is
-                    the space available and its scrollHeight is the text --
-                    which is what makes the fit measurement meaningful. With an
-                    auto-height heading every size "fits" and nothing shrinks. */}
-                <div className="min-w-0 flex-1 h-[clamp(2.1rem,6.5vh,4.2rem)] bg-white rounded-lg px-3 py-1 shadow-lg">
-                  <h2
-                    ref={nameRef}
-                    className="w-full h-full overflow-hidden flex items-center justify-center text-center text-red-950 font-black leading-[1.05] tracking-tight break-words"
-                  >
-                    {activeInfo?.name || `Player #${displayActiveAP.player_id}`}
-                  </h2>
-                </div>
-              </div>
-
-              {/* DETAILS — wrap freely; nothing here is ever truncated. */}
-              <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-                {activeInfo?.role && (
-                  <span className="bg-black/40 border border-amber-300/30 text-amber-200 text-[10px] font-black uppercase tracking-[0.16em] px-2 py-0.5 rounded">
-                    {activeInfo.role}
-                  </span>
-                )}
-                <div className="leading-none text-center">
-                  <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Base</div>
-                  <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
-                    ₹{formatMoney(activeBasePrice)}
-                  </div>
-                </div>
-                {activeInfo?.age && (
-                  <div className="leading-none text-center">
-                    <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Age</div>
-                    <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
-                      {activeInfo.age}
-                    </div>
-                  </div>
-                )}
-                {(activeInfo?.batting_rating || activeInfo?.bowling_rating) && (
-                  <>
-                    <div className="leading-none text-center">
-                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Bat</div>
-                      <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
-                        {activeInfo.batting_rating ?? "-"}
-                      </div>
-                    </div>
-                    <div className="leading-none text-center">
-                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Bowl</div>
-                      <div className="text-[clamp(0.78rem,1.8vh,1.1rem)] font-black text-white">
-                        {activeInfo.bowling_rating ?? "-"}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* CURRENT BID — the number the auctioneer calls out. */}
-              <div className="shrink-0 rounded-xl bg-black/30 border border-white/10 px-3 py-2 flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[8px] font-bold uppercase tracking-[0.18em] text-amber-200/80 leading-none mb-0.5">
-                    {isOpeningBid ? "Opening Bid" : "Current Bid"}
-                  </div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-[clamp(1rem,2.4vh,1.5rem)] font-black text-amber-300 leading-none">₹</span>
-                    <span className="text-[clamp(1.6rem,5.2vh,3.6rem)] font-black leading-none tracking-tight tabular-nums drop-shadow">
-                      {formatMoney(displayedCurrentBid)}
+                  {/* Category badge overlay bottom-left */}
+                  <div className="absolute bottom-0 left-0 p-2 z-10">
+                    <span className={`rounded-tl-xl rounded-br-xl px-2 py-0.5 font-black uppercase tracking-wider text-xs ${
+                      activeCategory ? "bg-[#ca8a04] text-red-950" : "bg-[#78716c] text-slate-100"
+                    }`}>
+                      {activeCategory ? activeCategory.name : "Standard Pool"}
                     </span>
                   </div>
-                  <p className="text-[11px] font-bold mt-1 text-amber-300 leading-tight break-words">
-                    {leadingTeam ? `Highest — ${leadingTeam.name}` : "Awaiting opening bid"}
-                  </p>
-                </div>
-                <button
-                  onClick={handleOpenEditBid}
-                  disabled={status !== "active"}
-                  className="w-10 h-10 shrink-0 rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-40 flex items-center justify-center transition shadow"
-                  title="Edit Current Bid Amount"
-                >
-                  ✎
-                </button>
-              </div>
-            </section>
-          ) : (
-            <section className="min-h-0 rounded-2xl bg-black/30 border border-white/15 flex flex-col items-center justify-center text-center p-6">
-              <p className="text-[clamp(1rem,2.8vh,1.6rem)] font-black text-amber-200">
-                {status === "active"
-                  ? "No Player on the Block"
-                  : status === "completed"
-                  ? "Auction Completed"
-                  : "Auction Paused / Not Started"}
-              </p>
-              <p className="text-xs text-slate-400 mt-1.5">
-                {status === "active"
-                  ? autoAdvance
-                    ? "Bringing the next player up…"
-                    : "Auto is off — use PICK MANUALLY below to bring up the next player."
-                  : "Click Start/Resume in the top right to begin."}
-              </p>
-            </section>
-          )}
 
-          {/* ── TEAM PADDLES ── */}
+                  {/* PLAYER NAME + ID */}
+                  <div className="px-4 py-3 flex items-stretch gap-2">
+                    <span className="shrink-0 self-center text-[clamp(0.85rem,2vh,1.2rem)] font-black text-amber-300">
+                      #{displayActiveAP.player_id}
+                    </span>
+                    <div className="min-w-0 flex-1 h-[clamp(2rem,5vh,3.5rem)] bg-white rounded-lg px-3 py-1 shadow-lg flex items-center justify-center">
+                      <h2
+                        ref={nameRef}
+                        className="w-full h-full overflow-hidden flex items-center justify-center text-center text-red-950 font-black leading-[1.05] tracking-tight break-words"
+                      >
+                        {activeInfo?.name || `Player #${displayActiveAP.player_id}`}
+                      </h2>
+                    </div>
+                  </div>
+
+                  {/* STATS — Age / Bat / Bowl / Field */}
+                  <div className="px-4 pb-4 grid grid-cols-4 gap-2 text-center">
+                    <div className="leading-none">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Age</div>
+                      <div className="text-[clamp(0.75rem,1.6vh,1rem)] font-black text-white">
+                        {activeInfo?.age ?? "–"}
+                      </div>
+                    </div>
+                    <div className="leading-none">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Bat</div>
+                      <div className="text-[clamp(0.75rem,1.6vh,1rem)] font-black text-white">
+                        {activeInfo?.batting_rating ?? "–"}
+                      </div>
+                    </div>
+                    <div className="leading-none">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Ball</div>
+                      <div className="text-[clamp(0.75rem,1.6vh,1rem)] font-black text-white">
+                        {activeInfo?.bowling_rating ?? "–"}
+                      </div>
+                    </div>
+                    <div className="leading-none">
+                      <div className="text-[8px] font-bold uppercase tracking-[0.14em] text-slate-400">Field</div>
+                      <div className="text-[clamp(0.75rem,1.6vh,1rem)] font-black text-white">
+                        {activeInfo?.fielding_rating ?? "–"}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Bid panel — right */}
+                <section className="min-h-0 rounded-2xl bg-[#b45309] border border-amber-300/50 shadow-xl flex flex-col overflow-hidden">
+                  <div className="px-4 py-3">
+                    <div className="text-[9px] font-black uppercase tracking-wider text-amber-100/80 mb-0.5">
+                      {leadingTeam ? "SOLD FOR" : "BID FOR"}
+                    </div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-[clamp(1.5rem,4vh,3rem)] font-black text-slate-900 leading-none">₹</span>
+                      <span className="text-[clamp(2.5rem,7vh,5rem)] font-black leading-none tracking-tight tabular-nums">
+                        {formatMoney(displayedCurrentBid)}
+                      </span>
+                      <span className="text-[clamp(0.85rem,1.8vh,1.4rem)] font-black text-slate-900 leading-none">LAKHS</span>
+                    </div>
+                  </div>
+
+                  {/* Team name + logo + edit */}
+                  <div className="px-4 py-3 bg-slate-900 border-t border-white/10 flex items-center gap-2">
+                    {leadingTeam ? (
+                      <>
+                        <div className="w-6 h-6 rounded-lg overflow-hidden shrink-0 flex items-center justify-center bg-slate-800">
+                          {leadingTeam.logo ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={leadingTeam.logo} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-[10px] font-black">
+                              {leadingTeam.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-sm font-black text-slate-50 truncate">
+                          {leadingTeam.name}
+                        </h3>
+                        <button
+                          onClick={handleOpenEditBid}
+                          disabled={status !== "active"}
+                          className="w-5 h-5 shrink-0 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 flex items-center justify-center text-[10px] text-slate-400 disabled:cursor-not-allowed"
+                          title="Edit bid"
+                        >
+                          ✎
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-[9px] font-bold text-amber-200/70">No bidder</span>
+                        <button
+                          onClick={handleOpenEditBid}
+                          disabled={status !== "active"}
+                          className="w-5 h-5 shrink-0 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 flex items-center justify-center text-[10px] text-slate-400 disabled:cursor-not-allowed"
+                          title="Edit bid"
+                        >
+                          ✎
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="px-4 py-2 text-[9px] font-medium text-slate-300 uppercase tracking-wider">
+                    {leadingTeam ? "Winning team" : "Bidding team"}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <div className="lg:col-span-2 min-h-0 rounded-2xl bg-black/30 border border-white/15 flex flex-col items-center justify-center text-center p-6">
+                <p className="text-[clamp(1rem,2.8vh,1.6rem)] font-black text-amber-200">
+                  {status === "active"
+                    ? "No Player on the Block"
+                    : status === "completed"
+                    ? "Auction Completed"
+                    : "Auction Paused / Not Started"}
+                </p>
+                <p className="text-xs text-slate-400 mt-1.5">
+                  {status === "active"
+                    ? autoAdvance
+                      ? "Bringing the next player up…"
+                      : "Auto is off — use PICK MANUALLY below to bring up the next player."
+                    : "Click Start/Resume in the top right to begin."}
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* Teams — full width at bottom */}
           <section className="min-h-0 flex flex-col gap-1.5">
             <div className="flex items-center justify-between gap-2 shrink-0 px-0.5">
               <span className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 truncate">
@@ -1115,11 +1132,6 @@ export default function AuctioneerPage() {
               )}
             </div>
 
-            {/*
-              The paddles fill the column and only ever scroll inside this box —
-              the document itself stays fixed. On a laptop with a normal squad
-              count nothing scrolls at all.
-            */}
             <div className="min-h-0 max-h-full overflow-y-auto overscroll-contain rounded-2xl bg-white/[0.04] border border-white/10 p-2">
               <div
                 className="grid gap-2 content-start grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
@@ -1147,17 +1159,17 @@ export default function AuctioneerPage() {
                       onClick={() => {
                         if (!disabled) placeBidForTeam(team.id, nextBidAmount);
                       }}
-                      className={`relative rounded-xl bg-white text-slate-900 p-2 shadow-md transition overflow-hidden flex flex-col justify-between ${
+                      className={`relative rounded-xl bg-slate-900 border border-white/10 shadow-md transition overflow-hidden flex flex-col justify-between ${
                         isLeading
-                          ? "ring-[3px] ring-emerald-400 bg-emerald-50"
+                          ? "ring-[3px] ring-amber-400 bg-slate-800/50"
                           : isSelected
                           ? "ring-[3px] ring-amber-400"
                           : disabled
                           ? "opacity-55 cursor-not-allowed"
-                          : "cursor-pointer hover:ring-2 hover:ring-amber-300 hover:-translate-y-0.5"
+                          : "cursor-pointer hover:border-amber-500/50 hover:-translate-y-0.5"
                       }`}
                     >
-                      {/* Team colour spine — identity at a glance. */}
+                      {/* Team colour spine */}
                       <span
                         className="absolute left-0 top-0 bottom-0 w-1"
                         style={{ backgroundColor: team.color || "#16a34a" }}
@@ -1167,7 +1179,7 @@ export default function AuctioneerPage() {
                       <div className="pl-1.5 flex items-center gap-2">
                         <div className="relative shrink-0">
                           <div
-                            className="w-9 h-9 rounded-full flex items-center justify-center font-black text-[11px] text-white shadow"
+                            className="w-8 h-8 rounded-full flex items-center justify-center font-black text-[11px] text-white shadow"
                             style={{ backgroundColor: team.color || "#16a34a" }}
                           >
                             {team.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
@@ -1179,30 +1191,28 @@ export default function AuctioneerPage() {
 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1">
-                            <p className="text-[11px] font-black text-slate-900 truncate flex-1">
+                            <p className="text-[10px] font-black text-slate-100 truncate flex-1">
                               {team.name}
                             </p>
                             {isLeading && (
-                              <span className="shrink-0 text-[8px] font-black uppercase bg-emerald-600 text-white px-1 py-0.5 rounded">
+                              <span className="shrink-0 text-[8px] font-black uppercase bg-amber-500 text-red-950 px-1 py-0.5 rounded">
                                 High
                               </span>
                             )}
                           </div>
-                          <p className="text-[9px] font-bold text-slate-400 leading-tight">
+                          <p className="text-[8px] font-bold text-slate-400 leading-tight">
                             {team.player_count}/{team.max_players} players
                           </p>
                         </div>
                       </div>
 
-                      {/* PURSE and MAX BID as the two numbers that matter —
-                          the one idea worth taking wholesale from a broadcast
-                          team strip. */}
+                      {/* Purse / Max Bid row */}
                       <div className="pl-1.5 mt-1.5 grid grid-cols-2 gap-1">
                         <div className="rounded-md bg-slate-100 px-1.5 py-1 leading-none">
                           <div className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-500">
                             Purse
                           </div>
-                          <div className="text-[13px] font-black text-amber-600 tabular-nums truncate">
+                          <div className="text-[11px] font-black text-amber-600 tabular-nums truncate">
                             {formatMoney(remainingPurse)}
                           </div>
                         </div>
@@ -1211,7 +1221,7 @@ export default function AuctioneerPage() {
                             Max Bid
                           </div>
                           <div
-                            className={`text-[13px] font-black tabular-nums truncate ${
+                            className={`text-[11px] font-black tabular-nums truncate ${
                               cannotAfford ? "text-red-600" : "text-sky-700"
                             }`}
                           >
@@ -1286,16 +1296,16 @@ export default function AuctioneerPage() {
             </div>
 
             {/* Price corrections + outcome */}
-            <div className="md:col-span-8 grid grid-cols-2 lg:grid-cols-4 gap-2">
+            <div className="md:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 onClick={handleBidUp}
                 disabled={!canCorrectPrice || busyAction}
-                title="Correct the price upward by one slab step. Does not change which team is bidding — tap a team paddle to bid."
-                className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black py-3 px-2 shadow-md transition leading-none"
+                title="Correct the price upward by one slab step."
+                className="rounded-xl bg-[#111] hover:bg-[#1f2937] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
               >
                 <div className="text-sm">↑ UP</div>
                 <div className="text-[9px] font-bold uppercase tracking-wider opacity-70 mt-0.5">
-                  Correct {displayActiveAP ? `+${formatMoney(currentIncrement)}` : ""}
+                  Increase by ₹{formatMoney(currentIncrement)}
                 </div>
               </button>
 
@@ -1307,39 +1317,28 @@ export default function AuctioneerPage() {
                   !displayActiveAP.current_bid_team_id ||
                   busyAction
                 }
-                className="rounded-xl bg-[#facc15] hover:bg-[#fde047] disabled:opacity-40 text-slate-950 font-black py-3 px-2 shadow-md transition leading-none"
+                className="rounded-xl bg-[#111] hover:bg-[#1f2937] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
               >
                 <div className="text-sm">↓ DOWN</div>
                 <div className="text-[9px] font-bold uppercase tracking-wider opacity-70 mt-0.5">
-                  Undo
+                  Decrease by ₹{formatMoney(currentIncrement)}
                 </div>
               </button>
 
               <button
-                onClick={() => handleSoldOrUnsold(false)}
-                disabled={
-                  status !== "active" ||
-                  !displayActiveAP ||
-                  !displayActiveAP.current_bid_team_id ||
-                  busyAction
-                }
-                className="rounded-xl bg-[#65a30d] hover:bg-[#84cc16] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
-              >
-                <div className="text-base tracking-wide">SOLD</div>
-                <div className="text-[9px] font-bold uppercase tracking-wider opacity-80 mt-0.5 truncate">
-                  {leadingTeam ? leadingTeam.name : "No bidder"}
-                </div>
-              </button>
-
-              <button
-                onClick={() => handleSoldOrUnsold(true)}
+                onClick={() => handleNoBid()}
                 disabled={status !== "active" || !displayActiveAP || busyAction}
-                className="rounded-xl bg-[#ef4444] hover:bg-[#f87171] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
+                className="rounded-xl bg-[#111] hover:bg-[#1f2937] disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none"
               >
-                <div className="text-base tracking-wide">UNSOLD</div>
-                <div className="text-[9px] font-bold uppercase tracking-wider opacity-80 mt-0.5">
-                  Pass
-                </div>
+                <div className="text-base tracking-wide">⊘ NO BID</div>
+              </button>
+
+              <button
+                onClick={handleSubmit}
+                disabled={status !== "active" || !displayActiveAP || busyAction}
+                className="rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-black py-3 px-2 shadow-md transition leading-none col-span-full"
+              >
+                <div className="text-xl tracking-wide">SUBMIT</div>
               </button>
             </div>
           </div>

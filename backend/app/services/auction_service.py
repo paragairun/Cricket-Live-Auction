@@ -42,6 +42,7 @@ from typing import Optional
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.queue import enqueue, enqueue_at
@@ -246,18 +247,23 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
     client that reconnects mid-player computes the correct countdown itself and
     the server does not have to broadcast a tick every second.
     """
-    event_result = await db.execute(select(AuctionEvent).where(AuctionEvent.id == event_id))
+    event_result = await db.execute(
+        select(AuctionEvent)
+        .where(AuctionEvent.id == event_id)
+        .options(selectinload(AuctionEvent.auction_players).selectinload(AuctionPlayer.player))
+    )
     event = event_result.scalar_one_or_none()
     if not event:
         return {}
 
-    teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
+    teams_result = await db.execute(
+        select(Team)
+        .where(Team.event_id == event_id)
+        .options(selectinload(Team.players).selectinload(TeamPlayer.player), selectinload(Team.captain))
+    )
     teams = teams_result.scalars().all()
 
-    players_result = await db.execute(
-        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
-    )
-    auction_players = players_result.scalars().all()
+    auction_players = event.auction_players
 
     slabs = await _load_slabs(db, event_id)
 

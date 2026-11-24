@@ -1465,7 +1465,7 @@ export default function OrganizerEventDetailPage() {
             {publishState === "loading" && (
               <span className="text-gray-500 text-sm">Loading…</span>
             )}
-            {publishState === "draft" && (
+            {event?.status === "draft" && (
               <div className="flex items-center gap-3">
                 <span className="text-gray-400 text-sm font-medium">Draft</span>
                 <button
@@ -1477,7 +1477,7 @@ export default function OrganizerEventDetailPage() {
                 </button>
               </div>
             )}
-            {publishState === "published" && (
+            {event?.status === "ready" && (
               <>
                 <span className="text-amber-400 text-sm font-medium">✓ Published (waiting for start)</span>
                 <button
@@ -1489,11 +1489,14 @@ export default function OrganizerEventDetailPage() {
                 </button>
               </>
             )}
-            {publishState === "live" && (
+            {(event?.status === "active" || event?.status === "paused") && (
               <span className="text-green-400 text-sm font-medium">✓ Event is live</span>
             )}
-            {publishState === "completed" && (
+            {event?.status === "completed" && (
               <span className="text-blue-400 text-sm font-medium">✓ Auction complete</span>
+            )}
+            {publishState === "unknown" && (
+              <span className="text-gray-500 text-sm">Unknown status</span>
             )}
           </div>
         </div>

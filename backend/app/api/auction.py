@@ -384,11 +384,15 @@ async def reset_auction(
     organizer role, so any organizer on the platform could wipe any event — and
     nothing stopped it running mid-auction.
     """
-    if ctx.event.status == AuctionStatus.active:
+    # Reset returns a LIVE (active/paused) or READY event back to READY so the
+    # organiser can re-draft. A completed auction is a record and is not reset.
+    if ctx.event.status == AuctionStatus.completed:
         raise HTTPException(
             status_code=400,
-            detail="Pause the auction before resetting it",
+            detail="Cannot reset a completed auction",
         )
+    # A live (active) auction can be reset straight back to ready; the service
+    # already returns every player to pending and clears rosters and purses.
     try:
         await auction_service.reset_auction(event_id, db, actor=ctx.user)
     except AuctionError as exc:
