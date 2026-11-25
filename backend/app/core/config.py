@@ -9,10 +9,6 @@ Changed from 1.x:
     this public repo.
   - ENVIRONMENT added. God mode is refused outside `local`/`dev`.
   - CORS_ORIGINS added so main.py no longer needs allow_origins=["*"].
-  - ALLOW_FAKE_REDIS added. The fakeredis fallback is a local-development
-    convenience and is now opt-in; in production a Redis outage must surface as
-    an error rather than silently splitting workers onto private in-memory
-    stores (which desynchronises the auction across pods).
 """
 from typing import Literal, Optional
 
@@ -22,7 +18,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # ── Environment ───────────────────────────────────────────────────────────
-    # `local`  — developer machine; permissive defaults, fakeredis allowed
+    # `local`  — developer machine; permissive defaults
     # `dev`    — shared dev/staging deployment
     # `prod`   — production
     ENVIRONMENT: Literal["local", "dev", "prod"] = "local"
@@ -45,11 +41,6 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./auction.db"
-
-    # ── Redis ─────────────────────────────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379"
-    # Opt-in in-memory Redis substitute for local development only.
-    ALLOW_FAKE_REDIS: bool = False
 
     # ── Auction defaults ──────────────────────────────────────────────────────
     # Base countdown for a player, in seconds. The old value was 180s and every
@@ -100,10 +91,6 @@ class Settings(BaseSettings):
         key = self.AWS_ACCESS_KEY_ID or self.AWS_MAIL_ACCESS_KEY_ID
         secret = self.AWS_SECRET_ACCESS_KEY or self.AWS_MAIL_SECRET_ACCESS_KEY
         return bool(key and secret and self.AWS_BUCKET_NAME)
-
-    @property
-    def fake_redis_allowed(self) -> bool:
-        return self.ALLOW_FAKE_REDIS and self.ENVIRONMENT == "local"
 
     # ── Validation ────────────────────────────────────────────────────────────
 
