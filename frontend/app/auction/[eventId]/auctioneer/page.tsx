@@ -1447,7 +1447,7 @@ export default function AuctioneerPage() {
               </div>
             )}
 
-            <div className={`${activeDrawerTab === "squads" ? "p-2" : "p-4"} overflow-y-auto space-y-2 flex-1 min-h-0`}>
+            <div className={`${activeDrawerTab === "squads" ? "p-2 overflow-hidden" : "p-4 overflow-y-auto"} space-y-2 flex-1 min-h-0`}>
               {activeDrawerTab === "available" &&
                 (filteredPending.length === 0 ? (
                   <p className="text-center text-slate-500 text-sm py-8">
@@ -1598,13 +1598,13 @@ export default function AuctioneerPage() {
                       );
                     };
                     return (
-                      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+                      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
                           <strong className="text-lg text-white">{team.name} Squad</strong>
                           <span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span>
                         </div>
                         {captainId || roster.length > 0 ? (
-                          <div className="grid grid-cols-2 justify-items-center gap-2 pb-2 sm:grid-cols-3 xl:grid-cols-4">
+                          <div className="grid grid-cols-2 justify-items-center content-start gap-2 sm:grid-cols-4 lg:grid-cols-6">
                             {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
                             {players.map((p) => renderCard(p.player_id, p.sold_price))}
                           </div>
