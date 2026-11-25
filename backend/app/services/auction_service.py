@@ -717,7 +717,7 @@ async def set_next_player(
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
 
-    if event.exclude_captains_from_auction and ap.player_id in await _captain_player_ids(db, event_id):
+    if ap.player_id in await _captain_player_ids(db, event_id):
         raise AuctionError("Assigned team captains are excluded from the auction")
 
     base = await _effective_base_price(ap, db)
@@ -770,7 +770,7 @@ async def set_next_player(
 async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer:
     """Categories flagged `auction_first` come up first, in sort order."""
     event = await _get_event(db, event_id)
-    captain_ids = await _captain_player_ids(db, event_id) if event.exclude_captains_from_auction else set()
+    captain_ids = await _captain_player_ids(db, event_id)
 
     categories_result = await db.execute(
         select(PlayerCategory).where(PlayerCategory.event_id == event_id)
