@@ -563,7 +563,6 @@ function PlayersTab({
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "sold" | "unsold" | "pending">("all");
-  const [displayCount, setDisplayCount] = useState(25);
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -598,7 +597,6 @@ function PlayersTab({
         (p.email ?? "").toLowerCase().includes(q)
     );
   }
-  const shown = visible.slice(0, displayCount);
 
   const counts = {
     all: players.length,
@@ -878,7 +876,7 @@ function PlayersTab({
         </div>
       ) : (
         <div className="border border-gray-800 rounded-xl overflow-hidden">
-          {shown.map((player) => {
+          {visible.map((player) => {
             const isCaptain = captainIds.has(player.id);
             return (
               <div
@@ -956,14 +954,6 @@ function PlayersTab({
             );
           })}
 
-          {visible.length > shown.length && (
-            <button
-              onClick={() => setDisplayCount((c) => c + 25)}
-              className="w-full py-3 text-sm text-gray-400 hover:text-white hover:bg-gray-900"
-            >
-              Show more ({visible.length - shown.length} remaining)
-            </button>
-          )}
         </div>
       )}
 
