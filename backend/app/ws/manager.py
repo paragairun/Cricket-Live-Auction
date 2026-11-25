@@ -37,6 +37,8 @@ class ConnectionManager:
         self._user_map[event_id][ws] = user_id
         if user_id is not None:
             self._unique_viewers[event_id].add(user_id)
+        stats = await self.get_viewer_stats(event_id)
+        await self.broadcast(event_id, {"type": "viewer_count", **stats})
 
     async def disconnect(self, event_id: int, ws: WebSocket):
         self._user_map.get(event_id, {}).pop(ws, None)
@@ -46,6 +48,8 @@ class ConnectionManager:
         if not room:
             self._rooms.pop(event_id, None)
             self._user_map.pop(event_id, None)
+        stats = await self.get_viewer_stats(event_id)
+        await self.broadcast(event_id, {"type": "viewer_count", **stats})
 
     async def get_viewer_stats(self, event_id: int) -> dict:
         return {
