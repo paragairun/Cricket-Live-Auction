@@ -27,7 +27,8 @@ Experience the thrill of live player auctions — perfect for office cricket lea
 - **Player Profiles** — Photo uploads with skill ratings
 - **Secure Auth** — JWT-based authentication with magic link support
 - **Docker Ready** — One-command deployment with Docker Compose
-- **Scalable** — Redis-based coordination supports multiple workers/pods
+- **Single source of truth** — auction state and deadlines live in the database
+- **Local server timer** — no database-backed local timer or separate worker process required
 
 ---
 
@@ -56,7 +57,7 @@ Experience the thrill of live player auctions — perfect for office cricket lea
 
 | Layer | Technology |
 |-------|------------|
-| **Backend** | FastAPI, SQLAlchemy (async), PostgreSQL, Redis, ARQ |
+| **Backend** | FastAPI, SQLAlchemy (async), PostgreSQL |
 | **Frontend** | Next.js 14 (App Router), TailwindCSS, Zustand |
 | **Storage** | AWS S3 (or local uploads) |
 | **Email** | AWS SES (configurable) |
@@ -68,7 +69,7 @@ Experience the thrill of live player auctions — perfect for office cricket lea
 
 ### Option 1: Full Docker Setup (Recommended)
 
-This runs everything including PostgreSQL and Redis in Docker.
+This runs the backend, frontend and PostgreSQL in Docker. The backend owns the auction timer.
 
 ```bash
 # 1. Clone the repository
@@ -96,7 +97,7 @@ cp .env.example .env
 DATABASE_URL=postgresql+asyncpg://user:password@your-db-host:5432/auction_db
 
 # 3. Start services (without db)
-docker compose up --build backend frontend redis nginx worker
+docker compose up --build backend frontend nginx
 ```
 
 ### Option 3: Local Development (No Docker)
@@ -115,7 +116,7 @@ npm install
 npm run dev
 ```
 
-> **Note:** You'll need PostgreSQL and Redis running locally or remotely.
+**Note:** You need only the configured database. The FastAPI process runs the timer and WebSocket manager locally; do not start a separate worker process.
 
 ---
 
@@ -138,7 +139,7 @@ DATABASE_URL=postgresql+asyncpg://auction:auction@db:5432/auction
 # DATABASE_URL=postgresql+asyncpg://user:password@your-host:5432/your_db
 
 # ── Redis ────────────────────────────────────────────────────────────────────
-REDIS_URL=redis://redis:6379
+REDIS_URL=database-backed timer://redis:6379
 # Or your own: REDIS_URL=redis://your-redis-host:6379
 
 # ── Frontend URLs ────────────────────────────────────────────────────────────
@@ -221,7 +222,7 @@ To use an external PostgreSQL (e.g., AWS RDS, Supabase, Neon):
    ```bash
    DATABASE_URL=postgresql+asyncpg://user:password@your-rds-endpoint:5432/auction
    ```
-3. Remove `db` from `depends_on` in backend, worker, and migrator services
+3. Remove `db` from `depends_on` in backend and migrator services
 
 ---
 
