@@ -669,7 +669,7 @@ export default function AuctioneerPage() {
   };
 
   const handleSubmit = async () => {
-    if (!displayActiveAP) return;
+    if (!displayActiveAP?.current_bid_team_id) return;
     setBusyAction(true);
     try {
       const soldTeamId = displayActiveAP.current_bid_team_id ?? null;
@@ -1188,7 +1188,12 @@ export default function AuctioneerPage() {
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={status !== "active" || !displayActiveAP || busyAction}
+                disabled={
+                  status !== "active" ||
+                  !displayActiveAP ||
+                  !displayActiveAP.current_bid_team_id ||
+                  busyAction
+                }
                 className="w-full bg-[#e61208] hover:bg-[#ff190d] disabled:opacity-45 text-white font-black uppercase tracking-wider text-xs sm:text-sm py-2 shadow-lg transition"
               >
                 SUBMIT
