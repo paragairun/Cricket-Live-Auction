@@ -307,7 +307,6 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
             "team_max_players": event.team_max_players,
             "team_min_players": event.team_min_players,
             "player_base_price": event.player_base_price,
-            # New in 2.1.0
             "auction_mode": event.auction_mode,
             "rtm_enabled": event.rtm_enabled,
             "rtm_cards_per_team": event.rtm_cards_per_team,
@@ -463,8 +462,6 @@ async def get_auction_summary(event_id: int, db: AsyncSession) -> dict:
             }
         )
 
-        # Only a team that actually filled a squad can be "strongest" — an empty
-        # team scored 0.0 and could win on a tie in 1.x.
         if count and overall > best_rating:
             best_rating = overall
             strongest_team = {
@@ -516,9 +513,6 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if event.status not in (AuctionStatus.ready, AuctionStatus.paused):
         raise AuctionError(f"Cannot start an auction in status: {event.status}")
 
-    # 1.x set status to active and THEN tested `if event.status == active` to
-    # decide whether to send "auction starting" notifications — always true, so
-    # every pause/resume cycle re-notified every participant.
     was_first_start = event.status == AuctionStatus.ready
 
     if event.scheduled_at is not None and was_first_start:
@@ -527,7 +521,6 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
         if scheduled.tzinfo is None:
             scheduled = scheduled.replace(tzinfo=timezone.utc)
         if now < scheduled:
-            # 1.x had this check commented out with a "bypassed for testing" note.
             raise AuctionError(
                 f"Auction is scheduled for {scheduled.isoformat()} and cannot start before then"
             )
@@ -551,11 +544,6 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if was_first_start:
         await _notify_participants_starting(event, db)
 
-    # Put the first player up automatically. An auctioneer who has just pressed
-    # Start wants someone on the block, not an empty stage and another button to
-    # find. Best-effort: if the pool is empty, or the nomination queue is (in
-    # nomination mode), the auction still starts and the console shows
-    # "No player on the block" as before.
     if not await _load_active_player(db, event_id):
         try:
             await set_next_player(event_id, None, db, actor=actor)
@@ -585,9 +573,15 @@ async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -
             if user.id == event.organizer_id
             else "admin"
         )
-        await enqueue(
-            "task_send_auction_starting", user.email, user.name, event.name, event.id, role
-        )
+        try:
+            await asyncio.wait_for(
+                enqueue(
+                    "task_send_auction_starting", user.email, user.name, event.name, event.id, role
+                ),
+                timeout=1.5,
+            )
+        except Exception as exc:
+            logger.warning("Skipping/slow start email enqueue for %s: %s", user.email, exc)
 
 
 async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
@@ -596,8 +590,6 @@ async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = No
         raise AuctionError("Auction is not active")
 
     redis = await get_redis()
-    # Clearing the deadline is what stops the hammer: the deferred job and the
-    # watchdog both re-check it before acting.
     await redis.delete(_deadline_key(event_id))
 
     event.status = AuctionStatus.paused
@@ -654,10 +646,16 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     if recipient_ids:
         users = await db.execute(select(User).where(User.id.in_(recipient_ids)))
         for user in users.scalars().all():
-            await enqueue(
-                "task_send_event_completion_summary",
-                user.email, user.name, event.name, event_id, summary,
-            )
+            try:
+                await asyncio.wait_for(
+                    enqueue(
+                        "task_send_event_completion_summary",
+                        user.email, user.name, event.name, event_id, summary,
+                    ),
+                    timeout=1.5,
+                )
+            except Exception as exc:
+                logger.warning("Skipping/slow summary email enqueue for %s: %s", user.email, exc)
 
     await manager.broadcast(
         event_id, {"type": "auction_completed", "event_id": event_id, "summary": summary}
@@ -683,10 +681,6 @@ async def set_next_player(
     if event.status != AuctionStatus.active:
         raise AuctionError("Auction is not active")
 
-    # 1.x silently flipped any still-active player to `unsold` here, with no
-    # broadcast — a misclick made the player on the block vanish from every
-    # screen with no explanation. Now it is an explicit error; the operator must
-    # hammer or pull the current player first.
     active_result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -700,7 +694,6 @@ async def set_next_player(
         )
 
     if auction_player_id is None:
-        # New in 2.1.0: in nomination mode the queue decides, not the draw.
         if event.auction_mode == AuctionMode.nomination:
             ap = await _next_nominated(db, event_id)
         else:
@@ -767,6 +760,8 @@ async def set_next_player(
 
 async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer:
     """Categories flagged `auction_first` come up first, in sort order."""
+    captain_ids = await _captain_player_ids(db, event_id)
+
     categories_result = await db.execute(
         select(PlayerCategory).where(PlayerCategory.event_id == event_id)
     )
@@ -782,7 +777,7 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
                 AuctionPlayer.category_id == category.id,
             )
         )
-        pending = result.scalars().all()
+        pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
         if pending:
             return random.choice(pending)
 
@@ -792,7 +787,7 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
             AuctionPlayer.status == PlayerAuctionStatus.pending,
         )
     )
-    pending = result.scalars().all()
+    pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
     if not pending:
         raise AuctionError("No pending players left")
     return random.choice(pending)
@@ -801,11 +796,7 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
 async def pull_player(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> AuctionPlayer | None:
-    """Take the current player off the block without selling.
-
-    New in 2.0.0 — the explicit, broadcast version of what set_next_player used
-    to do silently.
-    """
+    """Take the current player off the block without selling."""
     ap = await _load_active_player(db, event_id)
     if not ap:
         raise AuctionError("No player is on the block")
@@ -859,13 +850,6 @@ async def place_bid(
     idempotency_key: str | None = None,
     expected_version: int | None = None,
 ) -> Bid:
-    """Accept a bid, or reject it with a reason.
-
-    The write is a conditional UPDATE guarded by AuctionPlayer.version. If
-    another operator's bid landed between this caller's read and this write, the
-    UPDATE matches zero rows and we raise ConcurrentUpdate rather than
-    overwriting their bid — which is exactly what 1.x did.
-    """
     if idempotency_key:
         existing = await db.execute(
             select(Bid).where(
@@ -874,7 +858,6 @@ async def place_bid(
         )
         prior = existing.scalar_one_or_none()
         if prior:
-            # Replaying the same submission returns the original result.
             return prior
 
     event = await _get_event(db, event_id)
@@ -897,11 +880,9 @@ async def place_bid(
     if not team:
         raise AuctionError("That team is not in this event")
 
-    # A team cannot outbid itself — it would only be raising the price it pays.
     if ap.current_bid_team_id == team_id:
         raise AuctionError(f"{team.name} already holds the top bid")
 
-    # A team's captain is theirs already and is not auctioned.
     if team.captain_id == ap.player_id:
         raise AuctionError("A team cannot bid for its own captain")
 
@@ -928,10 +909,6 @@ async def place_bid(
     timing = Timing.for_event(event)
     redis = await get_redis()
 
-    # ── Soft close ────────────────────────────────────────────────────────────
-    # 1.x reset the clock to the full duration on every bid. Now a bid only
-    # extends the clock when it lands inside the threshold, and each successive
-    # extension on the same player is shorter.
     new_deadline = None
     new_extension_count = ap.extension_count
     if not event.no_timer:
@@ -945,7 +922,6 @@ async def place_bid(
         else:
             new_deadline = current_deadline
 
-    # ── The guarded write ─────────────────────────────────────────────────────
     stmt = (
         update(AuctionPlayer)
         .where(
@@ -986,8 +962,6 @@ async def place_bid(
     try:
         await db.commit()
     except IntegrityError:
-        # The unique (event_id, idempotency_key) constraint caught a duplicate
-        # submission that raced past the Redis check.
         await db.rollback()
         existing = await db.execute(
             select(Bid).where(
@@ -1034,13 +1008,6 @@ async def hammer_player(
     *,
     idempotency_key: str | None = None,
 ) -> AuctionPlayer | None:
-    """Close the bidding: sold to the top bidder, or unsold.
-
-    Idempotent. 1.x guarded only on `status != active` with no lock, so the
-    auctioneer clicking hammer as the timer fired could produce two TeamPlayer
-    rows and deduct the price twice. The conditional UPDATE below means exactly
-    one caller can move the player out of `active`.
-    """
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.id == auction_player_id, AuctionPlayer.event_id == event_id
@@ -1050,16 +1017,12 @@ async def hammer_player(
     if not ap:
         return None
     if ap.status != PlayerAuctionStatus.active:
-        # Already hammered by the timer, the other console, or a retry.
         return ap
 
     sold = ap.current_bid_team_id is not None
     sale_price = ap.current_bid
     winning_team_id = ap.current_bid_team_id
 
-    # New in 2.1.0: if a team holds Right to Match on this player, bidding
-    # closing does not complete a sale — it opens a negotiation. The player sits
-    # in rtm_pending with the clock stopped until the operator resolves it.
     event = await _get_event(db, event_id)
     holder = await rtm_service.rights_holder_for(db, event, ap, winning_team_id)
     if holder is not None:
@@ -1070,7 +1033,6 @@ async def hammer_player(
 
     new_status = PlayerAuctionStatus.sold if sold else PlayerAuctionStatus.unsold
 
-    # Only one caller wins this.
     claim = await db.execute(
         update(AuctionPlayer)
         .where(
@@ -1126,14 +1088,7 @@ async def _record_outcome(
     actor: User | None,
     rtm_used: bool = False,
 ) -> None:
-    """Write the sale rows and the audit entry. Caller commits.
-
-    Extracted in 2.1.0 so the hammer and every Right-to-Match resolution apply a
-    sale the same way, rather than each reimplementing the purse arithmetic.
-    """
     if team_id is not None and amount is not None:
-        # Guarded by uq_team_player_event_player, so even a concurrent duplicate
-        # cannot create a second sale row.
         db.add(
             TeamPlayer(
                 event_id=event_id,
@@ -1202,11 +1157,6 @@ async def _broadcast_outcome(
 async def undo_last_bid(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> dict:
-    """Revert the most recent bid on the player currently on the block.
-
-    1.x hard-deleted the Bid row, leaving no record that the bid or the reversal
-    ever happened. The row is now marked reverted and an audit entry is written.
-    """
     ap = await _load_active_player(db, event_id)
     if not ap:
         raise AuctionError("No player is on the block")
@@ -1248,8 +1198,6 @@ async def undo_last_bid(
     await db.commit()
     await db.refresh(ap)
 
-    # A distinct message type: 1.x re-used "new_bid", so every screen showed an
-    # auctioneer's correction as though a team had just bid.
     await manager.broadcast(
         event_id,
         {
@@ -1272,7 +1220,6 @@ async def undo_last_bid(
 async def correct_current_bid(
     event_id: int, new_amount: int, db: AsyncSession, actor: User | None = None
 ) -> dict:
-    """Operator override of the current price (mis-keyed amount, verbal bid)."""
     ap = await _load_active_player(db, event_id)
     if not ap:
         raise AuctionError("No player is on the block")
@@ -1340,28 +1287,28 @@ async def correct_current_bid(
 
 
 async def _schedule_hammer(event_id: int, auction_player_id: int, deadline: float) -> None:
-    """Queue the auto-hammer as a deferred job.
-
-    The job re-reads the deadline from Redis before acting, so a later bid that
-    pushed the deadline out simply causes the earlier job to exit — no job
-    cancellation needed, and nothing is lost if a worker restarts.
-    """
-    await enqueue_at(
-        "task_auto_hammer",
-        deadline,
-        event_id,
-        auction_player_id,
-        job_id=f"hammer:{event_id}:{auction_player_id}:{int(deadline)}",
-    )
+    """Queue the auto-hammer as a deferred job."""
+    try:
+        await asyncio.wait_for(
+            enqueue_at(
+                "task_auto_hammer",
+                deadline,
+                event_id,
+                auction_player_id,
+                job_id=f"hammer:{event_id}:{auction_player_id}:{int(deadline)}",
+            ),
+            timeout=1.5,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Deferred hammer enqueue slow/failed for event %s player %s (watchdog will cover): %s",
+            event_id,
+            auction_player_id,
+            exc,
+        )
 
 
 async def run_due_hammers(db_factory, *, grace_seconds: float = 0.5) -> int:
-    """Watchdog sweep: hammer any event whose deadline has passed.
-
-    Second line of defence behind the deferred job, and the only mechanism when
-    ARQ is not running (local development). Safe to run concurrently with the
-    job because hammer_player is idempotent.
-    """
     redis = await get_redis()
     hammered = 0
     now = _now()
@@ -1396,22 +1343,19 @@ async def run_due_hammers(db_factory, *, grace_seconds: float = 0.5) -> int:
             try:
                 await hammer_player(event_id, int(active_raw), db)
                 hammered += 1
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:
                 logger.exception("Watchdog hammer failed for event %s: %s", event_id, exc)
 
     return hammered
 
 
 async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -> None:
-    """Entry point for the deferred ARQ job."""
     redis = await get_redis()
     raw = await redis.get(_deadline_key(event_id))
     if raw is None:
-        # Paused, hammered, or the player was pulled.
         return
     deadline = float(raw)
     if _now() < deadline - 0.5:
-        # A later bid extended the clock; a newer job owns this player.
         return
     await hammer_player(event_id, auction_player_id, db)
 
@@ -1420,7 +1364,6 @@ async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -
 
 
 async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> None:
-    """Return an event to `ready` with empty rosters and full purses."""
     event = await _get_event(db, event_id)
 
     players_result = await db.execute(
@@ -1479,7 +1422,6 @@ async def _open_rtm(
     top_amount: int,
     actor: User | None,
 ) -> AuctionPlayer:
-    """Bidding closed and a team holds rights: open the negotiation."""
     claim = await db.execute(
         update(AuctionPlayer)
         .where(
@@ -1500,7 +1442,6 @@ async def _open_rtm(
         await db.refresh(ap)
         return ap
 
-    # The clock is stopped: an RTM decision is not on a timer.
     redis = await get_redis()
     await redis.delete(_deadline_key(event_id))
     await redis.delete(_active_key(event_id))
@@ -1558,7 +1499,6 @@ async def _settle_rtm(
     action: AuditAction,
     detail: str,
 ) -> AuctionPlayer:
-    """End the negotiation with a sale."""
     claim = await db.execute(
         update(AuctionPlayer)
         .where(
@@ -1604,7 +1544,6 @@ async def _settle_rtm(
 async def rtm_decline(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> AuctionPlayer:
-    """The rights holder passes: the player goes to the top bidder."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.offered)
 
@@ -1622,7 +1561,6 @@ async def rtm_decline(
 async def rtm_exercise(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> dict:
-    """The rights holder exercises: the top bidder now gets one chance to raise."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.offered)
 
@@ -1659,7 +1597,6 @@ async def rtm_exercise(
 async def rtm_raise(
     event_id: int, amount: int, db: AsyncSession, actor: User | None = None
 ) -> dict:
-    """The top bidder raises once; the rights holder must now match the new figure."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.raise_offered)
 
@@ -1698,7 +1635,6 @@ async def rtm_raise(
 async def rtm_skip_raise(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> AuctionPlayer:
-    """The top bidder stands pat: the rights holder takes the player at the bid."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.raise_offered)
 
@@ -1716,7 +1652,6 @@ async def rtm_skip_raise(
 async def rtm_match(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> AuctionPlayer:
-    """The rights holder matches the raised figure and takes the player."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.match_offered)
 
@@ -1734,7 +1669,6 @@ async def rtm_match(
 async def rtm_no_match(
     event_id: int, db: AsyncSession, actor: User | None = None
 ) -> AuctionPlayer:
-    """The rights holder cannot or will not match: the top bidder keeps the player."""
     ap = await _load_rtm_player(db, event_id)
     rtm_service._require_stage(ap, RtmStage.match_offered)
 
@@ -1750,7 +1684,6 @@ async def rtm_no_match(
 
 
 async def get_rtm_state(event_id: int, db: AsyncSession) -> dict | None:
-    """The pending negotiation, for the console and spectator views."""
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -1794,12 +1727,6 @@ async def nominate_player(
     db: AsyncSession,
     actor: User | None = None,
 ) -> PlayerNomination:
-    """A team nominates who comes up next.
-
-    This is the accelerated round: franchises pick from the remaining list
-    rather than the auctioneer drawing at random. 1.x only had
-    re-auction-all-unsold, which returned everyone to the random pool at once.
-    """
     event = await _get_event(db, event_id)
 
     team = (
@@ -1896,7 +1823,6 @@ async def withdraw_nomination(
 
 
 async def list_nominations(event_id: int, db: AsyncSession) -> list[dict]:
-    """The queue, oldest first — the order players will come up."""
     result = await db.execute(
         select(PlayerNomination)
         .where(
@@ -1925,7 +1851,6 @@ async def list_nominations(event_id: int, db: AsyncSession) -> list[dict]:
 
 
 async def _next_nominated(db: AsyncSession, event_id: int) -> AuctionPlayer:
-    """Pop the oldest live nomination."""
     result = await db.execute(
         select(PlayerNomination)
         .where(
@@ -1950,7 +1875,6 @@ async def _next_nominated(db: AsyncSession, event_id: int) -> AuctionPlayer:
         PlayerAuctionStatus.pending,
         PlayerAuctionStatus.unsold,
     ):
-        # Stale entry (the player was sold another way): drop it and try again.
         nomination.consumed_at = datetime.now(timezone.utc)
         await db.flush()
         return await _next_nominated(db, event_id)
@@ -1958,3 +1882,13 @@ async def _next_nominated(db: AsyncSession, event_id: int) -> AuctionPlayer:
     nomination.consumed_at = datetime.now(timezone.utc)
     await db.flush()
     return ap
+
+
+async def _captain_player_ids(db: AsyncSession, event_id: int) -> set[int]:
+    result = await db.execute(
+        select(Team.captain_id).where(
+            Team.event_id == event_id,
+            Team.captain_id.is_not(None),
+        )
+    )
+    return {pid for pid in result.scalars().all() if pid is not None}

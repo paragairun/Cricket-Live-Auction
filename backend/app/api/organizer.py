@@ -1161,3 +1161,102 @@ async def delete_player_category(
 
     await db.delete(category)
     await db.commit()
+
+@router.delete(
+    "/events/{event_id}/players/{auction_player_id}/photo",
+    response_model=PlayerOut,
+)
+async def delete_player_photo(
+    event_id: int,
+    auction_player_id: int,
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.id == auction_player_id, AuctionPlayer.event_id == event_id
+        )
+    )
+    ap = result.scalar_one_or_none()
+    if not ap:
+        raise HTTPException(status_code=404, detail="Player not found in this event")
+
+    player_result = await db.execute(select(Player).where(Player.id == ap.player_id))
+    player = player_result.scalar_one_or_none()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player record missing")
+
+    player.profile_photo = None
+    await db.commit()
+    await db.refresh(player)
+    return PlayerOut.model_validate(player)
+
+
+@router.post("/events/{event_id}/teams/{team_id}/logo", response_model=TeamOut)
+async def upload_team_logo(
+    event_id: int,
+    team_id: int,
+    file: UploadFile = File(...),
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    _guard_not_live(ctx, "update team logos")
+
+    result = await db.execute(
+        select(Team).where(Team.id == team_id, Team.event_id == event_id)
+    )
+    team = result.scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    team.logo = await save_upload(file, folder="team-logos")
+    await db.commit()
+    await db.refresh(team)
+    return TeamOut.model_validate(team)
+
+
+@router.delete("/events/{event_id}/teams/{team_id}/logo", response_model=TeamOut)
+async def delete_team_logo(
+    event_id: int,
+    team_id: int,
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    _guard_not_live(ctx, "update team logos")
+
+    result = await db.execute(
+        select(Team).where(Team.id == team_id, Team.event_id == event_id)
+    )
+    team = result.scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    team.logo = None
+    await db.commit()
+    await db.refresh(team)
+    return TeamOut.model_validate(team)
+
+
+@router.post("/events/{event_id}/background", response_model=AuctionEventOut)
+async def upload_event_background(
+    event_id: int,
+    file: UploadFile = File(...),
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.event.background_image = await save_upload(file, folder="event-backgrounds")
+    await db.commit()
+    await db.refresh(ctx.event)
+    return AuctionEventOut.model_validate(ctx.event)
+
+
+@router.delete("/events/{event_id}/background", response_model=AuctionEventOut)
+async def delete_event_background(
+    event_id: int,
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.event.background_image = None
+    await db.commit()
+    await db.refresh(ctx.event)
+    return AuctionEventOut.model_validate(ctx.event)

@@ -27,31 +27,11 @@ interface EventPlayer {
   sold_to_team_id: number | null;
 }
 
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  roles: string[];
-  phone: string | null;
-  age: number | null;
-  batting_rating: number;
-  bowling_rating: number;
-  fielding_rating: number;
-  profile_photo: string | null;
-}
-
-interface AuctionPlayer {
-  id: number;
-  player_id: number;
-  base_price: number;
-  status: string;
-  category_id: number | null;
-}
-
 interface Team {
   id: number;
   name: string;
   color: string;
+  logo?: string | null;
   captain_id: number | null;
   budget: number;
   max_players: number;
@@ -68,6 +48,7 @@ interface EventDetail {
   team_max_players: number;
   player_base_price: number;
   logo: string | null;
+  background_image?: string | null;
 }
 
 interface Readiness {
@@ -107,7 +88,6 @@ const CHECK_LABELS: Record<string, string> = {
 
 // ─── Teams Tab ────────────────────────────────────────────────────────────────
 
-// IPL-inspired preset palette
 const COLOR_PRESETS = [
   { hex: "#1E40AF", label: "Royal Blue" },
   { hex: "#7C3AED", label: "Purple" },
@@ -145,7 +125,6 @@ function TeamColorPicker({
   return (
     <div>
       <label className="label">Team Color</label>
-      {/* Preset swatches */}
       <div className="flex flex-wrap gap-2 mb-3">
         {COLOR_PRESETS.map((c) => (
           <button
@@ -161,7 +140,6 @@ function TeamColorPicker({
             }}
           />
         ))}
-        {/* Custom color swatch */}
         <label
           title="Custom color"
           className="w-8 h-8 rounded-lg border-2 border-dashed border-gray-600 hover:border-gray-400 cursor-pointer flex items-center justify-center text-gray-400 text-xs transition-colors relative overflow-hidden"
@@ -175,7 +153,6 @@ function TeamColorPicker({
           />
         </label>
       </div>
-      {/* Preview */}
       <div
         className="flex items-center gap-3 rounded-xl px-4 py-2.5"
         style={{ backgroundColor: value }}
@@ -207,31 +184,40 @@ function TeamsTab({
   onAssignCaptain,
   onUpdateTeam,
   onDeleteTeam,
+  onUploadTeamLogo,
+  onDeleteTeamLogo,
   editable,
 }: {
   eventId: number;
   teams: Team[];
   rosterPlayers: EventPlayer[];
-  teamForm: { name: string; color: string; budget?: string; max_players?: string };
-  setTeamForm: (f: { name: string; color: string; budget?: string; max_players?: string }) => void;
-  onCreateTeam: (e: React.FormEvent) => void;
+  teamForm: { name: string; color: string; budget?: string; max_players?: string; logoFile?: File | null };
+  setTeamForm: (f: { name: string; color: string; budget?: string; max_players?: string; logoFile?: File | null }) => void;
+  onCreateTeam: (e: React.FormEvent) => Promise<void>;
   onAssignCaptain: (teamId: number, captainId: string) => void;
   onUpdateTeam: (teamId: number, data: { name?: string; color?: string }) => void;
   onDeleteTeam: (teamId: number) => void;
+  onUploadTeamLogo: (teamId: number, file: File) => Promise<void>;
+  onDeleteTeamLogo: (teamId: number) => Promise<void>;
   editable: boolean;
 }) {
   const [showForm, setShowForm] = useState(editable && teams.length === 0);
   const [editingTeamId, setEditingTeamId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ name: "", color: "" });
+  const [uploadingTeamId, setUploadingTeamId] = useState<number | null>(null);
+  const [newTeamLogoPreview, setNewTeamLogoPreview] = useState<string | null>(null);
+
   const playerMap = Object.fromEntries(rosterPlayers.map((p) => [p.id, p]));
-  
-  // Get all captain IDs that are already assigned to other teams
   const assignedCaptainIds = new Set(
     teams.filter((t) => t.captain_id !== null).map((t) => t.captain_id as number)
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
     await onCreateTeam(e);
+    if (newTeamLogoPreview) {
+      URL.revokeObjectURL(newTeamLogoPreview);
+      setNewTeamLogoPreview(null);
+    }
     setShowForm(false);
   };
 
@@ -245,8 +231,7 @@ function TeamsTab({
             const textColor = isDark(team.color) ? "white" : "#111827";
             const subtextColor = isDark(team.color) ? "rgba(255,255,255,0.65)" : "rgba(0,0,0,0.5)";
             const isEditing = editingTeamId === team.id;
-            
-            // Filter out captains assigned to OTHER teams (but keep current team's captain in the list)
+
             const availableCaptains = rosterPlayers.filter(
               (p) => !assignedCaptainIds.has(p.id) || p.id === team.captain_id
             );
@@ -255,42 +240,94 @@ function TeamsTab({
               <div key={team.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
                 {/* Colored header */}
                 <div
-                  className="px-5 py-4 flex items-center justify-between"
+                  className="px-5 py-4 flex items-center justify-between gap-3"
                   style={{ backgroundColor: team.color }}
                 >
-                  {isEditing ? (
-                    <div className="flex-1 mr-3">
-                      <input
-                        className="input text-sm mb-2"
-                        value={editForm.name}
-                        onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                        placeholder="Team name"
-                        autoFocus
-                      />
-                      <div className="flex flex-wrap gap-1.5">
-                        {COLOR_PRESETS.map((c) => (
-                          <button
-                            key={c.hex}
-                            type="button"
-                            onClick={() => setEditForm({ ...editForm, color: c.hex })}
-                            className="w-6 h-6 rounded-md border-2 transition-all"
-                            style={{
-                              backgroundColor: c.hex,
-                              borderColor: editForm.color === c.hex ? "white" : "transparent",
+                  <div className="flex items-center gap-3.5 flex-1 min-w-0">
+                    {/* Team Logo Upload / Preview */}
+                    <div className="relative group shrink-0">
+                      <label
+                        title={editable ? "Upload team logo" : team.name}
+                        className={`w-14 h-14 rounded-xl overflow-hidden bg-black/25 border border-white/30 flex items-center justify-center ${
+                          editable ? "cursor-pointer hover:border-white" : ""
+                        }`}
+                      >
+                        {uploadingTeamId === team.id ? (
+                          <span className="text-[10px] text-white">...</span>
+                        ) : team.logo ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={team.logo} alt={team.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-xs font-bold text-white/80 text-center leading-tight px-1">
+                            {editable ? "+ Logo" : team.name.slice(0, 2).toUpperCase()}
+                          </span>
+                        )}
+                        {editable && (
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            disabled={uploadingTeamId === team.id}
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              setUploadingTeamId(team.id);
+                              try {
+                                await onUploadTeamLogo(team.id, file);
+                              } finally {
+                                setUploadingTeamId(null);
+                              }
                             }}
                           />
-                        ))}
+                        )}
+                      </label>
+                      {editable && team.logo && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteTeamLogo(team.id)}
+                          title="Remove team logo"
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-600 hover:bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+
+                    {isEditing ? (
+                      <div className="flex-1 mr-3">
+                        <input
+                          className="input text-sm mb-2"
+                          value={editForm.name}
+                          onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                          placeholder="Team name"
+                          autoFocus
+                        />
+                        <div className="flex flex-wrap gap-1.5">
+                          {COLOR_PRESETS.map((c) => (
+                            <button
+                              key={c.hex}
+                              type="button"
+                              onClick={() => setEditForm({ ...editForm, color: c.hex })}
+                              className="w-6 h-6 rounded-md border-2 transition-all"
+                              style={{
+                                backgroundColor: c.hex,
+                                borderColor: editForm.color === c.hex ? "white" : "transparent",
+                              }}
+                            />
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <h3 className="font-bold text-lg" style={{ color: textColor }}>{team.name}</h3>
-                      <p className="text-xs mt-0.5" style={{ color: subtextColor }}>
-                        Budget: {team.budget.toLocaleString()} · Max {team.max_players} players
-                      </p>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
+                    ) : (
+                      <div className="min-w-0">
+                        <h3 className="font-bold text-lg truncate" style={{ color: textColor }}>{team.name}</h3>
+                        <p className="text-xs mt-0.5" style={{ color: subtextColor }}>
+                          Budget: {team.budget.toLocaleString()} · Max {team.max_players} players
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
                     {isEditing ? (
                       <>
                         <button
@@ -365,6 +402,7 @@ function TeamsTab({
                     <div className="flex items-center gap-3 mb-3 bg-gray-800 rounded-xl px-3 py-2.5">
                       <div className="w-9 h-9 rounded-full overflow-hidden bg-gray-700 shrink-0 flex items-center justify-center">
                         {captain.profile_photo
+                          // eslint-disable-next-line @next/next/no-img-element
                           ? <img src={captain.profile_photo} alt="" className="w-full h-full object-cover" />
                           : <span>👤</span>}
                       </div>
@@ -425,16 +463,41 @@ function TeamsTab({
               )}
             </div>
 
-            <div>
-              <label className="label">Team Name *</label>
-              <input
-                className="input"
-                value={teamForm.name}
-                onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
-                placeholder="e.g. Mumbai Indians"
-                required
-                autoFocus
-              />
+            <div className="flex items-center gap-4">
+              <label className="w-20 h-20 shrink-0 rounded-xl border-2 border-dashed border-gray-700 hover:border-amber-500/50 hover:bg-amber-500/5 cursor-pointer flex flex-col items-center justify-center text-gray-500 hover:text-amber-400 overflow-hidden transition-all">
+                {newTeamLogoPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={newTeamLogoPreview} alt="Team logo preview" className="w-full h-full object-cover" />
+                ) : (
+                  <>
+                    <span className="text-xl mb-0.5">🛡️</span>
+                    <span className="text-[10px]">Team Logo</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    setTeamForm({ ...teamForm, logoFile: file });
+                    if (newTeamLogoPreview) URL.revokeObjectURL(newTeamLogoPreview);
+                    setNewTeamLogoPreview(file ? URL.createObjectURL(file) : null);
+                  }}
+                />
+              </label>
+
+              <div className="flex-1">
+                <label className="label">Team Name *</label>
+                <input
+                  className="input"
+                  value={teamForm.name}
+                  onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
+                  placeholder="e.g. Mumbai Indians"
+                  required
+                  autoFocus
+                />
+              </div>
             </div>
 
             <TeamColorPicker
@@ -457,10 +520,6 @@ function TeamsTab({
 
 // ─── Players Tab ──────────────────────────────────────────────────────────────
 
-function isValidEmail(val: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
-}
-
 function toLocalDatetimeValue(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -469,21 +528,6 @@ function toLocalDatetimeValue(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/**
- * Players tab.
- *
- * Version 2.0.0 (2026-11-20). Rewritten for the live-auction model: a player is
- * a roster record the organizer types in, not a User account.
- *
- * 1.x worked the other way round. It listed "eligible players" — User rows
- * whose email matched the event's allowed domains — and you added one to the
- * event. Registering someone new meant inviting them by email and, in the CSV
- * path, supplying a password column. For an auction that happens in a room,
- * with players who never log in, that was the wrong shape: it forced an
- * organizer to invent an address for every person on the list.
- *
- * Now `name` is the only required field.
- */
 function PlayersTab({
   eventId,
   players,
@@ -522,6 +566,9 @@ function PlayersTab({
   const [displayCount, setDisplayCount] = useState(25);
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -566,9 +613,6 @@ function PlayersTab({
     return eventBasePrice;
   };
 
-  // When a player is in a priced category, that category's price IS their base
-  // price — the per-player figure and the event default do not apply. The field
-  // is shown read-only rather than hidden, so the number is still visible.
   const categoryGoverns = (categoryId: number | null) => {
     const cat = categories.find((c) => c.id === categoryId);
     return !!cat && cat.base_price > 0;
@@ -577,6 +621,8 @@ function PlayersTab({
   const openAdd = () => {
     setForm(emptyForm);
     setEditingId(null);
+    setPhotoFile(null);
+    setPhotoPreview(null);
     setAddOpen(true);
   };
 
@@ -593,7 +639,46 @@ function PlayersTab({
       base_price: player.base_price ? String(player.base_price) : "",
     });
     setEditingId(player.auction_player_id ?? null);
+    setPhotoFile(null);
+    setPhotoPreview(player.profile_photo ?? null);
     setAddOpen(true);
+  };
+
+  const uploadPlayerPhoto = async (auctionPlayerId: number, file: File) => {
+    setUploadingPhoto(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const { data } = await api.post(
+        `/organizer/events/${eventId}/players/${auctionPlayerId}/photo`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      );
+      if (data?.profile_photo) {
+        setPhotoPreview(data.profile_photo);
+      }
+      onToast("ok", "Player photo uploaded");
+      onChanged();
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const deletePlayerPhoto = async (auctionPlayerId: number) => {
+    setUploadingPhoto(true);
+    try {
+      await api.delete(`/organizer/events/${eventId}/players/${auctionPlayerId}/photo`);
+      setPhotoPreview(null);
+      setPhotoFile(null);
+      onToast("ok", "Player photo removed");
+      onChanged();
+    } catch (e: unknown) {
+      onToast("err", describeError(e).message);
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const save = async () => {
@@ -603,8 +688,6 @@ function PlayersTab({
     }
     setSaving(true);
     try {
-      // Only `name` is sent unconditionally. Everything else is omitted when
-      // blank, so no empty strings reach the API.
       const payload: Record<string, unknown> = { name: form.name.trim() };
       if (form.phone.trim()) payload.phone = form.phone.trim();
       if (form.email.trim()) payload.email = form.email.trim();
@@ -615,8 +698,6 @@ function PlayersTab({
 
       if (editingId) {
         await api.patch(`/organizer/events/${eventId}/players/${editingId}`, payload);
-        // Omit base_price entirely when the category governs it — the server
-        // recomputes either way, but sending a stale figure is misleading.
         const governed = categoryGoverns(form.category_id);
         const basePrice =
           !governed && form.base_price.trim() ? Number(form.base_price) : undefined;
@@ -627,6 +708,9 @@ function PlayersTab({
             category_id: form.category_id,
           }
         );
+        if (photoFile) {
+          await uploadPlayerPhoto(editingId, photoFile);
+        }
         onToast("ok", `${form.name.trim()} updated`);
       } else {
         const params = new URLSearchParams();
@@ -634,15 +718,21 @@ function PlayersTab({
           params.set("base_price", form.base_price.trim());
         }
         if (form.category_id !== null) params.set("category_id", String(form.category_id));
-        await api.post(
+        const { data: created } = await api.post(
           `/organizer/events/${eventId}/players?${params.toString()}`,
           payload
         );
+        const newAuctionPlayerId = created?.auction_player_id ?? created?.id;
+        if (photoFile && newAuctionPlayerId) {
+          await uploadPlayerPhoto(newAuctionPlayerId, photoFile);
+        }
         onToast("ok", `${form.name.trim()} added`);
       }
       setAddOpen(false);
       setForm(emptyForm);
       setEditingId(null);
+      setPhotoFile(null);
+      setPhotoPreview(null);
       onChanged();
     } catch (e: unknown) {
       onToast("err", describeError(e).message);
@@ -795,7 +885,7 @@ function PlayersTab({
                 key={player.id}
                 className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 last:border-0 hover:bg-gray-900/50"
               >
-                <div className="w-9 h-9 rounded-full bg-gray-800 overflow-hidden flex items-center justify-center text-sm font-semibold shrink-0">
+                <div className="w-10 h-10 rounded-full bg-gray-800 overflow-hidden flex items-center justify-center text-sm font-semibold shrink-0">
                   {player.profile_photo ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -894,6 +984,58 @@ function PlayersTab({
             </p>
 
             <div className="space-y-4">
+              {/* Player Photo Upload */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Player Photo</label>
+                <div className="flex items-center gap-4">
+                  <div className="relative group">
+                    <label className="w-20 h-20 rounded-xl border-2 border-dashed border-gray-700 hover:border-amber-500/50 hover:bg-amber-500/5 cursor-pointer flex flex-col items-center justify-center text-gray-500 hover:text-amber-400 overflow-hidden transition-all">
+                      {uploadingPhoto ? (
+                        <span className="text-xs">Uploading...</span>
+                      ) : photoPreview ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={photoPreview} alt="Player preview" className="w-full h-full object-cover" />
+                      ) : (
+                        <>
+                          <span className="text-2xl mb-1">📷</span>
+                          <span className="text-[10px]">Add Photo</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={uploadingPhoto}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (editingId) {
+                            uploadPlayerPhoto(editingId, file);
+                          } else {
+                            setPhotoFile(file);
+                            setPhotoPreview(URL.createObjectURL(file));
+                          }
+                        }}
+                      />
+                    </label>
+                    {photoPreview && editingId && (
+                      <button
+                        type="button"
+                        onClick={() => deletePlayerPhoto(editingId)}
+                        className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove photo"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    <p>Upload a portrait or action shot.</p>
+                    <p>Displayed on the auctioneer &amp; broadcast stage.</p>
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs text-gray-400 mb-1">
                   Name <span className="text-amber-400">*</span>
@@ -1019,6 +1161,8 @@ function PlayersTab({
                   setAddOpen(false);
                   setEditingId(null);
                   setForm(emptyForm);
+                  setPhotoFile(null);
+                  setPhotoPreview(null);
                 }}
                 className="flex-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 py-2 rounded-lg text-sm"
               >
@@ -1026,7 +1170,7 @@ function PlayersTab({
               </button>
               <button
                 onClick={save}
-                disabled={saving || !form.name.trim()}
+                disabled={saving || uploadingPhoto || !form.name.trim()}
                 className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-semibold py-2 rounded-lg text-sm disabled:opacity-40"
               >
                 {saving ? "Saving…" : editingId ? "Save changes" : "Add player"}
@@ -1104,23 +1248,19 @@ export default function OrganizerEventDetailPage() {
   const eid = parseInt(eventId);
 
   const [event, setEvent] = useState<EventDetail | null>(null);
-  // Without these the page rendered its status banner while `event` was still
-  // null, and the banner was derived by negation (!isDraft && !isLive) — so an
-  // unloaded or failed event read as "Published".
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // 2.0.0: one list. 1.x kept "eligible players" (User rows matching the
-  // event's allowed email domains) separate from the players added to the
-  // auction. Players are roster records now, created straight into the event.
   const [rosterPlayers, setRosterPlayers] = useState<EventPlayer[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [bidSlabs, setBidSlabs] = useState<BidSlab[]>([]);
   const [categories, setCategories] = useState<PlayerCategory[]>([]);
   const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings" | "bid-slabs" | "categories">("players");
-  const [teamForm, setTeamForm] = useState({ name: "", color: "#3B82F6" });
-  // 2.1.0: minimum squad, soft-close timing, auction mode and RTM were
-  // reachable only via the API. They are editable here now.
+  const [teamForm, setTeamForm] = useState<{ name: string; color: string; logoFile?: File | null }>({
+    name: "",
+    color: "#3B82F6",
+    logoFile: null,
+  });
   const [settingsForm, setSettingsForm] = useState({
     budget: "100000",
     max_players: "15",
@@ -1141,6 +1281,7 @@ export default function OrganizerEventDetailPage() {
   const [scheduleInput, setScheduleInput] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingBg, setUploadingBg] = useState(false);
   const [creatingSlab, setCreatingSlab] = useState(false);
   const [creatingCat, setCreatingCat] = useState(false);
 
@@ -1151,8 +1292,6 @@ export default function OrganizerEventDetailPage() {
 
   const fetchAll = useCallback(async () => {
     const [evRes, aPlayers, teamsRes, readinessRes, slabsRes, catsRes] = await Promise.all([
-      // Previously .catch(() => null), which hid a real failure and left
-      // `event` null — indistinguishable from "still loading".
       api.get(`/auction/events/${eid}`),
       api.get(`/organizer/events/${eid}/players`),
       api.get(`/organizer/events/${eid}/teams`),
@@ -1203,17 +1342,47 @@ export default function OrganizerEventDetailPage() {
         );
       })
       .finally(() => setLoading(false));
-  }, [eid, fetchAll]);
+  }, [eid, fetchAll, router]);
+
+  const uploadTeamLogo = async (teamId: number, file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      await api.post(`/organizer/events/${eid}/teams/${teamId}/logo`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      await fetchAll();
+      showToast("ok", "Team logo uploaded");
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to upload team logo");
+    }
+  };
+
+  const deleteTeamLogo = async (teamId: number) => {
+    try {
+      await api.delete(`/organizer/events/${eid}/teams/${teamId}/logo`);
+      await fetchAll();
+      showToast("ok", "Team logo removed");
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to remove team logo");
+    }
+  };
 
   const createTeam = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await api.post(`/organizer/events/${eid}/teams`, {
+      const { data: created } = await api.post(`/organizer/events/${eid}/teams`, {
         name: teamForm.name,
         color: teamForm.color,
       });
-      setTeamForm({ name: "", color: "#3B82F6" });
+      if (teamForm.logoFile && created?.id) {
+        await uploadTeamLogo(created.id, teamForm.logoFile);
+      }
+      setTeamForm({ name: "", color: "#3B82F6", logoFile: null });
       await fetchAll();
+      showToast("ok", "Team created");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       showToast("err", msg || "Failed");
@@ -1324,7 +1493,7 @@ export default function OrganizerEventDetailPage() {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setEvent(data);
-      showToast("ok", "Logo uploaded successfully");
+      showToast("ok", "Event logo uploaded successfully");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       showToast("err", msg || "Failed to upload logo");
@@ -1337,10 +1506,39 @@ export default function OrganizerEventDetailPage() {
     try {
       const { data } = await api.delete(`/organizer/events/${eid}/logo`);
       setEvent(data);
-      showToast("ok", "Logo removed");
+      showToast("ok", "Event logo removed");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       showToast("err", msg || "Failed to remove logo");
+    }
+  };
+
+  const uploadBackground = async (file: File) => {
+    setUploadingBg(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const { data } = await api.post(`/organizer/events/${eid}/background`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setEvent(data);
+      showToast("ok", "Background image uploaded successfully");
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to upload background image");
+    } finally {
+      setUploadingBg(false);
+    }
+  };
+
+  const deleteBackground = async () => {
+    try {
+      const { data } = await api.delete(`/organizer/events/${eid}/background`);
+      setEvent(data);
+      showToast("ok", "Background image removed");
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      showToast("err", msg || "Failed to remove background image");
     }
   };
 
@@ -1348,7 +1546,7 @@ export default function OrganizerEventDetailPage() {
   const createBidSlab = async () => {
     setCreatingSlab(true);
     try {
-      const { data } = await api.post(`/organizer/events/${eid}/bid-slabs`, {
+      await api.post(`/organizer/events/${eid}/bid-slabs`, {
         min_value: slabForm.min_value,
         max_value: slabForm.max_value,
         increment: slabForm.increment,
@@ -1380,7 +1578,7 @@ export default function OrganizerEventDetailPage() {
   const createCategory = async () => {
     setCreatingCat(true);
     try {
-      const { data } = await api.post(`/organizer/events/${eid}/categories`, {
+      await api.post(`/organizer/events/${eid}/categories`, {
         name: catForm.name,
         base_price: catForm.base_price,
         sort_order: catForm.sort_order,
@@ -1408,15 +1606,8 @@ export default function OrganizerEventDetailPage() {
     }
   };
 
-
-  const scheduledDate = event?.scheduled_at ? new Date(event.scheduled_at) : null;
   const now = new Date();
-  // Both via lib/eventStatus so the page has one definition of these, under test.
   const isDraft = isDraftState(event);
-
-  // Derived by lib/eventStatus, which is unit-tested. Deliberately NOT derived
-  // by negating the other states — that is what made a null event read as
-  // "Published".
   const publishState = derivePublishState(event, { loading, now });
 
   const TABS = [
@@ -1607,6 +1798,8 @@ export default function OrganizerEventDetailPage() {
                 onAssignCaptain={assignCaptain}
                 onUpdateTeam={updateTeam}
                 onDeleteTeam={deleteTeam}
+                onUploadTeamLogo={uploadTeamLogo}
+                onDeleteTeamLogo={deleteTeamLogo}
                 editable={isDraft}
               />
             )}
@@ -1649,64 +1842,134 @@ export default function OrganizerEventDetailPage() {
                   </h3>
 
                   <div className="space-y-6">
-                    {/* Event Logo */}
-                    <div>
-                      <label className="label text-gray-300 mb-1 block">Event Logo</label>
-                      <p className="text-xs text-gray-500 mb-3">
-                        Upload a logo for your event. It will be displayed on event cards.
-                      </p>
-                      <div className="flex items-center gap-4">
-                        {event?.logo ? (
-                          <div className="relative group">
-                            <div className="w-20 h-20 rounded-xl overflow-hidden bg-gray-800 border border-gray-700">
-                              <img src={event.logo} alt="Event logo" className="w-full h-full object-cover" />
+                    {/* Event Logo & Background Image */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      {/* Event Logo */}
+                      <div>
+                        <label className="label text-gray-300 mb-1 block">Event Logo</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          Displayed on event cards and the auction header.
+                        </p>
+                        <div className="flex items-center gap-4">
+                          {event?.logo ? (
+                            <div className="relative group">
+                              <div className="w-20 h-20 rounded-xl overflow-hidden bg-gray-800 border border-gray-700">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src={event.logo} alt="Event logo" className="w-full h-full object-cover" />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={deleteLogo}
+                                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Remove logo"
+                              >
+                                ×
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={deleteLogo}
-                              className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                              title="Remove logo"
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ) : (
-                          <label className="w-20 h-20 rounded-xl border-2 border-dashed border-gray-700 hover:border-amber-500/50 hover:bg-amber-500/5 cursor-pointer flex flex-col items-center justify-center text-gray-500 hover:text-amber-400 transition-all">
-                            {uploadingLogo ? (
-                              <span className="text-xs">Uploading...</span>
-                            ) : (
-                              <>
-                                <span className="text-2xl mb-1">📷</span>
-                                <span className="text-[10px]">Add Logo</span>
-                              </>
-                            )}
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              disabled={uploadingLogo}
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) uploadLogo(file);
-                              }}
-                            />
-                          </label>
-                        )}
-                        {event?.logo && (
-                          <label className="btn-secondary text-xs cursor-pointer">
-                            {uploadingLogo ? "Uploading..." : "Change Logo"}
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="hidden"
-                              disabled={uploadingLogo}
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) uploadLogo(file);
-                              }}
-                            />
-                          </label>
-                        )}
+                          ) : (
+                            <label className="w-20 h-20 rounded-xl border-2 border-dashed border-gray-700 hover:border-amber-500/50 hover:bg-amber-500/5 cursor-pointer flex flex-col items-center justify-center text-gray-500 hover:text-amber-400 transition-all">
+                              {uploadingLogo ? (
+                                <span className="text-xs">Uploading...</span>
+                              ) : (
+                                <>
+                                  <span className="text-2xl mb-1">📷</span>
+                                  <span className="text-[10px]">Add Logo</span>
+                                </>
+                              )}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={uploadingLogo}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) uploadLogo(file);
+                                }}
+                              />
+                            </label>
+                          )}
+                          {event?.logo && (
+                            <label className="btn-secondary text-xs cursor-pointer">
+                              {uploadingLogo ? "Uploading..." : "Change Logo"}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={uploadingLogo}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) uploadLogo(file);
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Event Background Image */}
+                      <div>
+                        <label className="label text-gray-300 mb-1 block">Background Image</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          Displayed behind the auction stage and spectator screen.
+                        </p>
+                        <div className="flex items-center gap-4">
+                          {event?.background_image ? (
+                            <div className="relative group">
+                              <div className="w-32 h-20 rounded-xl overflow-hidden bg-gray-800 border border-gray-700">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={event.background_image}
+                                  alt="Event background"
+                                  className="w-full h-full object-cover"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={deleteBackground}
+                                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Remove background image"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ) : (
+                            <label className="w-32 h-20 rounded-xl border-2 border-dashed border-gray-700 hover:border-amber-500/50 hover:bg-amber-500/5 cursor-pointer flex flex-col items-center justify-center text-gray-500 hover:text-amber-400 transition-all">
+                              {uploadingBg ? (
+                                <span className="text-xs">Uploading...</span>
+                              ) : (
+                                <>
+                                  <span className="text-2xl mb-1">🖼️</span>
+                                  <span className="text-[10px]">Add Background</span>
+                                </>
+                              )}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={uploadingBg}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) uploadBackground(file);
+                                }}
+                              />
+                            </label>
+                          )}
+                          {event?.background_image && (
+                            <label className="btn-secondary text-xs cursor-pointer">
+                              {uploadingBg ? "Uploading..." : "Change Background"}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={uploadingBg}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) uploadBackground(file);
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1796,7 +2059,7 @@ export default function OrganizerEventDetailPage() {
 
                     <div className="h-px bg-gray-800 w-full"></div>
 
-                    {/* Timing — editable while the auction runs */}
+                    {/* Timing */}
                     <div>
                       <h4 className="text-sm font-semibold text-gray-200 mb-1">Clock</h4>
                       <p className="text-xs text-gray-500 mb-4">

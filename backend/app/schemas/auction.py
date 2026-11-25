@@ -44,6 +44,7 @@ class AuctionEventUpdate(BaseModel):
     auction_mode: Optional[AuctionMode] = None
     rtm_enabled: Optional[bool] = None
     rtm_cards_per_team: Optional[int] = Field(default=None, ge=0, le=20)
+    background_image: Optional[str] = None
 
 
 class AuctionEventOut(BaseModel):
@@ -68,7 +69,9 @@ class AuctionEventOut(BaseModel):
     rtm_enabled: bool = False
     rtm_cards_per_team: int = 0
     logo: Optional[str] = None
+    background_image: Optional[str] = None
     created_at: datetime
+    
 
     model_config = {"from_attributes": True}
 
