@@ -18,12 +18,10 @@ Rewritten from 1.x. The four substantive changes:
    double-tap or a reconnect must not place a second bid or sell a player twice.
    Unique constraints in the schema are the backstop.
 
-3. DURABLE TIMER. The countdown was an asyncio.Task inside one worker process,
-   coordinated by a Redis key holding a PID. If the worker restarted the task
-   died, the player stayed `active` forever and the hammer never fell. PIDs also
-   collide across containers. Redis now holds an absolute deadline; the hammer
-   fires from a deferred ARQ job, with a watchdog sweep as a second line. The
-   per-second tick broadcast is gone — clients count down from the deadline.
+3. DURABLE TIMER. The database stores each absolute deadline and any pending
+   automatic transition. A local FastAPI timer processes them and reconstructs
+   work after a restart. The per-second tick broadcast is gone — clients count
+   down from the persisted deadline.
 
 4. AUDIT. Undo hard-deleted the bid row and bid-edit rewrote the amount with no
    record, so a disputed sale could not be reconstructed. Bids are now reverted,
