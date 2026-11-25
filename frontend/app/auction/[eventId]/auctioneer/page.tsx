@@ -1036,11 +1036,11 @@ export default function AuctioneerPage() {
           className="pointer-events-none hidden lg:block absolute top-0 bottom-0 left-[44%] w-1 bg-[#9e0b05]/80 -skew-x-[10deg]"
         />
 
-        <div className="relative z-10 mx-auto h-full w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-5 px-5 py-3">
+        <div className="relative z-10 mx-auto h-full w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-2.5 px-5 py-3">
           {/* LEFT ZONE: Player Showcase Card (Photo Placeholder) */}
           <div className="lg:col-span-6 min-h-0 flex flex-col justify-center">
             {displayActiveAP ? (
-              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto">
+              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
                 {/* Player photo placeholder */}
                 <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
                   {activeInfo?.profile_photo && (
