@@ -1664,14 +1664,14 @@ export default function AuctioneerPage() {
 
       {/* ── TEAM SQUAD INSPECTOR MODAL ── */}
       {inspectedTeam && (
-        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 shadow-2xl">
-            <div className="flex items-center justify-between mb-3">
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-2 sm:p-3">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between mb-4 shrink-0">
               <div>
-                <h3 className="text-base font-extrabold text-white">
-                  {inspectedTeam.name}
+                <h3 className="text-xl sm:text-2xl font-extrabold text-white">
+                  {inspectedTeam.name} — Squad
                 </h3>
-                <p className="text-xs text-slate-400">
+                <p className="text-sm text-slate-400 mt-1">
                   Purse Left: ₹
                   {formatMoney(inspectedTeam.budget - inspectedTeam.spent)} •
                   Max Bid: ₹{formatMoney(getTeamMaxBid(inspectedTeam))}
@@ -1679,31 +1679,55 @@ export default function AuctioneerPage() {
               </div>
               <button
                 onClick={() => setInspectTeamId(null)}
-                className="text-slate-400 hover:text-white font-bold text-lg"
+                aria-label="Close squad window"
+                className="text-slate-400 hover:text-white font-bold text-2xl px-2"
               >
                 ✕
               </button>
             </div>
-            <div className="space-y-2 max-h-64 overflow-y-auto">
+            <div className="flex-1 min-h-0 overflow-y-auto">
               {(teamRosters[inspectedTeam.id] || []).length === 0 ? (
-                <p className="text-xs text-slate-500 py-6 text-center">
+                <p className="text-sm text-slate-500 py-10 text-center">
                   No players bought yet.
                 </p>
               ) : (
-                (teamRosters[inspectedTeam.id] || []).map((tp, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2 text-xs"
-                  >
-                    <span className="font-bold text-white">
-                      {playerDetails[tp.player_id]?.name ||
-                        `Player #${tp.player_id}`}
-                    </span>
-                    <span className="font-extrabold text-amber-300">
-                      ₹{formatMoney(tp.sold_price)}
-                    </span>
-                  </div>
-                ))
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+                  {(teamRosters[inspectedTeam.id] || []).map((tp, idx) => {
+                    const info = playerDetails[tp.player_id];
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-4 bg-slate-800 border border-slate-700 rounded-xl p-3 sm:p-4"
+                      >
+                        <div className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 overflow-hidden rounded-full border border-slate-600 bg-slate-700 flex items-center justify-center">
+                          {info?.profile_photo ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={info.profile_photo}
+                              alt={info.name || `Player #${tp.player_id}`}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-xl font-bold text-slate-300">
+                              {(info?.name || "P").charAt(0).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-base font-bold text-white">
+                            {info?.name || `Player #${tp.player_id}`}
+                          </p>
+                          <p className="text-[10px] uppercase tracking-wide text-slate-400 mt-1">
+                            Winning bid
+                          </p>
+                          <strong className="text-lg font-extrabold text-amber-300">
+                            ₹{formatMoney(tp.sold_price)}
+                          </strong>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
