@@ -346,7 +346,9 @@ export default function AuctioneerPage() {
 
   const activeAP = store.players.find((p) => p.id === store.activePlayerId);
   const displayActiveAP =
-    activeAP && (activeAP.status === "active" || justSoldPlayerId === activeAP.id)
+    activeAP &&
+    (!store.teams.some((team) => team.captain_id === activeAP.player_id) || justSoldPlayerId === activeAP.id) &&
+    (activeAP.status === "active" || justSoldPlayerId === activeAP.id)
       ? activeAP
       : null;
 
@@ -362,7 +364,7 @@ export default function AuctioneerPage() {
     [store.teams]
   );
 
-  const excludeCaptains = store.rules?.exclude_captains_from_auction ?? true;
+  const excludeCaptains = true; // Assigned captains are never part of the auction pool.
   const pendingPlayers = useMemo(
     () =>
       store.players.filter(
