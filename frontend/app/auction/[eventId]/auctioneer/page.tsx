@@ -344,10 +344,26 @@ export default function AuctioneerPage() {
     fetchPlayersInfo();
   }, [eid]);
 
+  // Normalize IDs because API payloads may represent captain_id as a string
+  // while auction player records use numeric player_id values.
+  const captainIds = useMemo(
+    () =>
+      new Set(
+        store.teams
+          .map((team) => team.captain_id)
+          .filter((id) => id !== null && id !== undefined)
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id))
+      ),
+    [store.teams]
+  );
+
   const activeAP = store.players.find((p) => p.id === store.activePlayerId);
+  // Captains are never auctionable. Do not let the just-sold display exception
+  // reintroduce a captain into the bidding panel.
   const displayActiveAP =
     activeAP &&
-    (!store.teams.some((team) => team.captain_id === activeAP.player_id) || justSoldPlayerId === activeAP.id) &&
+    !captainIds.has(Number(activeAP.player_id)) &&
     (activeAP.status === "active" || justSoldPlayerId === activeAP.id)
       ? activeAP
       : null;
@@ -355,14 +371,6 @@ export default function AuctioneerPage() {
   const isPlayerSold =
     !!displayActiveAP &&
     (displayActiveAP.status === "sold" || justSoldPlayerId === displayActiveAP.id);
-
-  const captainIds = useMemo(
-    () =>
-      new Set(
-        store.teams.map((t) => t.captain_id).filter((id): id is number => id !== null)
-      ),
-    [store.teams]
-  );
 
   const excludeCaptains = true; // Assigned captains are never part of the auction pool.
   const pendingPlayers = useMemo(
