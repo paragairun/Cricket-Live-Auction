@@ -31,6 +31,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    text,
     String,
     Text,
     UniqueConstraint,
@@ -198,8 +199,13 @@ class AuctionEvent(Base):
 
     player_base_price: Mapped[int] = mapped_column(Integer, default=1000)
 
-    # If True, no countdown runs — the auctioneer hammers manually.
+    # Legacy compatibility field. Server-side timing is now always enabled.
     no_timer: Mapped[bool | None] = mapped_column(default=False, nullable=True)
+    # The database is authoritative for every auction clock and progression.
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    advance_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_remaining_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_advance: Mapped[bool] = mapped_column(default=True, nullable=False)
     # Per-event timing overrides; None falls back to the application settings.
     timer_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     soft_close_threshold_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -311,6 +317,13 @@ class AuctionPlayer(Base):
     __table_args__ = (
         UniqueConstraint("event_id", "player_id", name="uq_auction_player_event_player"),
         Index("ix_auction_players_event_status", "event_id", "status"),
+        Index(
+            "uq_auction_player_one_active_per_event",
+            "event_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
