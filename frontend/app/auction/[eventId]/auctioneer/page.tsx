@@ -1040,7 +1040,7 @@ export default function AuctioneerPage() {
           {/* LEFT ZONE: Player Showcase Card (Photo Placeholder) */}
           <div className="lg:col-span-6 min-h-0 flex flex-col justify-center">
             {displayActiveAP ? (
-              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[540px] mx-auto">
+              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto">
                 {/* Player photo placeholder */}
                 <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
                   {activeInfo?.profile_photo && (
@@ -1111,7 +1111,7 @@ export default function AuctioneerPage() {
                 </div>
               </div>
             ) : (
-              <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[540px] w-full mx-auto">
+              <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto">
                 <p className="text-lg font-black uppercase tracking-wide text-amber-300">
                   {status === "active"
                     ? "NO PLAYER ON THE BLOCK"
