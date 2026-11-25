@@ -7,7 +7,6 @@ import api, { describeError, newIdempotencyKey, postIdempotent } from "@/lib/api
 import {
   useAuctionStore,
   PlayerCategory,
-  remainingSeconds,
 } from "@/store/auction";
 import { AuctionSocket } from "@/lib/ws";
 import { shouldAutoAdvance, autoAdvanceDelayMs } from "@/lib/autoAdvance";
