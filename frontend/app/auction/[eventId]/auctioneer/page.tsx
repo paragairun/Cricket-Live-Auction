@@ -1030,25 +1030,6 @@ export default function AuctioneerPage() {
               }
         }
       >
-        {/* Subtle cricket batsman background silhouette */}
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 400 300"
-          className="pointer-events-none absolute right-[18%] bottom-0 h-[85%] w-auto opacity-15 text-black fill-current"
-        >
-          <circle cx="215" cy="68" r="18" />
-          <path d="M198 92 L234 95 L242 155 L265 235 L244 238 L224 172 L205 245 L182 242 L200 158 Z" />
-          <path d="M232 105 L292 132 L286 146 L228 122 Z" />
-          <rect
-            x="288"
-            y="130"
-            width="12"
-            height="92"
-            rx="3"
-            transform="rotate(24 288 130)"
-          />
-        </svg>
-
         {/* Diagonal crimson divider line */}
         <div
           aria-hidden="true"
