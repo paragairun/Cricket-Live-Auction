@@ -19,6 +19,8 @@ Changed from 1.x:
 import asyncio
 import logging
 
+from pydantic import BaseModel
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -69,6 +71,10 @@ from app.ws.manager import manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auction", tags=["auction"])
+
+
+class AutoAdvanceUpdate(BaseModel):
+    auto_advance: bool
 
 # Operator-only dependency, reused across every mutating endpoint below.
 OperatorCtx = Depends(require_event_access(*AUCTION_OPERATORS))
@@ -221,6 +227,25 @@ async def finish_auction(
 
 
 # ── Running the auction ───────────────────────────────────────────────────────
+
+
+@router.patch("/events/{event_id}/auto-advance")
+async def update_auto_advance(
+    event_id: int,
+    payload: AutoAdvanceUpdate,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist the event's hybrid progression preference."""
+    event = ctx.event
+    event.auto_advance = payload.auto_advance
+    await db.commit()
+    await manager.broadcast(event_id, {
+        "type": "auction_settings_updated",
+        "event_id": event_id,
+        "auto_advance": event.auto_advance,
+    })
+    return {"auto_advance": event.auto_advance}
 
 
 @router.post("/events/{event_id}/next-player", response_model=AuctionPlayerOut)
