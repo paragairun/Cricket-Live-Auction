@@ -1445,7 +1445,7 @@ export default function OrganizerEventDetailPage() {
         team_max_players: parseInt(settingsForm.max_players),
         team_min_players: parseInt(settingsForm.min_players) || 0,
         player_base_price: parseInt(settingsForm.base_price),
-        no_timer: settingsForm.no_timer,
+        no_timer: false,
         timer_seconds: parseInt(settingsForm.timer_seconds) || 30,
         soft_close_threshold_seconds:
           parseInt(settingsForm.soft_close_threshold_seconds) || 0,
@@ -2073,21 +2073,7 @@ export default function OrganizerEventDetailPage() {
                         tuned while the auction is running.
                       </p>
 
-                      <div className="flex items-center gap-2 mb-4">
-                        <input
-                          type="checkbox"
-                          checked={settingsForm.no_timer}
-                          onChange={(e) =>
-                            setSettingsForm({ ...settingsForm, no_timer: e.target.checked })
-                          }
-                        />
-                        <span className="text-xs text-gray-300">
-                          No clock — the auctioneer hammers manually
-                        </span>
-                      </div>
-
-                      {!settingsForm.no_timer && (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                           <div>
                             <label className="label text-gray-300 mb-1 block text-xs">
                               Base countdown (s)
@@ -2128,7 +2114,6 @@ export default function OrganizerEventDetailPage() {
                             />
                           </div>
                         </div>
-                      )}
                     </div>
 
                     <div className="h-px bg-gray-800 w-full"></div>

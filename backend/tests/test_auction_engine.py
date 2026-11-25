@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
 from app.models.auction import (
+    AuctionEvent,
     AuctionPlayer,
     AuctionStatus,
     Bid,
@@ -507,6 +508,9 @@ async def test_auto_unsold_round_requeues_unsold_players_once(
 
     async with AsyncSessionLocal() as session:
         picked = await auction_service._pick_random_pending(session, event.id)
+        # Selection and the re-auction flag are committed by the caller as one
+        # transaction, so persist this direct service-level test setup too.
+        await session.commit()
         stored_event = await session.get(type(event), event.id)
         assert picked.id == unsold_ap.id
         assert picked.status == PlayerAuctionStatus.pending
@@ -523,39 +527,181 @@ async def test_auto_unsold_round_requeues_unsold_players_once(
             await auction_service._pick_random_pending(session, event.id)
 
 
-async def test_player_up_does_not_wait_for_timer_queue(
+async def test_player_up_persists_deadline_without_external_timer_queue(
     make_event, register_player, monkeypatch
 ):
-    """A slow ARQ connection must not delay the live player announcement."""
-    import asyncio
-
+    """The database owns the deadline; publishing a player needs no queue service."""
     event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
-    _player, ap = await register_player(event, name="Fast display", base_price=5000)
-
-    queue_started = asyncio.Event()
-    release_queue = asyncio.Event()
+    _player, ap = await register_player(event, name="Local timer", base_price=5000)
     broadcasts = []
-
-    async def slow_schedule(*args, **kwargs):
-        queue_started.set()
-        await release_queue.wait()
 
     async def capture_broadcast(event_id, message):
         broadcasts.append(message)
 
-    monkeypatch.setattr(auction_service, "_schedule_hammer", slow_schedule)
     monkeypatch.setattr(auction_service.manager, "broadcast", capture_broadcast)
+    async with AsyncSessionLocal() as session:
+        result = await auction_service.set_next_player(event.id, ap.id, session)
 
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await asyncio.wait_for(
-                auction_service.set_next_player(event.id, ap.id, session),
-                timeout=0.5,
-            )
-        assert result.id == ap.id
-        assert broadcasts and broadcasts[-1]["type"] == "player_up"
-        assert broadcasts[-1]["player_name"] == "Fast display"
-        assert await asyncio.wait_for(queue_started.wait(), timeout=0.5)
-        assert not release_queue.is_set()
-    finally:
-        release_queue.set()
+    assert result.id == ap.id
+    assert broadcasts and broadcasts[-1]["type"] == "player_up"
+    assert broadcasts[-1]["player_name"] == "Local timer"
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.deadline_at is not None
+        assert stored_event.no_timer is False
+
+
+async def test_local_timer_hammers_expired_player_once(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _player, ap = await register_player(event, name="Expired lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        first = await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        second = await auction_service.run_due_hammers(session)
+
+    assert first == 1
+    assert second == 0
+    async with AsyncSessionLocal() as session:
+        stored_player = await session.get(AuctionPlayer, ap.id)
+        assert stored_player.status == PlayerAuctionStatus.unsold
+
+
+async def test_pause_resume_preserves_remaining_timer(
+    make_event, register_player
+):
+    import datetime as dt
+    event, *_ = await make_event(status=AuctionStatus.ready, no_timer=False)
+    _player, ap = await register_player(event, name="Paused lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        original_deadline = stored_event.deadline_at
+        await auction_service.pause_auction(event.id, session)
+        assert stored_event.deadline_at is None
+        assert stored_event.paused_remaining_seconds is not None
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.deadline_at is not None
+        assert stored_event.paused_remaining_seconds is None
+        assert stored_event.deadline_at >= original_deadline - dt.timedelta(seconds=30)
+
+
+async def test_automatic_progression_is_driven_by_local_server_timer(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="First lot", base_price=5000)
+    _second, second_ap = await register_player(event, name="Second lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.advance_at is not None
+        stored_event.advance_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        first = await session.get(AuctionPlayer, first_ap.id)
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert first.status == PlayerAuctionStatus.unsold
+        assert second.status == PlayerAuctionStatus.active
+
+
+async def test_manual_progression_waits_for_auctioneer_next_player(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Manual first", base_price=5000)
+    _second, second_ap = await register_player(event, name="Manual second", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.auto_advance = False
+        await session.commit()
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert stored_event.advance_at is None
+        assert second.status == PlayerAuctionStatus.pending
+        await auction_service.set_next_player(event.id, second_ap.id, session)
+        await session.refresh(second)
+        assert second.status == PlayerAuctionStatus.active
+
+
+async def test_next_player_command_is_idempotent(
+    make_event, register_player
+):
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Idempotent first")
+    _second, second_ap = await register_player(event, name="Idempotent second")
+    async with AsyncSessionLocal() as session:
+        first = await auction_service.set_next_player(
+            event.id, first_ap.id, session, idempotency_key="same-next-command"
+        )
+    async with AsyncSessionLocal() as session:
+        retry = await auction_service.set_next_player(
+            event.id, second_ap.id, session, idempotency_key="same-next-command"
+        )
+    assert retry.id == first.id
+    async with AsyncSessionLocal() as session:
+        first_row = await session.get(AuctionPlayer, first_ap.id)
+        second_row = await session.get(AuctionPlayer, second_ap.id)
+        assert first_row.status == PlayerAuctionStatus.active
+        assert second_row.status == PlayerAuctionStatus.pending
+
+
+async def test_retried_hammer_cannot_hammer_the_next_player(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Hammer first")
+    _second, second_ap = await register_player(event, name="Hammer second")
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        await auction_service.hammer_player(
+            event.id, first_ap.id, session, idempotency_key="same-hammer-command"
+        )
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.advance_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        retry = await auction_service.hammer_player(
+            event.id, second_ap.id, session, idempotency_key="same-hammer-command"
+        )
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert retry.id == first_ap.id
+        assert second.status == PlayerAuctionStatus.active

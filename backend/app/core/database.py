@@ -174,6 +174,12 @@ async def ensure_schema() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _backfill_sqlite_columns(conn)
+        # create_all skips indexes on pre-existing tables; enforce the one-active
+        # player invariant explicitly when upgrading an existing local database.
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_auction_player_one_active_per_event "
+            "ON auction_players (event_id) WHERE status = 'active'"
+        ))
 
 
 async def get_db() -> AsyncSession:

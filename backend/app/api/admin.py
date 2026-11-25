@@ -11,9 +11,9 @@ Changed from 1.x:
   - Role assignment is restricted to ASSIGNABLE_ROLES and an admin cannot strip
     their own admin role (which would lock the platform out of itself).
 """
-import json
 import logging
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, field_validator
@@ -21,8 +21,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.queue import enqueue
-from app.core.redis import get_redis
+from app.core.background import dispatch_email
 from app.core.security import decode_token  # noqa: F401 (kept for route parity)
 from app.models.auction import (
     AuctionEvent,
@@ -41,6 +40,7 @@ from app.models.user import (
     ROLE_ORGANIZER,
     User,
 )
+from app.models.auth_token import AuthToken
 from app.schemas.auction import AuctionEventCreate, AuctionEventOut, AuctionEventUpdate
 from app.schemas.user import AssignRolePayload, UserOut
 from app.core.deps import require_role
@@ -230,9 +230,6 @@ async def delete_event(
     await db.delete(event)
     await db.commit()
 
-    redis = await get_redis()
-    await redis.delete(f"auction:{event_id}:deadline", f"auction:{event_id}:active_player")
-
     logger.warning("Admin %s hard-deleted tournament %s", current_user.id, event_id)
     return {"status": "deleted", "message": f"'{event.name}' and all of its data were deleted."}
 
@@ -319,7 +316,7 @@ async def invite_to_event(
             event.auctioneer_id = user.id
         await db.commit()
         await db.refresh(user)
-        await enqueue(
+        await dispatch_email(
             "task_send_event_invitation",
             user.email, user.name, event.name, event.id, payload.role,
         )
@@ -330,20 +327,17 @@ async def invite_to_event(
         }
 
     token = secrets.token_urlsafe(32)
-    redis = await get_redis()
-    await redis.setex(
-        f"invite:{token}",
-        INVITE_TTL_SECONDS,
-        json.dumps(
-            {
-                "email": payload.email,
-                "event_id": event_id,
-                "event_name": event.name,
-                "role": payload.role,
-            }
-        ),
-    )
-    await enqueue("task_send_organizer_invite", payload.email, event.name, token, payload.role)
+    db.add(AuthToken(
+        token=token,
+        purpose="invite",
+        email=payload.email,
+        event_id=event_id,
+        event_name=event.name,
+        role=payload.role,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=INVITE_TTL_SECONDS),
+    ))
+    await db.commit()
+    await dispatch_email("task_send_organizer_invite", payload.email, event.name, token, payload.role)
     return {"status": "invited", "user": None, "message": f"Invitation sent to {payload.email}"}
 
 

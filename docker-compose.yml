@@ -15,16 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   migrator:
     build: ./backend
     command: alembic upgrade head
@@ -48,35 +38,13 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://auction:auction@db:5432/auction
-      REDIS_URL: redis://redis:6379
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
     ports:
       - "8000:8000"
-
-  worker:
-    build: ./backend
-    command: arq app.worker.WorkerSettings
-    volumes:
-      - ./backend:/app
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://auction:auction@db:5432/auction
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      migrator:
-        condition: service_completed_successfully
-    restart: unless-stopped
 
   frontend:
     build: ./frontend
@@ -104,5 +72,4 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
   uploads_data:

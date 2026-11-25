@@ -4,13 +4,12 @@ Version: 2.0.0 (2026-11-20)
 
 Rebuilt for the new model: players are Player rows (no account, no email), team
 captains are players, and bids key on team_id. Every test runs against a fresh
-in-memory-backed SQLite file and a fakeredis instance.
+in-memory-backed SQLite file without external services.
 """
 import os
 
 # Must be set before app.core.config is imported anywhere.
 os.environ.setdefault("ENVIRONMENT", "local")
-os.environ.setdefault("ALLOW_FAKE_REDIS", "true")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-at-least-32-chars-long")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_auction.db")
 
@@ -21,7 +20,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core import redis as redis_module
 from app.core.database import AsyncSessionLocal, Base, engine
 from app.core.security import create_access_token, hash_password
 from app.main import app
@@ -52,10 +50,7 @@ async def _clean_schema():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
-    # Reset the cached Redis client so each test gets an empty store.
-    await redis_module.close_redis()
     yield
-    await redis_module.close_redis()
 
 
 @pytest_asyncio.fixture

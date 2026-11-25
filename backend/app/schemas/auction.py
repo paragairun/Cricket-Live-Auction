@@ -37,6 +37,7 @@ class AuctionEventUpdate(BaseModel):
     team_min_players: Optional[int] = Field(default=None, ge=0, le=50)
     player_base_price: Optional[int] = Field(default=None, ge=100)
     no_timer: Optional[bool] = None
+    auto_advance: Optional[bool] = None
     timer_seconds: Optional[int] = Field(default=None, ge=5, le=600)
     soft_close_threshold_seconds: Optional[int] = Field(default=None, ge=0, le=120)
     soft_close_extension_seconds: Optional[int] = Field(default=None, ge=1, le=120)
@@ -64,6 +65,7 @@ class AuctionEventOut(BaseModel):
     team_min_players: int
     player_base_price: int
     no_timer: bool | None = False
+    auto_advance: bool = True
     timer_seconds: Optional[int] = None
     soft_close_threshold_seconds: Optional[int] = None
     soft_close_extension_seconds: Optional[int] = None

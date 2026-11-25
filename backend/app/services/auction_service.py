@@ -18,12 +18,10 @@ Rewritten from 1.x. The four substantive changes:
    double-tap or a reconnect must not place a second bid or sell a player twice.
    Unique constraints in the schema are the backstop.
 
-3. DURABLE TIMER. The countdown was an asyncio.Task inside one worker process,
-   coordinated by a Redis key holding a PID. If the worker restarted the task
-   died, the player stayed `active` forever and the hammer never fell. PIDs also
-   collide across containers. Redis now holds an absolute deadline; the hammer
-   fires from a deferred ARQ job, with a watchdog sweep as a second line. The
-   per-second tick broadcast is gone — clients count down from the deadline.
+3. DURABLE TIMER. The database stores each absolute deadline and any pending
+   automatic transition. A local FastAPI timer processes them and reconstructs
+   work after a restart. The per-second tick broadcast is gone — clients count
+   down from the persisted deadline.
 
 4. AUDIT. Undo hard-deleted the bid row and bid-edit rewrote the amount with no
    record, so a disputed sale could not be reconstructed. Bids are now reverted,
@@ -36,7 +34,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -45,8 +43,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.queue import enqueue, enqueue_at
-from app.core.redis import get_redis
+from app.core.background import dispatch_email
+from app.models.auction_command import AuctionCommand
 from app.models.auction import (
     AuctionAuditLog,
     AuctionEvent,
@@ -72,21 +70,6 @@ from app.ws.manager import manager
 logger = logging.getLogger(__name__)
 
 
-# ── Redis keys ────────────────────────────────────────────────────────────────
-
-def _deadline_key(event_id: int) -> str:
-    """Absolute unix timestamp at which the active player is hammered."""
-    return f"auction:{event_id}:deadline"
-
-
-def _active_key(event_id: int) -> str:
-    return f"auction:{event_id}:active_player"
-
-
-def _idem_key(event_id: int, key: str) -> str:
-    return f"auction:{event_id}:idem:{key}"
-
-
 # ── Errors ────────────────────────────────────────────────────────────────────
 
 
@@ -96,6 +79,32 @@ class AuctionError(ValueError):
 
 class ConcurrentUpdate(AuctionError):
     """Another operator's action landed first. Surfaces as 409."""
+
+
+async def _existing_command(
+    db: AsyncSession, event_id: int, key: str, action: str
+) -> AuctionCommand | None:
+    result = await db.execute(
+        select(AuctionCommand).where(
+            AuctionCommand.event_id == event_id,
+            AuctionCommand.idempotency_key == key,
+        )
+    )
+    command = result.scalar_one_or_none()
+    if command and command.action != action:
+        raise ConcurrentUpdate("This idempotency key was already used for another action")
+    return command
+
+
+async def _duplicate_command_result(
+    db: AsyncSession, event_id: int, key: str, action: str
+) -> AuctionPlayer | None:
+    command = await _existing_command(db, event_id, key, action)
+    if command is None:
+        return None
+    if command.result_auction_player_id is None:
+        raise ConcurrentUpdate("That auction command is already being processed")
+    return await db.get(AuctionPlayer, command.result_auction_player_id)
 
 
 # ── Timing ────────────────────────────────────────────────────────────────────
@@ -168,22 +177,6 @@ async def record_audit(
             detail=detail,
         )
     )
-
-
-# ── Idempotency ───────────────────────────────────────────────────────────────
-
-
-async def _claim_idempotency(event_id: int, key: str | None, ttl: int = 900) -> bool:
-    """True when this is the first time we have seen `key`.
-
-    Backed by Redis SET NX. The Bid table's unique constraint is the durable
-    backstop; this short-circuits the common case before any work is done.
-    """
-    if not key:
-        return True
-    redis = await get_redis()
-    claimed = await redis.set(_idem_key(event_id, key), "1", nx=True, ex=ttl)
-    return bool(claimed)
 
 
 # ── Loading helpers ───────────────────────────────────────────────────────────
@@ -275,10 +268,15 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
     categories = cats_result.scalars().all()
     categories_by_id = {c.id: c for c in categories}
 
-    redis = await get_redis()
-    deadline_raw = await redis.get(_deadline_key(event_id))
-    active_player_id = await redis.get(_active_key(event_id))
-    deadline = float(deadline_raw) if deadline_raw else None
+    active_player = next(
+        (ap for ap in auction_players if ap.status == PlayerAuctionStatus.active),
+        None,
+    )
+    deadline_dt = event.deadline_at
+    if deadline_dt is not None and deadline_dt.tzinfo is None:
+        deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+    deadline = deadline_dt.timestamp() if deadline_dt else None
+    active_player_id = active_player.id if active_player else None
 
     timing = Timing.for_event(event)
 
@@ -296,7 +294,8 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
         "server_time": _now(),
         "deadline_epoch": deadline,
         "active_auction_player_id": int(active_player_id) if active_player_id else None,
-        "no_timer": event.no_timer,
+        "no_timer": False,
+        "auto_advance": event.auto_advance,
         "timing": {
             "base_seconds": timing.base_seconds,
             "soft_close_threshold_seconds": timing.threshold_seconds,
@@ -527,7 +526,14 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
                 f"Auction is scheduled for {scheduled.isoformat()} and cannot start before then"
             )
 
+    active_player = await _load_active_player(db, event_id)
     event.status = AuctionStatus.active
+    if active_player and not was_first_start:
+        remaining = event.paused_remaining_seconds
+        if remaining is None:
+            remaining = Timing.for_event(event).base_seconds
+        event.deadline_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, remaining))
+        event.paused_remaining_seconds = None
     await record_audit(
         db,
         event_id=event_id,
@@ -537,9 +543,7 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     await db.commit()
     await db.refresh(event)
 
-    # The WebSocket already delivered the full snapshot on connect. Sending
-    # it again on START duplicates every player and squad; the next player is
-    # broadcast separately by set_next_player below.
+    # Initial player selection is handled by the backend, never by a browser timer.
     await manager.broadcast(
         event_id,
         {"type": "auction_started" if was_first_start else "auction_resumed", "event_id": event_id},
@@ -548,7 +552,7 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if was_first_start:
         await _notify_participants_starting(event, db)
 
-    if not await _load_active_player(db, event_id):
+    if not active_player:
         try:
             await set_next_player(event_id, None, db, actor=actor)
         except AuctionError as exc:
@@ -578,14 +582,13 @@ async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -
         )
         try:
             await asyncio.wait_for(
-                enqueue("task_send_auction_starting", user.email, user.name, event.name, event.id, role),
+                dispatch_email("task_send_auction_starting", user.email, user.name, event.name, event.id, role),
                 timeout=1.5,
             )
         except Exception as exc:
             logger.warning("Skipping/slow start email enqueue for %s: %s", user.email, exc)
 
-    # Queue notifications in the background so mail/Redis latency cannot
-    # delay the auctioneer's START response.
+    # Email is dispatched locally and never delays auction state changes.
     for user in users.scalars().all():
         asyncio.create_task(notify(user))
 
@@ -595,9 +598,15 @@ async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if event.status != AuctionStatus.active:
         raise AuctionError("Auction is not active")
 
-    redis = await get_redis()
-    await redis.delete(_deadline_key(event_id))
-
+    deadline = event.deadline_at
+    if deadline is not None and deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    event.paused_remaining_seconds = (
+        max(0, int((deadline - datetime.now(timezone.utc)).total_seconds()))
+        if deadline is not None else None
+    )
+    event.deadline_at = None
+    event.advance_at = None
     event.status = AuctionStatus.paused
     await record_audit(
         db, event_id=event_id, action=AuditAction.auction_paused,
@@ -615,10 +624,6 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     if event.status not in (AuctionStatus.active, AuctionStatus.paused):
         raise AuctionError("Auction must be active or paused to finish")
 
-    redis = await get_redis()
-    await redis.delete(_deadline_key(event_id))
-    await redis.delete(_active_key(event_id))
-
     active_result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -631,6 +636,9 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     viewer_stats = await manager.get_viewer_stats(event_id)
     event.total_viewers = viewer_stats.get("total_unique_viewers", 0)
     event.status = AuctionStatus.completed
+    event.deadline_at = None
+    event.advance_at = None
+    event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.auction_finished,
@@ -638,9 +646,6 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     )
     await db.commit()
     await db.refresh(event)
-
-    await redis.expire(f"event:{event_id}:unique_viewers", 86400 * 7)
-    await redis.expire(f"event:{event_id}:live_sessions", 86400 * 7)
 
     summary = await get_auction_summary(event_id, db)
 
@@ -654,7 +659,7 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
         for user in users.scalars().all():
             try:
                 await asyncio.wait_for(
-                    enqueue(
+                    dispatch_email(
                         "task_send_event_completion_summary",
                         user.email, user.name, event.name, event_id, summary,
                     ),
@@ -682,9 +687,25 @@ async def set_next_player(
 ) -> AuctionPlayer:
     request_started = time.perf_counter()
     selection_started = request_started
-    if not await _claim_idempotency(event_id, idempotency_key):
-        raise ConcurrentUpdate("That action has already been applied")
-
+    command = None
+    if idempotency_key:
+        prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+        if prior is not None:
+            return prior
+        command = AuctionCommand(
+            event_id=event_id,
+            idempotency_key=idempotency_key,
+            action="next_player",
+        )
+        db.add(command)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+            if prior is not None:
+                return prior
+            raise ConcurrentUpdate("That Next Player request was already processed")
     event = await _get_event(db, event_id)
     if event.status != AuctionStatus.active:
         raise AuctionError("Auction is not active")
@@ -724,42 +745,56 @@ async def set_next_player(
 
     selection_ms = (time.perf_counter() - selection_started) * 1000
     base = await _effective_base_price(ap, db)
-    ap.base_price = base
-    ap.status = PlayerAuctionStatus.active
-    ap.current_bid = base
-    ap.current_bid_team_id = None
-    ap.version += 1
-    ap.extension_count = 0
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status.in_(
+                [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold]
+            ),
+            AuctionPlayer.version == ap.version,
+        )
+        .values(
+            base_price=base,
+            status=PlayerAuctionStatus.active,
+            current_bid=base,
+            current_bid_team_id=None,
+            version=AuctionPlayer.version + 1,
+            extension_count=0,
+        )
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        raise ConcurrentUpdate("Another request selected this player first. Refresh the auction state.")
+    timing = Timing.for_event(event)
+    deadline = _now() + timing.base_seconds
+    event.deadline_at = datetime.fromtimestamp(deadline, tz=timezone.utc)
+    event.advance_at = None
+    event.paused_remaining_seconds = None
+    event.no_timer = False
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.player_put_up,
         actor_user_id=actor.id if actor else None,
         auction_player_id=ap.id, amount=base,
     )
+    if command is not None:
+        command.result_auction_player_id = ap.id
     commit_started = time.perf_counter()
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if idempotency_key:
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+            if prior is not None:
+                return prior
+        raise ConcurrentUpdate("Another request selected a player first. Refresh the auction state.") from exc
     await db.refresh(ap)
     commit_ms = (time.perf_counter() - commit_started) * 1000
 
-    redis_started = time.perf_counter()
-    redis = await get_redis()
-    await redis.set(_active_key(event_id), ap.id)
-
-    deadline = None
-    if not event.no_timer:
-        timing = Timing.for_event(event)
-        deadline = _now() + timing.base_seconds
-        await redis.set(_deadline_key(event_id), deadline)
-        # Timer queue availability must never delay the player announcement.
-        # Redis holds the authoritative deadline and the worker watchdog is the
-        # fallback if this deferred job cannot be queued.
-        asyncio.create_task(
-            _schedule_hammer(event_id, ap.id, deadline),
-            name=f"schedule-hammer:{event_id}:{ap.id}",
-        )
-    else:
-        await redis.delete(_deadline_key(event_id))
-    redis_ms = (time.perf_counter() - redis_started) * 1000
+    deadline = event.deadline_at.timestamp() if event.deadline_at else None
 
     broadcast_started = time.perf_counter()
     await manager.broadcast(
@@ -778,7 +813,7 @@ async def set_next_player(
             "base_price": ap.base_price,
             "current_bid": ap.current_bid,
             "version": ap.version,
-            "no_timer": bool(event.no_timer),
+            "no_timer": False,
             "deadline_epoch": deadline,
             "server_time": _now(),
         },
@@ -787,9 +822,8 @@ async def set_next_player(
     total_ms = (time.perf_counter() - request_started) * 1000
     logger.info(
         "player_up dispatch event_id=%s auction_player_id=%s "
-        "selection_ms=%.1f commit_ms=%.1f redis_ms=%.1f "
-        "broadcast_ms=%.1f total_ms=%.1f",
-        event_id, ap.id, selection_ms, commit_ms, redis_ms, broadcast_ms, total_ms,
+        "selection_ms=%.1f commit_ms=%.1f broadcast_ms=%.1f total_ms=%.1f",
+        event_id, ap.id, selection_ms, commit_ms, broadcast_ms, total_ms,
     )
     return ap
 
@@ -838,7 +872,6 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
                 player.status = PlayerAuctionStatus.pending
                 player.version += 1
             event.unsold_reauction_started = True
-            await db.commit()
             pending = [p for p in unsold if p.player_id not in captain_ids]
     if not pending:
         raise AuctionError("No pending players left")
@@ -860,11 +893,13 @@ async def pull_player(
         actor_user_id=actor.id if actor else None,
         auction_player_id=ap.id, amount=ap.current_bid,
     )
+    event = await _get_event(db, event_id)
+    event.deadline_at = None
+    event.advance_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=1.5)
+        if event.auto_advance else None
+    )
     await db.commit()
-
-    redis = await get_redis()
-    await redis.delete(_deadline_key(event_id))
-    await redis.delete(_active_key(event_id))
 
     await manager.broadcast(
         event_id,
@@ -959,20 +994,28 @@ async def place_bid(
         raise AuctionError(error)
 
     timing = Timing.for_event(event)
-    redis = await get_redis()
-
-    new_deadline = None
-    new_extension_count = ap.extension_count
-    if not event.no_timer:
-        raw_deadline = await redis.get(_deadline_key(event_id))
-        current_deadline = float(raw_deadline) if raw_deadline else _now()
-        remaining = current_deadline - _now()
-        if remaining <= timing.threshold_seconds:
-            extension = timing.extension_for(ap.extension_count)
-            new_deadline = _now() + extension
-            new_extension_count = ap.extension_count + 1
-        else:
-            new_deadline = current_deadline
+    current_deadline = event.deadline_at
+    if current_deadline is not None and current_deadline.tzinfo is None:
+        current_deadline = current_deadline.replace(tzinfo=timezone.utc)
+    current_deadline_epoch = current_deadline.timestamp() if current_deadline else None
+    if current_deadline_epoch is not None and current_deadline_epoch <= _now():
+        raise AuctionError("The bidding deadline has passed; the server is processing the hammer.")
+    if current_deadline_epoch is None:
+        new_deadline = _now() + timing.base_seconds
+        new_extension_count = ap.extension_count
+    else:
+        remaining = current_deadline_epoch - _now()
+        extension = timing.extension_for(ap.extension_count)
+        new_deadline = (
+            _now() + extension
+            if remaining <= timing.threshold_seconds
+            else current_deadline_epoch
+        )
+        new_extension_count = (
+            ap.extension_count + 1
+            if remaining <= timing.threshold_seconds
+            else ap.extension_count
+        )
 
     stmt = (
         update(AuctionPlayer)
@@ -1003,6 +1046,7 @@ async def place_bid(
         idempotency_key=idempotency_key or uuid.uuid4().hex,
         placed_by_user_id=actor.id if actor else None,
     )
+    event.deadline_at = datetime.fromtimestamp(new_deadline, tz=timezone.utc)
     db.add(bid)
     await record_audit(
         db, event_id=event_id, action=AuditAction.bid_placed,
@@ -1026,13 +1070,6 @@ async def place_bid(
         raise
 
     await db.refresh(bid)
-
-    if new_deadline is not None:
-        await redis.set(_deadline_key(event_id), new_deadline)
-        asyncio.create_task(
-            _schedule_hammer(event_id, ap.id, new_deadline),
-            name=f"reschedule-hammer:{event_id}:{ap.id}",
-        )
 
     await manager.broadcast(
         event_id,
@@ -1063,6 +1100,26 @@ async def hammer_player(
     *,
     idempotency_key: str | None = None,
 ) -> AuctionPlayer | None:
+    command = None
+    if idempotency_key:
+        prior = await _duplicate_command_result(db, event_id, idempotency_key, "hammer")
+        if prior is not None:
+            return prior
+        command = AuctionCommand(
+            event_id=event_id,
+            idempotency_key=idempotency_key,
+            action="hammer",
+        )
+        db.add(command)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "hammer")
+            if prior is not None:
+                return prior
+            raise ConcurrentUpdate("That hammer request was already processed")
+
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.id == auction_player_id, AuctionPlayer.event_id == event_id
@@ -1070,9 +1127,15 @@ async def hammer_player(
     )
     ap = result.scalar_one_or_none()
     if not ap:
+        if command is not None:
+            await db.rollback()
         return None
     if ap.status != PlayerAuctionStatus.active:
+        if command is not None:
+            await db.rollback()
         return ap
+    if command is not None:
+        command.result_auction_player_id = ap.id
 
     sold = ap.current_bid_team_id is not None
     sale_price = ap.current_bid
@@ -1102,9 +1165,12 @@ async def hammer_player(
         await db.refresh(ap)
         return ap
 
-    redis = await get_redis()
-    await redis.delete(_deadline_key(event_id))
-    await redis.delete(_active_key(event_id))
+    event.deadline_at = None
+    event.paused_remaining_seconds = None
+    event.advance_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=1.5)
+        if event.auto_advance else None
+    )
 
     await _record_outcome(
         db,
@@ -1338,85 +1404,93 @@ async def correct_current_bid(
     }
 
 
-# ── Durable hammer scheduling ─────────────────────────────────────────────────
+# ── Local database timer and recovery ────────────────────────────────────────
 
 
-async def _schedule_hammer(event_id: int, auction_player_id: int, deadline: float) -> None:
-    """Queue the auto-hammer as a deferred job without blocking API responses."""
-    started = time.perf_counter()
-    try:
-        await asyncio.wait_for(
-            enqueue_at(
-                "task_auto_hammer",
-                deadline,
-                event_id,
-                auction_player_id,
-                job_id=f"hammer:{event_id}:{auction_player_id}:{int(deadline)}",
-            ),
-            timeout=1.5,
+async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> int:
+    """Process expired deadlines and persisted automatic-advance requests.
+
+    The database is the only clock/state store. The loop is safe to run
+    repeatedly: hammer_player uses a conditional status/version update and
+    the partial unique index permits at most one active player per event.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Older active auctions may have had their deadline only in Redis. Seed a
+    # fresh deadline once from the event's configured base duration; subsequent
+    # deadlines are always read from and written to the database.
+    missing_result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.deadline_at.is_(None),
         )
-    except Exception as exc:
-        logger.warning(
-            "Deferred hammer enqueue slow/failed for event %s player %s (watchdog will cover): %s",
-            event_id,
-            auction_player_id,
-            exc,
+    )
+    recovered_deadline = False
+    for event in missing_result.scalars().all():
+        active_player = await _load_active_player(db, event.id)
+        if active_player:
+            event.deadline_at = now + timedelta(seconds=Timing.for_event(event).base_seconds)
+            recovered_deadline = True
+    if recovered_deadline:
+        await db.commit()
+
+    due_result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.deadline_at.is_not(None),
+            AuctionEvent.deadline_at <= now - timedelta(seconds=grace_seconds),
         )
-    finally:
-        logger.info(
-            "hammer_schedule event_id=%s auction_player_id=%s duration_ms=%.1f",
-            event_id, auction_player_id, (time.perf_counter() - started) * 1000,
-        )
-
-
-async def run_due_hammers(db_factory, *, grace_seconds: float = 0.5) -> int:
-    redis = await get_redis()
-    hammered = 0
-    now = _now()
-
-    cursor = 0
-    keys: list[str] = []
-    while True:
-        cursor, batch = await redis.scan(cursor, match="auction:*:deadline", count=200)
-        keys.extend(batch)
-        if cursor == 0:
-            break
-
-    for key in keys:
-        raw = await redis.get(key)
-        if raw is None:
+    )
+    due_events = due_result.scalars().all()
+    processed = 0
+    for event in due_events:
+        ap = await _load_active_player(db, event.id)
+        if not ap:
+            event.deadline_at = None
+            await db.commit()
             continue
         try:
-            deadline = float(raw)
-            event_id = int(str(key).split(":")[1])
-        except (ValueError, IndexError):
-            continue
+            await hammer_player(event.id, ap.id, db)
+            processed += 1
+        except Exception:
+            await db.rollback()
+            logger.exception("Local timer hammer failed for event %s", event.id)
 
-        if now < deadline + grace_seconds:
-            continue
-
-        active_raw = await redis.get(_active_key(event_id))
-        if not active_raw:
-            await redis.delete(key)
-            continue
-
-        async with db_factory() as db:
-            try:
-                await hammer_player(event_id, int(active_raw), db)
-                hammered += 1
-            except Exception as exc:
-                logger.exception("Watchdog hammer failed for event %s: %s", event_id, exc)
-
-    return hammered
+    advance_result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.advance_at.is_not(None),
+            AuctionEvent.advance_at <= now,
+        )
+    )
+    for event in advance_result.scalars().all():
+        event.advance_at = None
+        await db.commit()
+        try:
+            await set_next_player(event.id, None, db)
+            processed += 1
+        except AuctionError as exc:
+            logger.info("Automatic progression stopped for event %s: %s", event.id, exc)
+            await db.rollback()
+            current = await db.get(AuctionEvent, event.id)
+            if current:
+                current.advance_at = None
+                await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Automatic progression failed for event %s", event.id)
+    return processed
 
 
 async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -> None:
-    redis = await get_redis()
-    raw = await redis.get(_deadline_key(event_id))
-    if raw is None:
+    """Compatibility helper; verifies the persisted deadline before hammering."""
+    event = await _get_event(db, event_id)
+    deadline = event.deadline_at
+    if deadline is None:
         return
-    deadline = float(raw)
-    if _now() < deadline - 0.5:
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) < deadline:
         return
     await hammer_player(event_id, auction_player_id, db)
 
@@ -1461,11 +1535,10 @@ async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = No
         db, event_id=event_id, action=AuditAction.auction_reset,
         actor_user_id=actor.id if actor else None,
     )
+    event.deadline_at = None
+    event.advance_at = None
+    event.paused_remaining_seconds = None
     await db.commit()
-
-    redis = await get_redis()
-    await redis.delete(_active_key(event_id))
-    await redis.delete(_deadline_key(event_id))
 
     state = await get_auction_state(event_id, db)
     await manager.broadcast(event_id, {**state, "type": "auction_reset"})
@@ -1504,9 +1577,10 @@ async def _open_rtm(
         await db.refresh(ap)
         return ap
 
-    redis = await get_redis()
-    await redis.delete(_deadline_key(event_id))
-    await redis.delete(_active_key(event_id))
+    event = await _get_event(db, event_id)
+    event.deadline_at = None
+    event.advance_at = None
+    event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.rtm_offered,
@@ -1580,6 +1654,12 @@ async def _settle_rtm(
         await db.rollback()
         raise ConcurrentUpdate("The other console resolved this first")
 
+    event = await _get_event(db, event_id)
+    event.deadline_at = None
+    event.advance_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=1.5)
+        if event.auto_advance else None
+    )
     await record_audit(
         db, event_id=event_id, action=action,
         actor_user_id=actor.id if actor else None,

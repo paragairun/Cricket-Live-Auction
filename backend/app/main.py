@@ -8,8 +8,6 @@ Changed from 1.x:
   - ensure_schema() no longer runs create_all against PostgreSQL. Previously it
     ran on every startup in every environment, creating tables outside Alembic's
     control; only the column backfill was SQLite-gated, not the create_all.
-  - /api/health now reports database and Redis reachability, and flags when the
-    in-memory Redis substitute is active.
 """
 import logging
 import os
@@ -22,7 +20,8 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, ensure_schema
-from app.core.redis import close_redis, get_redis, is_fake_redis
+from app.core.background import shutdown_background_tasks
+from app.services.auction_timer import timer
 from app.models import *  # noqa: F401,F403 - register all models
 from app.api import auth, admin, organizer, auction, events
 from app.ws.manager import manager
@@ -39,6 +38,7 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     await ensure_schema()
     await manager.startup()
+    await timer.startup()
     logger.info(
         "Cricket Auction API started (environment=%s, timer=%ss, soft_close=%ss)",
         settings.ENVIRONMENT,
@@ -46,8 +46,9 @@ async def lifespan(app: FastAPI):
         settings.SOFT_CLOSE_EXTENSION_SECONDS,
     )
     yield
+    await timer.shutdown()
     await manager.shutdown()
-    await close_redis()
+    await shutdown_background_tasks()
 
 
 app = FastAPI(
@@ -81,30 +82,20 @@ app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads"
 
 @app.get("/api/health")
 async def health():
-    """Liveness plus the two dependencies the auction engine cannot run without."""
+    """Report database reachability and local timer status."""
     db_ok = False
-    redis_ok = False
-
     try:
         async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
         db_ok = True
     except Exception as exc:
         logger.error("Health check: database unreachable: %s", exc)
-
-    try:
-        redis = await get_redis()
-        await redis.ping()
-        redis_ok = True
-    except Exception as exc:
-        logger.error("Health check: redis unreachable: %s", exc)
-
-    healthy = db_ok and redis_ok
+    timer_ok = bool(timer._task and not timer._task.done())
+    healthy = db_ok and timer_ok
     return {
         "status": "ok" if healthy else "degraded",
         "environment": settings.ENVIRONMENT,
         "database": "ok" if db_ok else "unreachable",
-        "redis": "ok" if redis_ok else "unreachable",
-        # True means cross-worker broadcast is NOT working.
-        "redis_is_in_memory_substitute": is_fake_redis(),
+        "auction_timer": "running" if timer._task and not timer._task.done() else "stopped",
+        "realtime": "in_process",
     }

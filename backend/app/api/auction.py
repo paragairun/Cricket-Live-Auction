@@ -19,6 +19,8 @@ Changed from 1.x:
 import asyncio
 import logging
 
+from pydantic import BaseModel
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -69,6 +71,10 @@ from app.ws.manager import manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auction", tags=["auction"])
+
+
+class AutoAdvanceUpdate(BaseModel):
+    auto_advance: bool
 
 # Operator-only dependency, reused across every mutating endpoint below.
 OperatorCtx = Depends(require_event_access(*AUCTION_OPERATORS))
@@ -223,6 +229,25 @@ async def finish_auction(
 # ── Running the auction ───────────────────────────────────────────────────────
 
 
+@router.patch("/events/{event_id}/auto-advance")
+async def update_auto_advance(
+    event_id: int,
+    payload: AutoAdvanceUpdate,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist the event's hybrid progression preference."""
+    event = ctx.event
+    event.auto_advance = payload.auto_advance
+    await db.commit()
+    await manager.broadcast(event_id, {
+        "type": "auction_settings_updated",
+        "event_id": event_id,
+        "auto_advance": event.auto_advance,
+    })
+    return {"auto_advance": event.auto_advance}
+
+
 @router.post("/events/{event_id}/next-player", response_model=AuctionPlayerOut)
 async def next_player(
     event_id: int,
@@ -291,13 +316,13 @@ async def hammer(
     ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    redis_key = payload.idempotency_key if payload else None
+    idempotency_key = payload.idempotency_key if payload else None
     active = await auction_service._load_active_player(db, event_id)
     if not active:
         raise HTTPException(status_code=400, detail="No player is on the block")
     try:
         ap = await auction_service.hammer_player(
-            event_id, active.id, db, actor=ctx.user, idempotency_key=redis_key
+            event_id, active.id, db, actor=ctx.user, idempotency_key=idempotency_key
         )
     except AuctionError as exc:
         raise _handle(exc)
