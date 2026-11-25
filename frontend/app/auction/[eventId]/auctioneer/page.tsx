@@ -1576,7 +1576,7 @@ export default function AuctioneerPage() {
                       const info = playerDetails[playerId];
                       const name = info?.name || (captain && team.captain_name) || `Player #${playerId}`;
                       return (
-                        <div key={playerId} className={`group relative h-[clamp(145px,21vh,205px)] min-h-0 overflow-hidden rounded-xl border text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 ring-1 ring-amber-400/20" : "border-slate-700"}`}>
+                        <div key={playerId} className={`group relative aspect-[6/7] w-full max-w-[202px] min-h-0 overflow-hidden rounded-xl border text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 ring-1 ring-amber-400/20" : "border-slate-700"}`}>
                           {info?.profile_photo ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={info.profile_photo} alt={name} className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
@@ -1604,7 +1604,7 @@ export default function AuctioneerPage() {
                           <span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span>
                         </div>
                         {captainId || roster.length > 0 ? (
-                          <div className="grid grid-cols-2 gap-2 pb-2 sm:grid-cols-3 xl:grid-cols-4">
+                          <div className="grid grid-cols-2 justify-items-center gap-2 pb-2 sm:grid-cols-3 xl:grid-cols-4">
                             {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
                             {players.map((p) => renderCard(p.player_id, p.sold_price))}
                           </div>
