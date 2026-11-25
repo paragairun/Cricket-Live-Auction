@@ -44,6 +44,8 @@ class AuctionEventUpdate(BaseModel):
     auction_mode: Optional[AuctionMode] = None
     rtm_enabled: Optional[bool] = None
     rtm_cards_per_team: Optional[int] = Field(default=None, ge=0, le=20)
+    exclude_captains_from_auction: Optional[bool] = None
+    auto_reauction_unsold: Optional[bool] = None
     background_image: Optional[str] = None
 
 
@@ -68,6 +70,8 @@ class AuctionEventOut(BaseModel):
     auction_mode: AuctionMode = AuctionMode.random
     rtm_enabled: bool = False
     rtm_cards_per_team: int = 0
+    exclude_captains_from_auction: bool = True
+    auto_reauction_unsold: bool = False
     logo: Optional[str] = None
     background_image: Optional[str] = None
     created_at: datetime
