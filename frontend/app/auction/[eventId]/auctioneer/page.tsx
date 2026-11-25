@@ -1374,7 +1374,7 @@ export default function AuctioneerPage() {
       {/* ── DRAWER FOR SOLD / UNSOLD / AVAILABLE / TEAMS ── */}
       {activeDrawerTab !== "none" && (
         <div className="fixed inset-0 z-40 bg-black/75 flex items-end sm:items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+          <div className={`bg-slate-900 border border-slate-700 rounded-2xl w-full ${activeDrawerTab === "squads" ? "max-w-[96vw] h-[94vh] max-h-[1100px]" : "max-w-2xl max-h-[80vh]"} flex flex-col overflow-hidden shadow-2xl`}>
             <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
               <h3 className="font-extrabold text-base uppercase tracking-wide text-amber-300">
                 {activeDrawerTab === "sold" &&
@@ -1558,10 +1558,14 @@ export default function AuctioneerPage() {
                 ))}
 
               {activeDrawerTab === "squads" && (
-                <div className="space-y-3">
-                  <div className="flex gap-1.5 overflow-x-auto border-b border-slate-700 pb-2">
+                <div className="flex min-h-0 flex-1 flex-col gap-4">
+                  <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-slate-700 pb-3">
                     {store.teams.map((team) => (
-                      <button key={team.id} onClick={() => setSelectedSquadTeamId(team.id)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${selectedSquadTeamId === team.id ? "bg-amber-400 text-slate-950" : "bg-slate-800 text-slate-300"}`}>
+                      <button
+                        key={team.id}
+                        onClick={() => setSelectedSquadTeamId(team.id)}
+                        className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-extrabold ${selectedSquadTeamId === team.id ? "bg-amber-400 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                      >
                         {team.name}
                       </button>
                     ))}
@@ -1570,30 +1574,44 @@ export default function AuctioneerPage() {
                     const team = store.teams.find((item) => item.id === selectedSquadTeamId) || store.teams[0];
                     if (!team) return <p className="text-center text-slate-500 py-8">No teams configured.</p>;
                     const roster = teamRosters[team.id] || [];
-                    return <div className="space-y-2">
-                      <div className="flex justify-between text-xs text-slate-300"><strong>{team.name}</strong><span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span></div>
-                      {team.captain_id && <div className="rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">Captain · {team.captain_name || playerDetails[team.captain_id]?.name || `Player #${team.captain_id}`}</div>}
-                      {roster.length === 0 ? <p className="text-center text-slate-500 py-6 text-xs">No players bought yet.</p> : roster.map((player) => {
-                        const info = playerDetails[player.player_id];
-                        return (
-                          <div key={player.player_id} className="flex items-center gap-3 rounded-lg bg-slate-800 px-3 py-2.5">
-                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full border border-slate-600 bg-slate-700 flex items-center justify-center">
-                              {info?.profile_photo ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={info.profile_photo} alt={info.name || `Player #${player.player_id}`} className="h-full w-full object-cover" />
-                              ) : (
-                                <span className="text-sm font-bold text-slate-300">{(info?.name || "P").charAt(0).toUpperCase()}</span>
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold text-white">{info?.name || `Player #${player.player_id}`}</p>
-                              <p className="text-[10px] uppercase tracking-wide text-slate-400">Winning bid</p>
-                            </div>
-                            <strong className="shrink-0 text-sm font-extrabold text-amber-300">₹{formatMoney(player.sold_price)}</strong>
+                    const captainId = team.captain_id;
+                    const captainPurchase = captainId ? roster.find((p) => p.player_id === captainId) : undefined;
+                    const players = roster.filter((p) => p.player_id !== captainId);
+                    const renderCard = (playerId: number, soldPrice?: number, captain = false) => {
+                      const info = playerDetails[playerId];
+                      const name = info?.name || (captain && team.captain_name) || `Player #${playerId}`;
+                      return (
+                        <div key={playerId} className={`group flex flex-col items-center rounded-2xl border p-3 sm:p-5 text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 bg-gradient-to-b from-amber-950/70 via-slate-800 to-slate-900 ring-1 ring-amber-400/20" : "border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900"}`}>
+                          {captain && <span className="mb-3 rounded-full border border-amber-400/50 bg-amber-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-wider text-amber-300">★ Team Captain</span>}
+                          <div className="h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
+                            {info?.profile_photo ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={info.profile_photo} alt={name} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800"><span className="text-5xl font-black text-slate-300">{name.charAt(0).toUpperCase()}</span></div>
+                            )}
                           </div>
-                        );
-                      })}
-                    </div>;
+                          <p className="mt-4 w-full truncate text-base sm:text-lg font-extrabold text-white">{name}</p>
+                          <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
+                            {soldPrice !== undefined ? <><span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Winning Bid</span><strong className="mt-1 text-xl sm:text-2xl font-black tabular-nums text-amber-300">₹{formatMoney(soldPrice)}</strong></> : <span className="text-xs font-semibold uppercase tracking-wider text-amber-200/80">Team Captain</span>}
+                          </div>
+                        </div>
+                      );
+                    };
+                    return (
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-300">
+                          <strong className="text-lg text-white">{team.name} Squad</strong>
+                          <span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span>
+                        </div>
+                        {captainId || roster.length > 0 ? (
+                          <div className="grid grid-cols-1 gap-4 pb-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                            {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
+                            {players.map((p) => renderCard(p.player_id, p.sold_price))}
+                          </div>
+                        ) : <p className="py-12 text-center text-sm text-slate-500">No captain or players assigned yet.</p>}
+                      </div>
+                    );
                   })()}
                 </div>
               )}
