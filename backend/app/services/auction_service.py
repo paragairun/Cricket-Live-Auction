@@ -1347,11 +1347,14 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
             AuctionEvent.deadline_at.is_(None),
         )
     )
+    recovered_deadline = False
     for event in missing_result.scalars().all():
         active_player = await _load_active_player(db, event.id)
         if active_player:
             event.deadline_at = now + timedelta(seconds=Timing.for_event(event).base_seconds)
-    await db.commit()
+            recovered_deadline = True
+    if recovered_deadline:
+        await db.commit()
 
     due_result = await db.execute(
         select(AuctionEvent).where(
