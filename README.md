@@ -139,8 +139,6 @@ DATABASE_URL=postgresql+asyncpg://auction:auction@db:5432/auction
 # DATABASE_URL=postgresql+asyncpg://user:password@your-host:5432/your_db
 
 # ── Redis ────────────────────────────────────────────────────────────────────
-REDIS_URL=database-backed timer://redis:6379
-# Or your own: REDIS_URL=redis://your-redis-host:6379
 
 # ── Frontend URLs ────────────────────────────────────────────────────────────
 NEXT_PUBLIC_API_URL=http://localhost/api
