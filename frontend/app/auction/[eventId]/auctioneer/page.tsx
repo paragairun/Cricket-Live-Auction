@@ -83,7 +83,7 @@ export default function AuctioneerPage() {
   }, [eid]);
 
   const handleRandomNext = useCallback(
-    async (opts: { silent?: boolean; fast?: boolean } = {}) => {
+    async (opts: { silent?: boolean } = {}) => {
       if (advancingRef.current) return;
       advancingRef.current = true;
       if (!opts.silent) setBusyAction(true);
@@ -93,9 +93,11 @@ export default function AuctioneerPage() {
         });
         setSelectedTeamId(null);
         setJustSoldPlayerId(null);
-        const { data } = await api.get(`/auction/events/${eid}/state`);
-        useAuctionStore.getState().setFullState(data);
-        setStatus(data.status);
+        // The player_up WebSocket message is emitted before this request
+        // completes. Avoid a second full-roster fetch on the hot path.
+        if (useAuctionStore.getState().connection !== "live") {
+          await syncState();
+        }
       } catch (e: unknown) {
         const info = describeError(e);
         if (!opts.silent) setActionError(info.message);
@@ -128,7 +130,7 @@ export default function AuctioneerPage() {
         ) {
           return;
         }
-        void handleRandomNext({ silent: true, fast: true });
+        void handleRandomNext({ silent: true });
       }, delay);
     },
     [handleRandomNext]
@@ -262,6 +264,20 @@ export default function AuctioneerPage() {
 
           case "player_up":
             setJustSoldPlayerId(null);
+            if (msg.player_id) {
+              setPlayerDetails((prev) => ({
+                ...prev,
+                [msg.player_id]: {
+                  player_id: msg.player_id,
+                  name: msg.player_name || `Player #${msg.player_id}`,
+                  profile_photo: msg.profile_photo ?? undefined,
+                  batting_rating: msg.batting_rating ?? undefined,
+                  bowling_rating: msg.bowling_rating ?? undefined,
+                  fielding_rating: msg.fielding_rating ?? undefined,
+                  age: msg.age ?? undefined,
+                },
+              }));
+            }
             useAuctionStore.getState().setActivePlayer(
               msg.auction_player_id,
               msg.base_price,
@@ -523,8 +539,9 @@ export default function AuctioneerPage() {
       setSelectedTeamId(null);
       setJustSoldPlayerId(null);
       setActiveDrawerTab("none");
-      const { data } = await api.get(`/auction/events/${eid}/state`);
-      useAuctionStore.getState().setFullState(data);
+      if (useAuctionStore.getState().connection !== "live") {
+        await syncState();
+      }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error selecting player");
     } finally {
@@ -670,7 +687,7 @@ export default function AuctioneerPage() {
       setJustSoldPlayerId(null);
       useAuctionStore.getState().markPlayerUnsold(displayActiveAP.id);
       setNoBidCount((n) => n + 1);
-      await handleRandomNext({ silent: true, fast: true });
+      await handleRandomNext({ silent: true });
     } catch (e: unknown) {
       alert(describeError(e).message || "Error marking no bid");
     } finally {
@@ -692,7 +709,7 @@ export default function AuctioneerPage() {
           .getState()
           .markPlayerSold(displayActiveAP.id, soldTeamId, soldPrice);
       }
-      await handleRandomNext({ silent: true, fast: true });
+      await handleRandomNext({ silent: true });
     } catch (e: unknown) {
       alert(describeError(e).message || "Error submitting");
     } finally {
@@ -724,7 +741,11 @@ export default function AuctioneerPage() {
   };
 
   const activeInfo = displayActiveAP
-    ? playerDetails[displayActiveAP.player_id]
+    ? playerDetails[displayActiveAP.player_id] ?? {
+        player_id: displayActiveAP.player_id,
+        name: displayActiveAP.name ?? `Player #${displayActiveAP.player_id}`,
+        profile_photo: displayActiveAP.profile_photo ?? undefined,
+      }
     : undefined;
   const activeCategory = displayActiveAP
     ? getCategoryObj(displayActiveAP.category_id)

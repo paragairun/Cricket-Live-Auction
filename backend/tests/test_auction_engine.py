@@ -521,3 +521,41 @@ async def test_auto_unsold_round_requeues_unsold_players_once(
     async with AsyncSessionLocal() as session:
         with pytest.raises(AuctionError, match="No pending players left"):
             await auction_service._pick_random_pending(session, event.id)
+
+
+async def test_player_up_does_not_wait_for_timer_queue(
+    make_event, register_player, monkeypatch
+):
+    """A slow ARQ connection must not delay the live player announcement."""
+    import asyncio
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _player, ap = await register_player(event, name="Fast display", base_price=5000)
+
+    queue_started = asyncio.Event()
+    release_queue = asyncio.Event()
+    broadcasts = []
+
+    async def slow_schedule(*args, **kwargs):
+        queue_started.set()
+        await release_queue.wait()
+
+    async def capture_broadcast(event_id, message):
+        broadcasts.append(message)
+
+    monkeypatch.setattr(auction_service, "_schedule_hammer", slow_schedule)
+    monkeypatch.setattr(auction_service.manager, "broadcast", capture_broadcast)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await asyncio.wait_for(
+                auction_service.set_next_player(event.id, ap.id, session),
+                timeout=0.5,
+            )
+        assert result.id == ap.id
+        assert broadcasts and broadcasts[-1]["type"] == "player_up"
+        assert broadcasts[-1]["player_name"] == "Fast display"
+        assert await asyncio.wait_for(queue_started.wait(), timeout=0.5)
+        assert not release_queue.is_set()
+    finally:
+        release_queue.set()

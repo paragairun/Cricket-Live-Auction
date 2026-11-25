@@ -680,6 +680,8 @@ async def set_next_player(
     *,
     idempotency_key: str | None = None,
 ) -> AuctionPlayer:
+    request_started = time.perf_counter()
+    selection_started = request_started
     if not await _claim_idempotency(event_id, idempotency_key):
         raise ConcurrentUpdate("That action has already been applied")
 
@@ -720,6 +722,7 @@ async def set_next_player(
     if ap.player_id in await _captain_player_ids(db, event_id):
         raise AuctionError("Assigned team captains are excluded from the auction")
 
+    selection_ms = (time.perf_counter() - selection_started) * 1000
     base = await _effective_base_price(ap, db)
     ap.base_price = base
     ap.status = PlayerAuctionStatus.active
@@ -733,9 +736,12 @@ async def set_next_player(
         actor_user_id=actor.id if actor else None,
         auction_player_id=ap.id, amount=base,
     )
+    commit_started = time.perf_counter()
     await db.commit()
     await db.refresh(ap)
+    commit_ms = (time.perf_counter() - commit_started) * 1000
 
+    redis_started = time.perf_counter()
     redis = await get_redis()
     await redis.set(_active_key(event_id), ap.id)
 
@@ -744,10 +750,18 @@ async def set_next_player(
         timing = Timing.for_event(event)
         deadline = _now() + timing.base_seconds
         await redis.set(_deadline_key(event_id), deadline)
-        await _schedule_hammer(event_id, ap.id, deadline)
+        # Timer queue availability must never delay the player announcement.
+        # Redis holds the authoritative deadline and the worker watchdog is the
+        # fallback if this deferred job cannot be queued.
+        asyncio.create_task(
+            _schedule_hammer(event_id, ap.id, deadline),
+            name=f"schedule-hammer:{event_id}:{ap.id}",
+        )
     else:
         await redis.delete(_deadline_key(event_id))
+    redis_ms = (time.perf_counter() - redis_started) * 1000
 
+    broadcast_started = time.perf_counter()
     await manager.broadcast(
         event_id,
         {
@@ -756,6 +770,11 @@ async def set_next_player(
             "auction_player_id": ap.id,
             "player_id": ap.player_id,
             "player_name": ap.player.name if ap.player else None,
+            "profile_photo": ap.player.profile_photo if ap.player else None,
+            "batting_rating": ap.player.batting_rating if ap.player else None,
+            "bowling_rating": ap.player.bowling_rating if ap.player else None,
+            "fielding_rating": ap.player.fielding_rating if ap.player else None,
+            "age": ap.player.age if ap.player else None,
             "base_price": ap.base_price,
             "current_bid": ap.current_bid,
             "version": ap.version,
@@ -763,6 +782,14 @@ async def set_next_player(
             "deadline_epoch": deadline,
             "server_time": _now(),
         },
+    )
+    broadcast_ms = (time.perf_counter() - broadcast_started) * 1000
+    total_ms = (time.perf_counter() - request_started) * 1000
+    logger.info(
+        "player_up dispatch event_id=%s auction_player_id=%s "
+        "selection_ms=%.1f commit_ms=%.1f redis_ms=%.1f "
+        "broadcast_ms=%.1f total_ms=%.1f",
+        event_id, ap.id, selection_ms, commit_ms, redis_ms, broadcast_ms, total_ms,
     )
     return ap
 
@@ -1002,7 +1029,10 @@ async def place_bid(
 
     if new_deadline is not None:
         await redis.set(_deadline_key(event_id), new_deadline)
-        await _schedule_hammer(event_id, ap.id, new_deadline)
+        asyncio.create_task(
+            _schedule_hammer(event_id, ap.id, new_deadline),
+            name=f"reschedule-hammer:{event_id}:{ap.id}",
+        )
 
     await manager.broadcast(
         event_id,
@@ -1312,7 +1342,8 @@ async def correct_current_bid(
 
 
 async def _schedule_hammer(event_id: int, auction_player_id: int, deadline: float) -> None:
-    """Queue the auto-hammer as a deferred job."""
+    """Queue the auto-hammer as a deferred job without blocking API responses."""
+    started = time.perf_counter()
     try:
         await asyncio.wait_for(
             enqueue_at(
@@ -1330,6 +1361,11 @@ async def _schedule_hammer(event_id: int, auction_player_id: int, deadline: floa
             event_id,
             auction_player_id,
             exc,
+        )
+    finally:
+        logger.info(
+            "hammer_schedule event_id=%s auction_player_id=%s duration_ms=%.1f",
+            event_id, auction_player_id, (time.perf_counter() - started) * 1000,
         )
 
 
