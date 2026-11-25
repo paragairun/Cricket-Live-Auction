@@ -714,8 +714,9 @@ async def set_next_player(
             raise AuctionError("Player is not registered in this event")
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
-        if event.exclude_captains_from_auction and ap.player_id in await _captain_player_ids(db, event_id):
-            raise AuctionError("Assigned team captains are excluded from the auction")
+
+    if event.exclude_captains_from_auction and ap.player_id in await _captain_player_ids(db, event_id):
+        raise AuctionError("Assigned team captains are excluded from the auction")
 
     base = await _effective_base_price(ap, db)
     ap.base_price = base
