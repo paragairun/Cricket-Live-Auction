@@ -1609,17 +1609,21 @@ export default function AuctioneerPage() {
                       );
                     };
                     return (
-                      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+                      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        <div className="mb-2 shrink-0 pr-10 text-xs text-slate-300">
                           <strong className="text-lg text-white">{team.name} Squad</strong>
-                          <span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span>
                         </div>
-                        {captainId || roster.length > 0 ? (
-                          <div className="grid grid-cols-2 justify-items-center content-start gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                            {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
-                            {players.map((p) => renderCard(p.player_id, p.sold_price))}
-                          </div>
-                        ) : <p className="py-12 text-center text-sm text-slate-500">No captain or players assigned yet.</p>}
+                        <div className="min-h-0 flex-1 overflow-hidden">
+                          {captainId || roster.length > 0 ? (
+                            <div className="grid grid-cols-2 justify-items-center content-start gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                              {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
+                              {players.map((p) => renderCard(p.player_id, p.sold_price))}
+                            </div>
+                          ) : <p className="py-12 text-center text-sm text-slate-500">No captain or players assigned yet.</p>}
+                        </div>
+                        <div className="mt-2 shrink-0 border-t border-slate-700 pt-2 text-right text-xs font-semibold text-slate-300 tabular-nums">
+                          {team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}
+                        </div>
                       </div>
                     );
                   })()}
