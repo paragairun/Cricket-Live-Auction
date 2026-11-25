@@ -653,3 +653,52 @@ async def test_manual_progression_waits_for_auctioneer_next_player(
         await auction_service.set_next_player(event.id, second_ap.id, session)
         await session.refresh(second)
         assert second.status == PlayerAuctionStatus.active
+
+
+async def test_next_player_command_is_idempotent(
+    make_event, register_player
+):
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Idempotent first")
+    _second, second_ap = await register_player(event, name="Idempotent second")
+    async with AsyncSessionLocal() as session:
+        first = await auction_service.set_next_player(
+            event.id, first_ap.id, session, idempotency_key="same-next-command"
+        )
+    async with AsyncSessionLocal() as session:
+        retry = await auction_service.set_next_player(
+            event.id, second_ap.id, session, idempotency_key="same-next-command"
+        )
+    assert retry.id == first.id
+    async with AsyncSessionLocal() as session:
+        first_row = await session.get(AuctionPlayer, first_ap.id)
+        second_row = await session.get(AuctionPlayer, second_ap.id)
+        assert first_row.status == PlayerAuctionStatus.active
+        assert second_row.status == PlayerAuctionStatus.pending
+
+
+async def test_retried_hammer_cannot_hammer_the_next_player(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Hammer first")
+    _second, second_ap = await register_player(event, name="Hammer second")
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        await auction_service.hammer_player(
+            event.id, first_ap.id, session, idempotency_key="same-hammer-command"
+        )
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.advance_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        retry = await auction_service.hammer_player(
+            event.id, second_ap.id, session, idempotency_key="same-hammer-command"
+        )
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert retry.id == first_ap.id
+        assert second.status == PlayerAuctionStatus.active
