@@ -360,11 +360,7 @@ async def re_auction_all_unsold(
         )
     )
     pending = pending_result.scalars().all()
-    captain_ids = (
-        await auction_service._captain_player_ids(db, event_id)
-        if ctx.event.exclude_captains_from_auction
-        else set()
-    )
+    captain_ids = await auction_service._captain_player_ids(db, event_id)
     if any(player.player_id not in captain_ids for player in pending):
         raise HTTPException(status_code=409, detail="Auction all eligible players before re-auctioning unsold players")
 
