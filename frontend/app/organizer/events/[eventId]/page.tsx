@@ -1459,7 +1459,15 @@ export default function OrganizerEventDetailPage() {
       };
       const { data } = await api.patch(`/organizer/events/${eid}/settings`, payload);
       setEvent(data);
-      await fetchAll();
+      // Keep the saved checkbox state in the form. A full refetch here can
+      // overwrite it with a stale event response and make the tick disappear.
+      setSettingsForm((current) => ({
+        ...current,
+        auto_reauction_unsold:
+          typeof data.auto_reauction_unsold === "boolean"
+            ? data.auto_reauction_unsold
+            : payload.auto_reauction_unsold,
+      }));
       showToast("ok", "Settings saved successfully");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
