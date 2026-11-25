@@ -353,6 +353,21 @@ async def re_auction_all_unsold(
             status_code=400, detail="Cannot re-auction while a player is on the block"
         )
 
+    pending_result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.pending,
+        )
+    )
+    pending = pending_result.scalars().all()
+    captain_ids = (
+        await auction_service._captain_player_ids(db, event_id)
+        if ctx.event.exclude_captains_from_auction
+        else set()
+    )
+    if any(player.player_id not in captain_ids for player in pending):
+        raise HTTPException(status_code=409, detail="Auction all eligible players before re-auctioning unsold players")
+
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -360,10 +375,13 @@ async def re_auction_all_unsold(
         )
     )
     unsold = result.scalars().all()
+    if not unsold:
+        raise HTTPException(status_code=400, detail="There are no unsold players to re-auction")
     for ap in unsold:
         ap.status = PlayerAuctionStatus.pending
         ap.version += 1
         ap.extension_count = 0
+    ctx.event.unsold_reauction_started = True
     await db.commit()
 
     state = await auction_service.get_auction_state(event_id, db)

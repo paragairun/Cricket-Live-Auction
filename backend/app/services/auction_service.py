@@ -310,6 +310,8 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
             "auction_mode": event.auction_mode,
             "rtm_enabled": event.rtm_enabled,
             "rtm_cards_per_team": event.rtm_cards_per_team,
+            "exclude_captains_from_auction": event.exclude_captains_from_auction,
+            "auto_reauction_unsold": event.auto_reauction_unsold,
         },
         "rtm": await get_rtm_state(event_id, db),
         "nominations": (
@@ -535,10 +537,12 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     await db.commit()
     await db.refresh(event)
 
-    state = await get_auction_state(event_id, db)
+    # The WebSocket already delivered the full snapshot on connect. Sending
+    # it again on START duplicates every player and squad; the next player is
+    # broadcast separately by set_next_player below.
     await manager.broadcast(
         event_id,
-        {**state, "type": "auction_started" if was_first_start else "auction_resumed"},
+        {"type": "auction_started" if was_first_start else "auction_resumed", "event_id": event_id},
     )
 
     if was_first_start:
@@ -565,23 +569,25 @@ async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -
     if not recipient_ids:
         return
     users = await db.execute(select(User).where(User.id.in_(recipient_ids)))
-    for user in users.scalars().all():
+
+    async def notify(user: User) -> None:
         role = (
-            "auctioneer"
-            if user.id == event.auctioneer_id
-            else "organizer"
-            if user.id == event.organizer_id
+            "auctioneer" if user.id == event.auctioneer_id
+            else "organizer" if user.id == event.organizer_id
             else "admin"
         )
         try:
             await asyncio.wait_for(
-                enqueue(
-                    "task_send_auction_starting", user.email, user.name, event.name, event.id, role
-                ),
+                enqueue("task_send_auction_starting", user.email, user.name, event.name, event.id, role),
                 timeout=1.5,
             )
         except Exception as exc:
             logger.warning("Skipping/slow start email enqueue for %s: %s", user.email, exc)
+
+    # Queue notifications in the background so mail/Redis latency cannot
+    # delay the auctioneer's START response.
+    for user in users.scalars().all():
+        asyncio.create_task(notify(user))
 
 
 async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
@@ -711,6 +717,9 @@ async def set_next_player(
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
 
+    if event.exclude_captains_from_auction and ap.player_id in await _captain_player_ids(db, event_id):
+        raise AuctionError("Assigned team captains are excluded from the auction")
+
     base = await _effective_base_price(ap, db)
     ap.base_price = base
     ap.status = PlayerAuctionStatus.active
@@ -760,7 +769,8 @@ async def set_next_player(
 
 async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer:
     """Categories flagged `auction_first` come up first, in sort order."""
-    captain_ids = await _captain_player_ids(db, event_id)
+    event = await _get_event(db, event_id)
+    captain_ids = await _captain_player_ids(db, event_id) if event.exclude_captains_from_auction else set()
 
     categories_result = await db.execute(
         select(PlayerCategory).where(PlayerCategory.event_id == event_id)
@@ -788,6 +798,21 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
         )
     )
     pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
+    if not pending and event.auto_reauction_unsold and not event.unsold_reauction_started:
+        unsold_result = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.status == PlayerAuctionStatus.unsold,
+            )
+        )
+        unsold = unsold_result.scalars().all()
+        if unsold:
+            for player in unsold:
+                player.status = PlayerAuctionStatus.pending
+                player.version += 1
+            event.unsold_reauction_started = True
+            await db.commit()
+            pending = [p for p in unsold if p.player_id not in captain_ids]
     if not pending:
         raise AuctionError("No pending players left")
     return random.choice(pending)
@@ -1365,6 +1390,7 @@ async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -
 
 async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> None:
     event = await _get_event(db, event_id)
+    event.unsold_reauction_started = False
 
     players_result = await db.execute(
         select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)

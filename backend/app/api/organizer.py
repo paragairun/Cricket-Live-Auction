@@ -165,6 +165,8 @@ class EventSettingsUpdatePayload(BaseModel):
     auction_mode: AuctionMode | None = None
     rtm_enabled: bool | None = None
     rtm_cards_per_team: int | None = Field(default=None, ge=0, le=20)
+    exclude_captains_from_auction: bool | None = None
+    auto_reauction_unsold: bool | None = None
 
 
 # ── Users (for assigning an auctioneer) ───────────────────────────────────────

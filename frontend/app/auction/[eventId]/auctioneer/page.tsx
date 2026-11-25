@@ -54,10 +54,11 @@ export default function AuctioneerPage() {
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<
-    "none" | "sold" | "unsold" | "available" | "teams"
+    "none" | "sold" | "unsold" | "available" | "teams" | "squads"
   >("none");
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<number | "all">("all");
   const [inspectTeamId, setInspectTeamId] = useState<number | null>(null);
+  const [selectedSquadTeamId, setSelectedSquadTeamId] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState(false);
   const [noBidCount, setNoBidCount] = useState(0);
 
@@ -279,6 +280,13 @@ export default function AuctioneerPage() {
               msg.sold_price
             );
             setSelectedTeamId(null);
+            void api.get(`/auction/events/${eid}/teams`).then(({ data }) => {
+              const rosters: Record<number, { player_id: number; sold_price: number }[]> = {};
+              data.forEach((team: { id: number; players?: { player_id: number; sold_price: number }[] }) => {
+                rosters[team.id] = team.players || [];
+              });
+              setTeamRosters(rosters);
+            }).catch(() => {});
             scheduleAutoAdvance("sold");
             break;
 
@@ -354,12 +362,13 @@ export default function AuctioneerPage() {
     [store.teams]
   );
 
+  const excludeCaptains = store.rules?.exclude_captains_from_auction ?? true;
   const pendingPlayers = useMemo(
     () =>
       store.players.filter(
-        (p) => p.status === "pending" && !captainIds.has(p.player_id)
+        (p) => p.status === "pending" && (!excludeCaptains || !captainIds.has(p.player_id))
       ),
-    [store.players, captainIds]
+    [store.players, captainIds, excludeCaptains]
   );
   const soldPlayers = useMemo(
     () => store.players.filter((p) => p.status === "sold"),
@@ -456,8 +465,9 @@ export default function AuctioneerPage() {
     setActionError(null);
     try {
       await api.post(`/auction/events/${eid}/start`);
+      // The connected WebSocket already owns the current snapshot and receives
+      // player_up / auction_started events. Avoid a duplicate full roster fetch.
       setStatus("active");
-      void syncState().catch(() => {});
     } catch (e: unknown) {
       setActionError(describeError(e).message || "Failed to start auction");
     } finally {
@@ -1195,17 +1205,19 @@ export default function AuctioneerPage() {
                   <span>Auto-advance</span>
                 </label>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    setActiveDrawerTab(
-                      activeDrawerTab === "available" ? "none" : "available"
-                    )
-                  }
-                  className="text-[11px] text-white underline hover:text-amber-200 font-medium"
-                >
-                  pick manually
-                </button>
+                <div className="flex items-center gap-3">
+                  {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && !store.rules?.auto_reauction_unsold && (
+                    <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-40">re-auction unsold</button>
+                  )}
+                  <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">view squads</button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")}
+                    className="text-[11px] text-white underline hover:text-amber-200 font-medium"
+                  >
+                    pick manually
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1371,8 +1383,8 @@ export default function AuctioneerPage() {
                   `Unsold Players (${unsoldPlayers.length})`}
                 {activeDrawerTab === "available" &&
                   `Available Players (${filteredPending.length})`}
-                {activeDrawerTab === "teams" &&
-                  `Teams Summary (${store.teams.length})`}
+                {activeDrawerTab === "teams" && `Teams Summary (${store.teams.length})`}
+                {activeDrawerTab === "squads" && `Team Squads (${store.teams.length})`}
               </h3>
               <div className="flex items-center gap-2">
                 {activeDrawerTab === "unsold" &&
@@ -1544,6 +1556,28 @@ export default function AuctioneerPage() {
                     );
                   })
                 ))}
+
+              {activeDrawerTab === "squads" && (
+                <div className="space-y-3">
+                  <div className="flex gap-1.5 overflow-x-auto border-b border-slate-700 pb-2">
+                    {store.teams.map((team) => (
+                      <button key={team.id} onClick={() => setSelectedSquadTeamId(team.id)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${selectedSquadTeamId === team.id ? "bg-amber-400 text-slate-950" : "bg-slate-800 text-slate-300"}`}>
+                        {team.name}
+                      </button>
+                    ))}
+                  </div>
+                  {(() => {
+                    const team = store.teams.find((item) => item.id === selectedSquadTeamId) || store.teams[0];
+                    if (!team) return <p className="text-center text-slate-500 py-8">No teams configured.</p>;
+                    const roster = teamRosters[team.id] || [];
+                    return <div className="space-y-2">
+                      <div className="flex justify-between text-xs text-slate-300"><strong>{team.name}</strong><span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span></div>
+                      {team.captain_id && <div className="rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">Captain · {team.captain_name || playerDetails[team.captain_id]?.name || `Player #${team.captain_id}`}</div>}
+                      {roster.length === 0 ? <p className="text-center text-slate-500 py-6 text-xs">No players bought yet.</p> : roster.map((player) => <div key={player.player_id} className="flex justify-between rounded-lg bg-slate-800 px-3 py-2 text-xs"><span className="text-white font-semibold">{playerDetails[player.player_id]?.name || `Player #${player.player_id}`}</span><strong className="text-amber-300">₹{formatMoney(player.sold_price)}</strong></div>)}
+                    </div>;
+                  })()}
+                </div>
+              )}
 
               {activeDrawerTab === "teams" &&
                 store.teams.map((t) => (

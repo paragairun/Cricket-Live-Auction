@@ -72,6 +72,8 @@ export interface AuctionRules {
   auction_mode?: "random" | "nomination";
   rtm_enabled?: boolean;
   rtm_cards_per_team?: number;
+  exclude_captains_from_auction?: boolean;
+  auto_reauction_unsold?: boolean;
 }
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
