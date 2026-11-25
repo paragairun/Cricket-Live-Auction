@@ -1370,49 +1370,60 @@ export default function AuctioneerPage() {
       {/* ── DRAWER FOR SOLD / UNSOLD / AVAILABLE / TEAMS ── */}
       {activeDrawerTab !== "none" && (
         <div className="fixed inset-0 z-40 bg-black/75 flex items-end sm:items-center justify-center p-4">
-          <div className={`bg-slate-900 border border-slate-700 rounded-2xl w-full ${activeDrawerTab === "squads" ? "max-w-[96vw] h-[94vh] max-h-[1100px]" : "max-w-2xl max-h-[80vh]"} flex flex-col overflow-hidden shadow-2xl`}>
-            <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-              <h3 className={`font-extrabold text-base uppercase tracking-wide text-amber-300 ${activeDrawerTab === "squads" ? "sr-only" : ""}`}>
-                {activeDrawerTab === "sold" &&
-                  `Sold Players (${soldPlayers.length})`}
-                {activeDrawerTab === "unsold" &&
-                  `Unsold Players (${unsoldPlayers.length})`}
-                {activeDrawerTab === "available" &&
-                  `Available Players (${filteredPending.length})`}
-                {activeDrawerTab === "teams" && `Teams Summary (${store.teams.length})`}
-              </h3>
-              <div className="flex items-center gap-2">
-                {activeDrawerTab === "unsold" &&
-                  unsoldPlayers.length > 0 &&
-                  pendingPlayers.length === 0 &&
-                  status === "active" && (
-                    <button
-                      onClick={reAuctionAllUnsold}
-                      disabled={busyAction}
-                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-2.5 py-1 rounded"
-                    >
-                      Re-Auction All Unsold
-                    </button>
-                  )}
-                {activeDrawerTab === "available" &&
-                  pendingPlayers.length === 0 &&
-                  !displayActiveAP &&
-                  status !== "completed" && (
-                    <button
-                      onClick={finishAuction}
-                      className="bg-red-500 hover:bg-red-400 text-white text-xs font-bold px-2.5 py-1 rounded"
-                    >
-                      Finish Auction
-                    </button>
-                  )}
-                <button
-                  onClick={() => setActiveDrawerTab("none")}
-                  className="text-slate-400 hover:text-white text-lg font-bold px-2"
-                >
-                  ✕
-                </button>
+          <div className={`relative bg-slate-900 border border-slate-700 rounded-2xl w-full ${activeDrawerTab === "squads" ? "max-w-[96vw] h-[94vh] max-h-[1100px]" : "max-w-2xl max-h-[80vh]"} flex flex-col overflow-hidden shadow-2xl`}>
+            {activeDrawerTab === "squads" ? (
+              <button
+                onClick={() => setActiveDrawerTab("none")}
+                aria-label="Close View Squads"
+                className="absolute right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/80 text-slate-300 text-lg font-bold shadow-lg ring-1 ring-white/15 hover:bg-slate-800 hover:text-white"
+              >
+                ✕
+              </button>
+            ) : (
+              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                <h3 className="font-extrabold text-base uppercase tracking-wide text-amber-300">
+                  {activeDrawerTab === "sold" &&
+                    `Sold Players (${soldPlayers.length})`}
+                  {activeDrawerTab === "unsold" &&
+                    `Unsold Players (${unsoldPlayers.length})`}
+                  {activeDrawerTab === "available" &&
+                    `Available Players (${filteredPending.length})`}
+                  {activeDrawerTab === "teams" && `Teams Summary (${store.teams.length})`}
+                </h3>
+                <div className="flex items-center gap-2">
+                  {activeDrawerTab === "unsold" &&
+                    unsoldPlayers.length > 0 &&
+                    pendingPlayers.length === 0 &&
+                    status === "active" && (
+                      <button
+                        onClick={reAuctionAllUnsold}
+                        disabled={busyAction}
+                        className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-2.5 py-1 rounded"
+                      >
+                        Re-Auction All Unsold
+                      </button>
+                    )}
+                  {activeDrawerTab === "available" &&
+                    pendingPlayers.length === 0 &&
+                    !displayActiveAP &&
+                    status !== "completed" && (
+                      <button
+                        onClick={finishAuction}
+                        className="bg-red-500 hover:bg-red-400 text-white text-xs font-bold px-2.5 py-1 rounded"
+                      >
+                        Finish Auction
+                      </button>
+                    )}
+                  <button
+                    onClick={() => setActiveDrawerTab("none")}
+                    aria-label="Close"
+                    className="text-slate-400 hover:text-white text-lg font-bold px-2"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {activeDrawerTab === "available" && store.categories.length > 0 && (
               <div className="px-4 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5">
