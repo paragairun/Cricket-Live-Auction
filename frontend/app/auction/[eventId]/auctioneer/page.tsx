@@ -9,7 +9,6 @@ import {
   PlayerCategory,
 } from "@/store/auction";
 import { AuctionSocket } from "@/lib/ws";
-import { shouldAutoAdvance, shouldUseDirectAdvanceFallback, autoAdvanceDelayMs } from "@/lib/autoAdvance";
 import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 
@@ -60,8 +59,6 @@ export default function AuctioneerPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [rtmRaiseAmount, setRtmRaiseAmount] = useState("");
   const [autoAdvance, setAutoAdvance] = useState(true);
-  const autoAdvanceRef = useRef(true);
-  const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advancingRef = useRef(false);
   const [justSoldPlayerId, setJustSoldPlayerId] = useState<number | null>(null);
   const [showEditBidModal, setShowEditBidModal] = useState(false);
@@ -84,6 +81,7 @@ export default function AuctioneerPage() {
     useAuctionStore.getState().setFullState(data);
 
     setStatus(data.status);
+    setAutoAdvance(Boolean(data.auto_advance ?? true));
     if (teamRes.data) {
       const map: Record<number, { player_id: number; sold_price: number }[]> = {};
       teamRes.data.forEach(
@@ -123,42 +121,17 @@ export default function AuctioneerPage() {
     [eid, syncState]
   );
 
-  const scheduleAutoAdvance = useCallback(
-    (trigger: "sold" | "unsold" | "start") => {
-      if (!autoAdvanceRef.current) return;
-      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
-      const baseDelay = autoAdvanceDelayMs(trigger);
-      const delay =
-        trigger === "start" ? Math.min(baseDelay, 500) : Math.min(baseDelay, 100);
-      advanceTimerRef.current = setTimeout(() => {
-        advanceTimerRef.current = null;
-        const fresh = useAuctionStore.getState();
-        if (
-          !shouldAutoAdvance({
-            enabled: autoAdvanceRef.current,
-            status: fresh.status,
-            activePlayerId: fresh.activePlayerId,
-            rtm: fresh.rtm,
-          })
-        ) {
-          return;
-        }
-        void handleRandomNext({ silent: true });
-      }, delay);
-    },
-    [handleRandomNext]
-  );
+  const handleToggleAutoAdvance = async (enabled: boolean) => {
+    const previous = autoAdvance;
+    setAutoAdvance(enabled);
+    try {
+      await api.patch(`/auction/events/${eid}/auto-advance`, { auto_advance: enabled });
+    } catch (error) {
+      setAutoAdvance(previous);
+      setActionError(describeError(error).message || "Could not update progression mode");
+    }
+  };
 
-  useEffect(() => {
-    autoAdvanceRef.current = autoAdvance;
-  }, [autoAdvance]);
-
-  useEffect(
-    () => () => {
-      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
-    },
-    []
-  );
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -322,14 +295,12 @@ export default function AuctioneerPage() {
               });
               setTeamRosters(rosters);
             }).catch(() => {});
-            scheduleAutoAdvance("sold");
             break;
 
           case "player_unsold":
             setJustSoldPlayerId(null);
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
-            scheduleAutoAdvance("unsold");
             break;
 
           case "player_pulled":
@@ -367,7 +338,7 @@ export default function AuctioneerPage() {
 
     return () => ws.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eid, hasAccess, scheduleAutoAdvance]);
+  }, [eid, hasAccess]);
 
   useEffect(() => {
     const fetchPlayersInfo = async () => {
@@ -696,14 +667,6 @@ export default function AuctioneerPage() {
       setJustSoldPlayerId(null);
       useAuctionStore.getState().markPlayerUnsold(displayActiveAP.id);
       setNoBidCount((n) => n + 1);
-      if (
-        shouldUseDirectAdvanceFallback({
-          enabled: autoAdvanceRef.current,
-          connection: useAuctionStore.getState().connection,
-        })
-      ) {
-        await handleRandomNext({ silent: true });
-      }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error marking no bid");
     } finally {
@@ -724,14 +687,6 @@ export default function AuctioneerPage() {
         useAuctionStore
           .getState()
           .markPlayerSold(displayActiveAP.id, soldTeamId, soldPrice);
-      }
-      if (
-        shouldUseDirectAdvanceFallback({
-          enabled: autoAdvanceRef.current,
-          connection: useAuctionStore.getState().connection,
-        })
-      ) {
-        await handleRandomNext({ silent: true });
       }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error submitting");
@@ -1239,7 +1194,7 @@ export default function AuctioneerPage() {
                   <input
                     type="checkbox"
                     checked={autoAdvance}
-                    onChange={(e) => setAutoAdvance(e.target.checked)}
+                    onChange={(e) => void handleToggleAutoAdvance(e.target.checked)}
                     className="accent-amber-300 w-3 h-3"
                   />
                   <span>Auto-advance</span>
