@@ -15,11 +15,11 @@ class AuctionCommand(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id"), nullable=False)
+    event_id: Mapped[int] = mapped_column(ForeignKey("auction_events.id", ondelete="CASCADE"), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(40), nullable=False)
     result_auction_player_id: Mapped[int | None] = mapped_column(
-        ForeignKey("auction_players.id"), nullable=True
+        ForeignKey("auction_players.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
