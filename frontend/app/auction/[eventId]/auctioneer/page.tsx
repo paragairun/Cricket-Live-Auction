@@ -278,18 +278,24 @@ export default function AuctioneerPage() {
           case "player_up":
             setJustSoldPlayerId(null);
             if (msg.player_id) {
-              setPlayerDetails((prev) => ({
-                ...prev,
-                [msg.player_id]: {
-                  player_id: msg.player_id,
-                  name: msg.player_name || `Player #${msg.player_id}`,
-                  profile_photo: msg.profile_photo ?? undefined,
-                  batting_rating: msg.batting_rating ?? undefined,
-                  bowling_rating: msg.bowling_rating ?? undefined,
-                  fielding_rating: msg.fielding_rating ?? undefined,
-                  age: msg.age ?? undefined,
-                },
-              }));
+              setPlayerDetails((prev) => {
+                const existing = prev[msg.player_id];
+                return {
+                  ...prev,
+                  [msg.player_id]: {
+                    ...existing,
+                    player_id: msg.player_id,
+                    name: msg.player_name || existing?.name || `Player #${msg.player_id}`,
+                    // The player_up socket payload may omit profile data. Preserve
+                    // the richer players-info response instead of erasing its photo.
+                    profile_photo: msg.profile_photo ?? existing?.profile_photo,
+                    batting_rating: msg.batting_rating ?? existing?.batting_rating,
+                    bowling_rating: msg.bowling_rating ?? existing?.bowling_rating,
+                    fielding_rating: msg.fielding_rating ?? existing?.fielding_rating,
+                    age: msg.age ?? existing?.age,
+                  },
+                };
+              });
             }
             useAuctionStore.getState().setActivePlayer(
               msg.auction_player_id,
@@ -1144,7 +1150,7 @@ export default function AuctioneerPage() {
                 </div>
               </div>
             ) : (
-              <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto">
+              <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto lg:mx-0">
                 <p className="text-lg font-black uppercase tracking-wide text-amber-300">
                   {status === "active"
                     ? "NO PLAYER ON THE BLOCK"
