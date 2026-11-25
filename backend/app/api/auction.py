@@ -316,13 +316,13 @@ async def hammer(
     ctx: EventContext = OperatorCtx,
     db: AsyncSession = Depends(get_db),
 ):
-    redis_key = payload.idempotency_key if payload else None
+    idempotency_key = payload.idempotency_key if payload else None
     active = await auction_service._load_active_player(db, event_id)
     if not active:
         raise HTTPException(status_code=400, detail="No player is on the block")
     try:
         ap = await auction_service.hammer_player(
-            event_id, active.id, db, actor=ctx.user, idempotency_key=redis_key
+            event_id, active.id, db, actor=ctx.user, idempotency_key=idempotency_key
         )
     except AuctionError as exc:
         raise _handle(exc)
