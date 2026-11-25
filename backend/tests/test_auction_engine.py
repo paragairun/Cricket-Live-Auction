@@ -593,3 +593,63 @@ async def test_pause_resume_preserves_remaining_timer(
         assert stored_event.deadline_at is not None
         assert stored_event.paused_remaining_seconds is None
         assert stored_event.deadline_at >= original_deadline - dt.timedelta(seconds=30)
+
+
+async def test_automatic_progression_is_driven_by_local_server_timer(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="First lot", base_price=5000)
+    _second, second_ap = await register_player(event, name="Second lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.advance_at is not None
+        stored_event.advance_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        first = await session.get(AuctionPlayer, first_ap.id)
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert first.status == PlayerAuctionStatus.unsold
+        assert second.status == PlayerAuctionStatus.active
+
+
+async def test_manual_progression_waits_for_auctioneer_next_player(
+    make_event, register_player
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _first, first_ap = await register_player(event, name="Manual first", base_price=5000)
+    _second, second_ap = await register_player(event, name="Manual second", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.auto_advance = False
+        await session.commit()
+        await auction_service.set_next_player(event.id, first_ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        second = await session.get(AuctionPlayer, second_ap.id)
+        assert stored_event.advance_at is None
+        assert second.status == PlayerAuctionStatus.pending
+        await auction_service.set_next_player(event.id, second_ap.id, session)
+        await session.refresh(second)
+        assert second.status == PlayerAuctionStatus.active
