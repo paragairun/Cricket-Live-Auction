@@ -458,8 +458,9 @@ export default function AuctioneerPage() {
     setActionError(null);
     try {
       await api.post(`/auction/events/${eid}/start`);
+      // The connected WebSocket already owns the current snapshot and receives
+      // player_up / auction_started events. Avoid a duplicate full roster fetch.
       setStatus("active");
-      void syncState().catch(() => {});
     } catch (e: unknown) {
       setActionError(describeError(e).message || "Failed to start auction");
     } finally {
