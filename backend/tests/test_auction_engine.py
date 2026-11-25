@@ -508,6 +508,9 @@ async def test_auto_unsold_round_requeues_unsold_players_once(
 
     async with AsyncSessionLocal() as session:
         picked = await auction_service._pick_random_pending(session, event.id)
+        # Selection and the re-auction flag are committed by the caller as one
+        # transaction, so persist this direct service-level test setup too.
+        await session.commit()
         stored_event = await session.get(type(event), event.id)
         assert picked.id == unsold_ap.id
         assert picked.status == PlayerAuctionStatus.pending
