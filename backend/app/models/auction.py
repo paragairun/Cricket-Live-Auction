@@ -216,6 +216,12 @@ class AuctionEvent(Base):
     # Cards per team. 0 means unlimited while rtm_enabled is true.
     rtm_cards_per_team: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # Keep assigned captains out of the auction pool by default. Automatic
+    # unsold re-auction is a single second pass, never an endless loop.
+    exclude_captains_from_auction: Mapped[bool] = mapped_column(default=True, nullable=False)
+    auto_reauction_unsold: Mapped[bool] = mapped_column(default=False, nullable=False)
+    unsold_reauction_started: Mapped[bool] = mapped_column(default=False, nullable=False)
+
     total_viewers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     logo: Mapped[str | None] = mapped_column(String(500), nullable=True)
     background_image: Mapped[str | None] = mapped_column(String(500), nullable=True)
