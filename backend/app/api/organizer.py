@@ -19,6 +19,7 @@ import csv
 import io
 import logging
 import secrets
+from datetime import datetime, timedelta, timezone
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -37,8 +38,7 @@ from app.core.deps import (
     require_event_access,
     require_role,
 )
-from app.core.queue import enqueue
-from app.core.redis import get_redis
+from app.core.background import dispatch_email
 from app.models.auction import (
     AuctionEvent,
     AuctionMode,
@@ -53,6 +53,7 @@ from app.models.auction import (
     TeamPlayer,
 )
 from app.models.user import ROLE_ADMIN, ROLE_AUCTIONEER, ROLE_ORGANIZER, User
+from app.models.auth_token import AuthToken
 from app.schemas.auction import (
     AuctionEventOut,
     AuctionPlayerOut,
@@ -946,20 +947,24 @@ async def invite_auctioneer(
         user.add_role(ROLE_AUCTIONEER)
         ctx.event.auctioneer_id = user.id
         await db.commit()
-        await enqueue(
+        await dispatch_email(
             "task_send_event_invitation",
             user.email, user.name, ctx.event.name, event_id, "auctioneer",
         )
         return {"detail": "Auctioneer assigned", "user_id": user.id}
 
     token = secrets.token_urlsafe(32)
-    redis = await get_redis()
-    await redis.set(
-        f"invite:{token}",
-        f"{payload.email}|{event_id}|auctioneer",
-        ex=INVITE_TTL_SECONDS,
-    )
-    await enqueue("task_send_organizer_invite", payload.email, ctx.event.name, token, "auctioneer")
+    db.add(AuthToken(
+        token=token,
+        purpose="invite",
+        email=payload.email,
+        event_id=event_id,
+        event_name=ctx.event.name,
+        role="auctioneer",
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=INVITE_TTL_SECONDS),
+    ))
+    await db.commit()
+    await dispatch_email("task_send_organizer_invite", payload.email, ctx.event.name, token, "auctioneer")
     return {"detail": "Invitation sent", "pending": True}
 
 
