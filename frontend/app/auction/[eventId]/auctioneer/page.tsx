@@ -871,7 +871,7 @@ export default function AuctioneerPage() {
                   type="button"
                   onClick={handleResetMock}
                   disabled={busyAction}
-                  className="flex flex-col items-center text-white hover:text-amber-300 disabled:opacity-40 transition"
+                  className="flex flex-col items-center text-white hover:text-amber-300 disabled:opacity-100 transition"
                 >
                   <span className="text-[10px] font-bold uppercase tracking-wider">
                     RESTART
@@ -1157,7 +1157,7 @@ export default function AuctioneerPage() {
                 type="button"
                 onClick={handleBidUp}
                 disabled={!canAdjustPrice}
-                className="bg-black/90 hover:bg-black disabled:opacity-45 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
+                className="bg-black/90 hover:bg-black disabled:opacity-100 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
               >
                 <span className="text-sm font-black uppercase tracking-wide text-white leading-tight">
                   ↑ UP
@@ -1171,7 +1171,7 @@ export default function AuctioneerPage() {
                 type="button"
                 onClick={handleBidDown}
                 disabled={!canAdjustPrice}
-                className="bg-black/90 hover:bg-black disabled:opacity-45 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
+                className="bg-black/90 hover:bg-black disabled:opacity-100 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
               >
                 <span className="text-sm font-black uppercase tracking-wide text-white leading-tight">
                   ↓ DOWN
@@ -1185,7 +1185,7 @@ export default function AuctioneerPage() {
                 type="button"
                 onClick={() => handleNoBid()}
                 disabled={status !== "active" || !displayActiveAP || busyAction}
-                className="bg-black/90 hover:bg-black disabled:opacity-45 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
+                className="bg-black/90 hover:bg-black disabled:opacity-100 border border-white/25 px-2 py-1.5 text-center transition flex flex-col items-center justify-center"
               >
                 <span className="text-sm font-black uppercase tracking-wide text-white leading-tight">
                   ⊘ NO BID
@@ -1204,7 +1204,7 @@ export default function AuctioneerPage() {
                   !displayActiveAP.current_bid_team_id ||
                   busyAction
                 }
-                className="w-full bg-[#e61208] hover:bg-[#ff190d] disabled:opacity-45 text-white font-black uppercase tracking-wider text-xs sm:text-sm py-2 shadow-lg transition"
+                className="w-full bg-[#e61208] hover:bg-[#ff190d] disabled:opacity-100 text-white font-black uppercase tracking-wider text-xs sm:text-sm py-2 shadow-lg transition"
               >
                 SUBMIT
               </button>
@@ -1222,7 +1222,7 @@ export default function AuctioneerPage() {
 
                 <div className="flex items-center gap-3">
                   {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && !store.rules?.auto_reauction_unsold && (
-                    <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-40">re-auction unsold</button>
+                    <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-100">re-auction unsold</button>
                   )}
                   <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">view squads</button>
                   <button
@@ -1496,7 +1496,7 @@ export default function AuctioneerPage() {
                         <button
                           onClick={() => handlePickPlayer(p.id)}
                           disabled={status !== "active" || busyAction}
-                          className="bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 font-extrabold text-xs px-3 py-1.5 rounded-lg"
+                          className="bg-amber-400 hover:bg-amber-300 disabled:opacity-100 text-slate-950 font-extrabold text-xs px-3 py-1.5 rounded-lg"
                         >
                           Bring to Block
                         </button>
