@@ -701,12 +701,28 @@ async def set_next_player(
 
     selection_ms = (time.perf_counter() - selection_started) * 1000
     base = await _effective_base_price(ap, db)
-    ap.base_price = base
-    ap.status = PlayerAuctionStatus.active
-    ap.current_bid = base
-    ap.current_bid_team_id = None
-    ap.version += 1
-    ap.extension_count = 0
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status.in_(
+                [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold]
+            ),
+            AuctionPlayer.version == ap.version,
+        )
+        .values(
+            base_price=base,
+            status=PlayerAuctionStatus.active,
+            current_bid=base,
+            current_bid_team_id=None,
+            version=AuctionPlayer.version + 1,
+            extension_count=0,
+        )
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        raise ConcurrentUpdate("Another request selected this player first. Refresh the auction state.")
     timing = Timing.for_event(event)
     deadline = _now() + timing.base_seconds
     event.deadline_at = datetime.fromtimestamp(deadline, tz=timezone.utc)
@@ -931,19 +947,23 @@ async def place_bid(
     current_deadline = event.deadline_at
     if current_deadline is not None and current_deadline.tzinfo is None:
         current_deadline = current_deadline.replace(tzinfo=timezone.utc)
-    current_deadline_epoch = current_deadline.timestamp() if current_deadline else _now()
-    remaining = current_deadline_epoch - _now()
-    extension = timing.extension_for(ap.extension_count)
-    new_deadline = (
-        _now() + extension
-        if remaining <= timing.threshold_seconds
-        else current_deadline_epoch
-    )
-    new_extension_count = (
-        ap.extension_count + 1
-        if remaining <= timing.threshold_seconds
-        else ap.extension_count
-    )
+    current_deadline_epoch = current_deadline.timestamp() if current_deadline else None
+    if current_deadline_epoch is None:
+        new_deadline = _now() + timing.base_seconds
+        new_extension_count = ap.extension_count
+    else:
+        remaining = current_deadline_epoch - _now()
+        extension = timing.extension_for(ap.extension_count)
+        new_deadline = (
+            _now() + extension
+            if remaining <= timing.threshold_seconds
+            else current_deadline_epoch
+        )
+        new_extension_count = (
+            ap.extension_count + 1
+            if remaining <= timing.threshold_seconds
+            else ap.extension_count
+        )
 
     stmt = (
         update(AuctionPlayer)
@@ -1317,6 +1337,22 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
     the partial unique index permits at most one active player per event.
     """
     now = datetime.now(timezone.utc)
+
+    # Older active auctions may have had their deadline only in Redis. Seed a
+    # fresh deadline once from the event's configured base duration; subsequent
+    # deadlines are always read from and written to the database.
+    missing_result = await db.execute(
+        select(AuctionEvent).where(
+            AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.deadline_at.is_(None),
+        )
+    )
+    for event in missing_result.scalars().all():
+        active_player = await _load_active_player(db, event.id)
+        if active_player:
+            event.deadline_at = now + timedelta(seconds=Timing.for_event(event).base_seconds)
+    await db.commit()
+
     due_result = await db.execute(
         select(AuctionEvent).where(
             AuctionEvent.status == AuctionStatus.active,
