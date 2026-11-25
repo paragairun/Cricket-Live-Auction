@@ -2114,7 +2114,6 @@ export default function OrganizerEventDetailPage() {
                             />
                           </div>
                         </div>
-                      )}
                     </div>
 
                     <div className="h-px bg-gray-800 w-full"></div>
