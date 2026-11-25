@@ -998,6 +998,8 @@ async def place_bid(
     if current_deadline is not None and current_deadline.tzinfo is None:
         current_deadline = current_deadline.replace(tzinfo=timezone.utc)
     current_deadline_epoch = current_deadline.timestamp() if current_deadline else None
+    if current_deadline_epoch is not None and current_deadline_epoch <= _now():
+        raise AuctionError("The bidding deadline has passed; the server is processing the hammer.")
     if current_deadline_epoch is None:
         new_deadline = _now() + timing.base_seconds
         new_extension_count = ap.extension_count
