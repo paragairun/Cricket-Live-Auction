@@ -1685,50 +1685,104 @@ export default function AuctioneerPage() {
                 ✕
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              {(teamRosters[inspectedTeam.id] || []).length === 0 ? (
-                <p className="text-sm text-slate-500 py-10 text-center">
-                  No players bought yet.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-                  {(teamRosters[inspectedTeam.id] || []).map((tp, idx) => {
-                    const info = playerDetails[tp.player_id];
-                    return (
-                      <div
-                        key={idx}
-                        className="flex items-center gap-4 bg-slate-800 border border-slate-700 rounded-xl p-3 sm:p-4"
-                      >
-                        <div className="h-16 w-16 sm:h-20 sm:w-20 shrink-0 overflow-hidden rounded-full border border-slate-600 bg-slate-700 flex items-center justify-center">
-                          {info?.profile_photo ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={info.profile_photo}
-                              alt={info.name || `Player #${tp.player_id}`}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <span className="text-xl font-bold text-slate-300">
-                              {(info?.name || "P").charAt(0).toUpperCase()}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+              {(() => {
+                const roster = teamRosters[inspectedTeam.id] || [];
+                const captainId = inspectedTeam.captain_id;
+                const captainPurchase = captainId
+                  ? roster.find((player) => player.player_id === captainId)
+                  : undefined;
+                const squadPlayers = roster.filter(
+                  (player) => player.player_id !== captainId
+                );
+                const renderPlayerCard = (
+                  playerId: number,
+                  soldPrice?: number,
+                  isCaptain = false
+                ) => {
+                  const info = playerDetails[playerId];
+                  const playerName =
+                    info?.name ||
+                    (isCaptain && inspectedTeam.captain_name) ||
+                    `Player #${playerId}`;
+                  return (
+                    <div
+                      key={playerId}
+                      className={`group relative flex flex-col items-center overflow-hidden rounded-2xl border p-4 sm:p-5 text-center shadow-lg transition duration-200 hover:-translate-y-1 hover:shadow-2xl ${
+                        isCaptain
+                          ? "border-amber-400/70 bg-gradient-to-b from-amber-950/70 via-slate-800 to-slate-900 ring-1 ring-amber-400/20"
+                          : "border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900 hover:border-slate-500"
+                      }`}
+                    >
+                      {isCaptain && (
+                        <span className="mb-3 rounded-full border border-amber-400/50 bg-amber-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
+                          ★ Team Captain
+                        </span>
+                      )}
+                      <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
+                        {info?.profile_photo ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={info.profile_photo}
+                            alt={playerName}
+                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800">
+                            <span className="text-5xl font-black text-slate-300">
+                              {playerName.charAt(0).toUpperCase()}
                             </span>
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-base font-bold text-white">
-                            {info?.name || `Player #${tp.player_id}`}
-                          </p>
-                          <p className="text-[10px] uppercase tracking-wide text-slate-400 mt-1">
-                            Winning bid
-                          </p>
-                          <strong className="text-lg font-extrabold text-amber-300">
-                            ₹{formatMoney(tp.sold_price)}
-                          </strong>
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                      <p className="mt-4 w-full truncate text-base sm:text-lg font-extrabold text-white">
+                        {playerName}
+                      </p>
+                      <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
+                        {soldPrice !== undefined ? (
+                          <>
+                            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                              Winning Bid
+                            </span>
+                            <strong className="mt-1 text-xl sm:text-2xl font-black tabular-nums text-amber-300">
+                              ₹{formatMoney(soldPrice)}
+                            </strong>
+                          </>
+                        ) : (
+                          <span className="text-xs font-semibold uppercase tracking-wider text-amber-200/80">
+                            Team Captain
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                };
+
+                if (!captainId && roster.length === 0) {
+                  return (
+                    <p className="py-12 text-center text-sm text-slate-500">
+                      No players bought yet.
+                    </p>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 gap-4 pb-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                    {captainId &&
+                      renderPlayerCard(
+                        captainId,
+                        captainPurchase?.sold_price,
+                        true
+                      )}
+                    {squadPlayers.map((player) =>
+                      renderPlayerCard(player.player_id, player.sold_price)
+                    )}
+                    {!captainId && roster.length === 0 && (
+                      <p className="text-sm text-slate-500">No players bought yet.</p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
