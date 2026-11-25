@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { shallow } from "zustand/shallow";
 import { useParams, useRouter } from "next/navigation";
 import api, { describeError, newIdempotencyKey, postIdempotent } from "@/lib/api";
 import {
@@ -28,11 +29,25 @@ export default function AuctioneerPage() {
   const router = useRouter();
   const { eventId } = useParams<{ eventId: string }>();
   const eid = parseInt(eventId);
-  const store = useAuctionStore();
+  // Subscribe only to data this page renders. Socket metadata and unrelated
+  // store updates should not re-render this large operator console.
+  const store = useAuctionStore(
+    (state) => ({
+      activePlayerId: state.activePlayerId,
+      bidSlabs: state.bidSlabs,
+      categories: state.categories,
+      clockOffset: state.clockOffset,
+      deadlineEpoch: state.deadlineEpoch,
+      players: state.players,
+      rtm: state.rtm,
+      rules: state.rules,
+      teams: state.teams,
+    }),
+    shallow
+  );
 
   const [hasAccess, setHasAccess] = useState(false);
   const [checkingAccess, setCheckingAccess] = useState(true);
-  const [, setSocket] = useState<AuctionSocket | null>(null);
   const [eventName, setEventName] = useState("EVENT NAME");
   const [eventLogo, setEventLogo] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
@@ -43,7 +58,6 @@ export default function AuctioneerPage() {
   >({});
 
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
-  const [, setSecondsLeft] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rtmRaiseAmount, setRtmRaiseAmount] = useState("");
   const [autoAdvance, setAutoAdvance] = useState(true);
@@ -341,7 +355,6 @@ export default function AuctioneerPage() {
     });
     ws.connect();
 
-    setSocket(ws);
     return () => ws.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eid, hasAccess, scheduleAutoAdvance]);
@@ -455,20 +468,6 @@ export default function AuctioneerPage() {
     },
     [minEventBasePrice, store.rules]
   );
-
-  useEffect(() => {
-    if (store.deadlineEpoch == null) {
-      setSecondsLeft(null);
-      return;
-    }
-    const tick = () => {
-      const left = remainingSeconds(store.deadlineEpoch, store.clockOffset);
-      setSecondsLeft(left == null ? null : Math.ceil(left));
-    };
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [store.deadlineEpoch, store.clockOffset]);
 
   const rtmAction = async (path: string, body?: Record<string, unknown>) => {
     setBusyAction(true);
