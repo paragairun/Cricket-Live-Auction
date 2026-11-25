@@ -310,6 +310,8 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
             "auction_mode": event.auction_mode,
             "rtm_enabled": event.rtm_enabled,
             "rtm_cards_per_team": event.rtm_cards_per_team,
+            "exclude_captains_from_auction": event.exclude_captains_from_auction,
+            "auto_reauction_unsold": event.auto_reauction_unsold,
         },
         "rtm": await get_rtm_state(event_id, db),
         "nominations": (
@@ -710,6 +712,8 @@ async def set_next_player(
             raise AuctionError("Player is not registered in this event")
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
+        if event.exclude_captains_from_auction and ap.player_id in await _captain_player_ids(db, event_id):
+            raise AuctionError("Assigned team captains are excluded from the auction")
 
     base = await _effective_base_price(ap, db)
     ap.base_price = base
@@ -760,7 +764,8 @@ async def set_next_player(
 
 async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer:
     """Categories flagged `auction_first` come up first, in sort order."""
-    captain_ids = await _captain_player_ids(db, event_id)
+    event = await _get_event(db, event_id)
+    captain_ids = await _captain_player_ids(db, event_id) if event.exclude_captains_from_auction else set()
 
     categories_result = await db.execute(
         select(PlayerCategory).where(PlayerCategory.event_id == event_id)
@@ -788,6 +793,21 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
         )
     )
     pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
+    if not pending and event.auto_reauction_unsold and not event.unsold_reauction_started:
+        unsold_result = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.status == PlayerAuctionStatus.unsold,
+            )
+        )
+        unsold = unsold_result.scalars().all()
+        if unsold:
+            for player in unsold:
+                player.status = PlayerAuctionStatus.pending
+                player.version += 1
+            event.unsold_reauction_started = True
+            await db.commit()
+            pending = [p for p in unsold if p.player_id not in captain_ids]
     if not pending:
         raise AuctionError("No pending players left")
     return random.choice(pending)
