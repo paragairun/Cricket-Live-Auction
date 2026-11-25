@@ -1573,7 +1573,26 @@ export default function AuctioneerPage() {
                     return <div className="space-y-2">
                       <div className="flex justify-between text-xs text-slate-300"><strong>{team.name}</strong><span>{team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}</span></div>
                       {team.captain_id && <div className="rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">Captain · {team.captain_name || playerDetails[team.captain_id]?.name || `Player #${team.captain_id}`}</div>}
-                      {roster.length === 0 ? <p className="text-center text-slate-500 py-6 text-xs">No players bought yet.</p> : roster.map((player) => <div key={player.player_id} className="flex justify-between rounded-lg bg-slate-800 px-3 py-2 text-xs"><span className="text-white font-semibold">{playerDetails[player.player_id]?.name || `Player #${player.player_id}`}</span><strong className="text-amber-300">₹{formatMoney(player.sold_price)}</strong></div>)}
+                      {roster.length === 0 ? <p className="text-center text-slate-500 py-6 text-xs">No players bought yet.</p> : roster.map((player) => {
+                        const info = playerDetails[player.player_id];
+                        return (
+                          <div key={player.player_id} className="flex items-center gap-3 rounded-lg bg-slate-800 px-3 py-2.5">
+                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full border border-slate-600 bg-slate-700 flex items-center justify-center">
+                              {info?.profile_photo ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={info.profile_photo} alt={info.name || `Player #${player.player_id}`} className="h-full w-full object-cover" />
+                              ) : (
+                                <span className="text-sm font-bold text-slate-300">{(info?.name || "P").charAt(0).toUpperCase()}</span>
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold text-white">{info?.name || `Player #${player.player_id}`}</p>
+                              <p className="text-[10px] uppercase tracking-wide text-slate-400">Winning bid</p>
+                            </div>
+                            <strong className="shrink-0 text-sm font-extrabold text-amber-300">₹{formatMoney(player.sold_price)}</strong>
+                          </div>
+                        );
+                      })}
                     </div>;
                   })()}
                 </div>
