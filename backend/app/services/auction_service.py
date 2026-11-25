@@ -537,10 +537,12 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     await db.commit()
     await db.refresh(event)
 
-    state = await get_auction_state(event_id, db)
+    # The WebSocket already delivered the full snapshot on connect. Sending
+    # it again on START duplicates every player and squad; the next player is
+    # broadcast separately by set_next_player below.
     await manager.broadcast(
         event_id,
-        {**state, "type": "auction_started" if was_first_start else "auction_resumed"},
+        {"type": "auction_started" if was_first_start else "auction_resumed", "event_id": event_id},
     )
 
     if was_first_start:
@@ -567,23 +569,23 @@ async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -
     if not recipient_ids:
         return
     users = await db.execute(select(User).where(User.id.in_(recipient_ids)))
-    for user in users.scalars().all():
+
+    async def notify(user: User) -> None:
         role = (
-            "auctioneer"
-            if user.id == event.auctioneer_id
-            else "organizer"
-            if user.id == event.organizer_id
+            "auctioneer" if user.id == event.auctioneer_id
+            else "organizer" if user.id == event.organizer_id
             else "admin"
         )
         try:
             await asyncio.wait_for(
-                enqueue(
-                    "task_send_auction_starting", user.email, user.name, event.name, event.id, role
-                ),
+                enqueue("task_send_auction_starting", user.email, user.name, event.name, event.id, role),
                 timeout=1.5,
             )
         except Exception as exc:
             logger.warning("Skipping/slow start email enqueue for %s: %s", user.email, exc)
+
+    # Do not serialize up to three independent queue operations on the START path.
+    await asyncio.gather(*(notify(user) for user in users.scalars().all()))
 
 
 async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
