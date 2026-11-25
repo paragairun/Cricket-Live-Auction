@@ -158,6 +158,7 @@ class EventSettingsUpdatePayload(BaseModel):
     team_min_players: int | None = Field(default=None, ge=0, le=50)
     player_base_price: int | None = Field(default=None, ge=100)
     no_timer: bool | None = None
+    auto_advance: bool | None = None
     timer_seconds: int | None = Field(default=None, ge=5, le=600)
     soft_close_threshold_seconds: int | None = Field(default=None, ge=0, le=120)
     soft_close_extension_seconds: int | None = Field(default=None, ge=1, le=120)
