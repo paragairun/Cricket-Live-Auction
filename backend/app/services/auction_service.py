@@ -584,8 +584,10 @@ async def _notify_participants_starting(event: AuctionEvent, db: AsyncSession) -
         except Exception as exc:
             logger.warning("Skipping/slow start email enqueue for %s: %s", user.email, exc)
 
-    # Do not serialize up to three independent queue operations on the START path.
-    await asyncio.gather(*(notify(user) for user in users.scalars().all()))
+    # Queue notifications in the background so mail/Redis latency cannot
+    # delay the auctioneer's START response.
+    for user in users.scalars().all():
+        asyncio.create_task(notify(user))
 
 
 async def pause_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> AuctionEvent:
