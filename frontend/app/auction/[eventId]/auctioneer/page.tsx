@@ -340,13 +340,18 @@ export default function AuctioneerPage() {
 
           case "auction_paused":
             setStatus("paused");
+            useAuctionStore.getState().setFullState({ status: "paused" });
             break;
           case "auction_resumed":
           case "auction_started":
             setStatus("active");
+            // Keep the Zustand snapshot in sync with the page state. Auto-advance
+            // reads status from the store when the sold/unsold socket event fires.
+            useAuctionStore.getState().setFullState({ status: "active" });
             break;
           case "auction_completed":
             setStatus("completed");
+            useAuctionStore.getState().setFullState({ status: "completed" });
             break;
           case "viewer_count":
             break;
