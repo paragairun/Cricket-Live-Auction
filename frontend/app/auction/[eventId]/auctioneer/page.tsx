@@ -665,7 +665,7 @@ export default function AuctioneerPage() {
     }
     setBusyAction(true);
     try {
-      await api.post(`/auction/events/${eid}/hammer`);
+      await postIdempotent(`/auction/events/${eid}/hammer`);
       setSelectedTeamId(null);
       setJustSoldPlayerId(null);
       useAuctionStore.getState().markPlayerUnsold(displayActiveAP.id);
