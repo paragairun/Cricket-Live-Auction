@@ -1586,19 +1586,20 @@ export default function AuctioneerPage() {
                       const info = playerDetails[playerId];
                       const name = info?.name || (captain && team.captain_name) || `Player #${playerId}`;
                       return (
-                        <div key={playerId} className={`group flex flex-col items-center rounded-2xl border p-3 sm:p-5 text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 bg-gradient-to-b from-amber-950/70 via-slate-800 to-slate-900 ring-1 ring-amber-400/20" : "border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900"}`}>
-                          {captain && <span className="mb-3 rounded-full border border-amber-400/50 bg-amber-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-wider text-amber-300">★ Team Captain</span>}
-                          <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 shrink-0 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
-                            {info?.profile_photo ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={info.profile_photo} alt={name} className="absolute inset-0 block h-full w-full max-w-none object-cover" />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800"><span className="text-5xl font-black text-slate-300">{name.charAt(0).toUpperCase()}</span></div>
-                            )}
-                          </div>
-                          <p className="mt-4 w-full truncate text-base sm:text-lg font-extrabold text-white">{name}</p>
-                          <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
-                            {soldPrice !== undefined ? <><span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Winning Bid</span><strong className="mt-1 text-xl sm:text-2xl font-black tabular-nums text-amber-300">₹{formatMoney(soldPrice)}</strong></> : <span className="text-xs font-semibold uppercase tracking-wider text-amber-200/80">Team Captain</span>}
+                        <div key={playerId} className={`group relative min-h-[360px] sm:min-h-[420px] overflow-hidden rounded-2xl border text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 ring-1 ring-amber-400/20" : "border-slate-700"}`}>
+                          {info?.profile_photo ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={info.profile_photo} alt={name} className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+                          ) : (
+                            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-600 to-slate-900"><span className="text-7xl font-black text-slate-300">{name.charAt(0).toUpperCase()}</span></div>
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/90" />
+                          {captain && <span className="absolute left-3 top-3 z-10 rounded-full border border-amber-300/70 bg-black/65 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-amber-300">★ Team Captain</span>}
+                          <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-4 pt-16">
+                            <p className="w-full truncate text-lg sm:text-xl font-extrabold text-white drop-shadow-lg">{name}</p>
+                            <div className="mt-2 flex min-h-14 flex-col items-center justify-center">
+                              {soldPrice !== undefined ? <><span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/75">Winning Bid</span><strong className="mt-1 text-2xl sm:text-3xl font-black tabular-nums text-amber-300 drop-shadow-lg">₹{formatMoney(soldPrice)}</strong></> : <span className="text-xs font-semibold uppercase tracking-wider text-amber-200">Team Captain</span>}
+                            </div>
                           </div>
                         </div>
                       );
@@ -1731,51 +1732,52 @@ export default function AuctioneerPage() {
                   return (
                     <div
                       key={playerId}
-                      className={`group relative flex flex-col items-center overflow-hidden rounded-2xl border p-4 sm:p-5 text-center shadow-lg transition duration-200 hover:-translate-y-1 hover:shadow-2xl ${
+                      className={`group relative min-h-[360px] sm:min-h-[420px] overflow-hidden rounded-2xl border text-center shadow-lg transition duration-200 hover:-translate-y-1 hover:shadow-2xl ${
                         isCaptain
-                          ? "border-amber-400/70 bg-gradient-to-b from-amber-950/70 via-slate-800 to-slate-900 ring-1 ring-amber-400/20"
-                          : "border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900 hover:border-slate-500"
+                          ? "border-amber-400/70 ring-1 ring-amber-400/20"
+                          : "border-slate-700 hover:border-slate-500"
                       }`}
                     >
+                      {info?.profile_photo ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={info.profile_photo}
+                          alt={playerName}
+                          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-600 to-slate-900">
+                          <span className="text-7xl font-black text-slate-300">
+                            {playerName.charAt(0).toUpperCase()}
+                          </span>
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/90" />
                       {isCaptain && (
-                        <span className="mb-3 rounded-full border border-amber-400/50 bg-amber-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
+                        <span className="absolute left-3 top-3 z-10 rounded-full border border-amber-300/70 bg-black/65 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
                           ★ Team Captain
                         </span>
                       )}
-                      <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 shrink-0 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
-                        {info?.profile_photo ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={info.profile_photo}
-                            alt={playerName}
-                            className="absolute inset-0 block h-full w-full max-w-none object-cover transition-transform duration-300 group-hover:scale-105"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800">
-                            <span className="text-5xl font-black text-slate-300">
-                              {playerName.charAt(0).toUpperCase()}
+                      <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-4 pt-16">
+                        <p className="w-full truncate text-lg sm:text-xl font-extrabold text-white drop-shadow-lg">
+                          {playerName}
+                        </p>
+                        <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
+                          {soldPrice !== undefined ? (
+                            <>
+                              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/75">
+                                Winning Bid
+                              </span>
+                              <strong className="mt-1 text-2xl sm:text-3xl font-black tabular-nums text-amber-300 drop-shadow-lg">
+                                ₹{formatMoney(soldPrice)}
+                              </strong>
+                            </>
+                          ) : (
+                            <span className="text-xs font-semibold uppercase tracking-wider text-amber-200">
+                              Team Captain
                             </span>
-                          </div>
-                        )}
-                      </div>
-                      <p className="mt-4 w-full truncate text-base sm:text-lg font-extrabold text-white">
-                        {playerName}
-                      </p>
-                      <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
-                        {soldPrice !== undefined ? (
-                          <>
-                            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
-                              Winning Bid
-                            </span>
-                            <strong className="mt-1 text-xl sm:text-2xl font-black tabular-nums text-amber-300">
-                              ₹{formatMoney(soldPrice)}
-                            </strong>
-                          </>
-                        ) : (
-                          <span className="text-xs font-semibold uppercase tracking-wider text-amber-200/80">
-                            Team Captain
-                          </span>
-                        )}
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
