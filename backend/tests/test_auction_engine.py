@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
 from app.models.auction import (
+    AuctionEvent,
     AuctionPlayer,
     AuctionStatus,
     Bid,
@@ -548,7 +549,7 @@ async def test_player_up_persists_deadline_without_external_timer_queue(
 
 
 async def test_local_timer_hammers_expired_player_once(
-    make_event, register_player, make_team, monkeypatch
+    make_event, register_player
 ):
     import datetime as dt
 
@@ -575,6 +576,7 @@ async def test_local_timer_hammers_expired_player_once(
 async def test_pause_resume_preserves_remaining_timer(
     make_event, register_player
 ):
+    import datetime as dt
     event, *_ = await make_event(status=AuctionStatus.ready, no_timer=False)
     _player, ap = await register_player(event, name="Paused lot", base_price=5000)
     async with AsyncSessionLocal() as session:
