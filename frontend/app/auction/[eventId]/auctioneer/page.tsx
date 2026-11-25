@@ -201,6 +201,7 @@ export default function AuctioneerPage() {
             setJustSoldPlayerId(null);
             useAuctionStore.getState().setFullState(msg);
             setStatus(msg.status);
+            setAutoAdvance(Boolean(msg.auto_advance ?? true));
             break;
 
           case "new_bid":
@@ -316,13 +317,15 @@ export default function AuctioneerPage() {
           case "auction_resumed":
           case "auction_started":
             setStatus("active");
-            // Keep the Zustand snapshot in sync with the page state. Auto-advance
-            // reads status from the store when the sold/unsold socket event fires.
+            // Keep the Zustand snapshot in sync with the page state.
             useAuctionStore.getState().setFullState({ status: "active" });
             break;
           case "auction_completed":
             setStatus("completed");
             useAuctionStore.getState().setFullState({ status: "completed" });
+            break;
+          case "auction_settings_updated":
+            setAutoAdvance(Boolean(msg.auto_advance));
             break;
           case "viewer_count":
             break;
