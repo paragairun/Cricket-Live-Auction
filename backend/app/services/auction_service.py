@@ -1388,6 +1388,7 @@ async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -
 
 async def reset_auction(event_id: int, db: AsyncSession, actor: User | None = None) -> None:
     event = await _get_event(db, event_id)
+    event.unsold_reauction_started = False
 
     players_result = await db.execute(
         select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
