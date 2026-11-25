@@ -9,7 +9,7 @@ import {
   PlayerCategory,
 } from "@/store/auction";
 import { AuctionSocket } from "@/lib/ws";
-import { shouldAutoAdvance, autoAdvanceDelayMs } from "@/lib/autoAdvance";
+import { shouldAutoAdvance, shouldUseDirectAdvanceFallback, autoAdvanceDelayMs } from "@/lib/autoAdvance";
 import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 
@@ -685,7 +685,14 @@ export default function AuctioneerPage() {
       setJustSoldPlayerId(null);
       useAuctionStore.getState().markPlayerUnsold(displayActiveAP.id);
       setNoBidCount((n) => n + 1);
-      await handleRandomNext({ silent: true });
+      if (
+        shouldUseDirectAdvanceFallback({
+          enabled: autoAdvanceRef.current,
+          connection: useAuctionStore.getState().connection,
+        })
+      ) {
+        await handleRandomNext({ silent: true });
+      }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error marking no bid");
     } finally {
@@ -707,7 +714,14 @@ export default function AuctioneerPage() {
           .getState()
           .markPlayerSold(displayActiveAP.id, soldTeamId, soldPrice);
       }
-      await handleRandomNext({ silent: true });
+      if (
+        shouldUseDirectAdvanceFallback({
+          enabled: autoAdvanceRef.current,
+          connection: useAuctionStore.getState().connection,
+        })
+      ) {
+        await handleRandomNext({ silent: true });
+      }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error submitting");
     } finally {

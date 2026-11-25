@@ -58,3 +58,22 @@ describe("autoAdvanceDelayMs", () => {
     expect(autoAdvanceDelayMs("start")).toBeLessThan(1000);
   });
 });
+
+describe("shouldUseDirectAdvanceFallback", () => {
+  it("does not issue a second request when the WebSocket is live", async () => {
+    const { shouldUseDirectAdvanceFallback } = await import("./autoAdvance");
+    expect(shouldUseDirectAdvanceFallback({ enabled: true, connection: "live" })).toBe(false);
+  });
+
+  it("uses the HTTP fallback when the WebSocket is unavailable and auto-advance is enabled", async () => {
+    const { shouldUseDirectAdvanceFallback } = await import("./autoAdvance");
+    expect(shouldUseDirectAdvanceFallback({ enabled: true, connection: "disconnected" })).toBe(true);
+    expect(shouldUseDirectAdvanceFallback({ enabled: true, connection: "connecting" })).toBe(true);
+  });
+
+  it("does not advance when the auctioneer has switched auto-advance off", async () => {
+    const { shouldUseDirectAdvanceFallback } = await import("./autoAdvance");
+    expect(shouldUseDirectAdvanceFallback({ enabled: false, connection: "disconnected" })).toBe(false);
+    expect(shouldUseDirectAdvanceFallback({ enabled: false, connection: "live" })).toBe(false);
+  });
+});

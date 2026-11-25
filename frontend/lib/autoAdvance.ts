@@ -41,3 +41,18 @@ export function shouldAutoAdvance(input: AutoAdvanceInput): boolean {
 export function autoAdvanceDelayMs(trigger: "sold" | "unsold" | "start"): number {
   return trigger === "start" ? 600 : 2500;
 }
+
+/**
+ * A live WebSocket receives the hammer outcome and owns the auto-advance
+ * timer. Only make the HTTP fallback request when the socket is unavailable;
+ * otherwise the button handler and socket timer can advance twice.
+ *
+ * The auctioneer's toggle remains authoritative: when auto-advance is off,
+ * the next player must be selected manually.
+ */
+export function shouldUseDirectAdvanceFallback(input: {
+  enabled: boolean;
+  connection: string | null | undefined;
+}): boolean {
+  return input.enabled && input.connection !== "live";
+}
