@@ -90,7 +90,8 @@ async def health():
         db_ok = True
     except Exception as exc:
         logger.error("Health check: database unreachable: %s", exc)
-    healthy = db_ok
+    timer_ok = bool(timer._task and not timer._task.done())
+    healthy = db_ok and timer_ok
     return {
         "status": "ok" if healthy else "degraded",
         "environment": settings.ENVIRONMENT,
