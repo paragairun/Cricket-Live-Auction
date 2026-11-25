@@ -363,6 +363,7 @@ async def re_auction_all_unsold(
     for ap in unsold:
         ap.status = PlayerAuctionStatus.pending
         ap.version += 1
+    ctx.event.unsold_reauction_started = True
         ap.extension_count = 0
     await db.commit()
 
