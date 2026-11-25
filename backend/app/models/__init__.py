@@ -1,5 +1,6 @@
 from app.models.user import User
 from app.models.auth_token import AuthToken
+from app.models.auction_command import AuctionCommand
 from app.models.auction import (
     AuctionAuditLog,
     AuctionEvent,
@@ -21,6 +22,7 @@ from app.models.auction import (
 __all__ = [
     "User",
     "AuthToken",
+    "AuctionCommand",
     "Player",
     "AuctionEvent",
     "AuctionStatus",
