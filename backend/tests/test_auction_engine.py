@@ -523,39 +523,71 @@ async def test_auto_unsold_round_requeues_unsold_players_once(
             await auction_service._pick_random_pending(session, event.id)
 
 
-async def test_player_up_does_not_wait_for_timer_queue(
+async def test_player_up_persists_deadline_without_external_timer_queue(
     make_event, register_player, monkeypatch
 ):
-    """A slow ARQ connection must not delay the live player announcement."""
-    import asyncio
-
+    """The database owns the deadline; publishing a player needs no queue service."""
     event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
-    _player, ap = await register_player(event, name="Fast display", base_price=5000)
-
-    queue_started = asyncio.Event()
-    release_queue = asyncio.Event()
+    _player, ap = await register_player(event, name="Local timer", base_price=5000)
     broadcasts = []
-
-    async def slow_schedule(*args, **kwargs):
-        queue_started.set()
-        await release_queue.wait()
 
     async def capture_broadcast(event_id, message):
         broadcasts.append(message)
 
-    monkeypatch.setattr(auction_service, "_schedule_hammer", slow_schedule)
     monkeypatch.setattr(auction_service.manager, "broadcast", capture_broadcast)
+    async with AsyncSessionLocal() as session:
+        result = await auction_service.set_next_player(event.id, ap.id, session)
 
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await asyncio.wait_for(
-                auction_service.set_next_player(event.id, ap.id, session),
-                timeout=0.5,
-            )
-        assert result.id == ap.id
-        assert broadcasts and broadcasts[-1]["type"] == "player_up"
-        assert broadcasts[-1]["player_name"] == "Fast display"
-        assert await asyncio.wait_for(queue_started.wait(), timeout=0.5)
-        assert not release_queue.is_set()
-    finally:
-        release_queue.set()
+    assert result.id == ap.id
+    assert broadcasts and broadcasts[-1]["type"] == "player_up"
+    assert broadcasts[-1]["player_name"] == "Local timer"
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.deadline_at is not None
+        assert stored_event.no_timer is False
+
+
+async def test_local_timer_hammers_expired_player_once(
+    make_event, register_player, make_team, monkeypatch
+):
+    import datetime as dt
+
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=False)
+    _player, ap = await register_player(event, name="Expired lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_event.deadline_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=2)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        first = await auction_service.run_due_hammers(session)
+    async with AsyncSessionLocal() as session:
+        second = await auction_service.run_due_hammers(session)
+
+    assert first == 1
+    assert second == 0
+    async with AsyncSessionLocal() as session:
+        stored_player = await session.get(AuctionPlayer, ap.id)
+        assert stored_player.status == PlayerAuctionStatus.unsold
+
+
+async def test_pause_resume_preserves_remaining_timer(
+    make_event, register_player
+):
+    event, *_ = await make_event(status=AuctionStatus.ready, no_timer=False)
+    _player, ap = await register_player(event, name="Paused lot", base_price=5000)
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session)
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        original_deadline = stored_event.deadline_at
+        await auction_service.pause_auction(event.id, session)
+        assert stored_event.deadline_at is None
+        assert stored_event.paused_remaining_seconds is not None
+    async with AsyncSessionLocal() as session:
+        await auction_service.start_auction(event.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.deadline_at is not None
+        assert stored_event.paused_remaining_seconds is None
+        assert stored_event.deadline_at >= original_deadline - dt.timedelta(seconds=30)
