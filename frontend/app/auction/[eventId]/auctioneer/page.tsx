@@ -280,6 +280,13 @@ export default function AuctioneerPage() {
               msg.sold_price
             );
             setSelectedTeamId(null);
+            void api.get(`/auction/events/${eid}/teams`).then(({ data }) => {
+              const rosters: Record<number, { player_id: number; sold_price: number }[]> = {};
+              data.forEach((team: { id: number; players?: { player_id: number; sold_price: number }[] }) => {
+                rosters[team.id] = team.players || [];
+              });
+              setTeamRosters(rosters);
+            }).catch(() => {});
             scheduleAutoAdvance("sold");
             break;
 
