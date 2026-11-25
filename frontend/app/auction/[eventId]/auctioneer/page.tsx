@@ -1583,10 +1583,10 @@ export default function AuctioneerPage() {
                       return (
                         <div key={playerId} className={`group flex flex-col items-center rounded-2xl border p-3 sm:p-5 text-center shadow-lg transition hover:-translate-y-1 ${captain ? "border-amber-400/70 bg-gradient-to-b from-amber-950/70 via-slate-800 to-slate-900 ring-1 ring-amber-400/20" : "border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900"}`}>
                           {captain && <span className="mb-3 rounded-full border border-amber-400/50 bg-amber-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-wider text-amber-300">★ Team Captain</span>}
-                          <div className="h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
+                          <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 shrink-0 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
                             {info?.profile_photo ? (
                               // eslint-disable-next-line @next/next/no-img-element
-                              <img src={info.profile_photo} alt={name} className="h-full w-full object-cover" />
+                              <img src={info.profile_photo} alt={name} className="absolute inset-0 block h-full w-full max-w-none object-cover" />
                             ) : (
                               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800"><span className="text-5xl font-black text-slate-300">{name.charAt(0).toUpperCase()}</span></div>
                             )}
@@ -1737,13 +1737,13 @@ export default function AuctioneerPage() {
                           ★ Team Captain
                         </span>
                       )}
-                      <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
+                      <div className="relative h-36 w-36 sm:h-40 sm:w-40 lg:h-44 lg:w-44 shrink-0 overflow-hidden rounded-2xl border-2 border-white/15 bg-slate-700 shadow-xl">
                         {info?.profile_photo ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={info.profile_photo}
                             alt={playerName}
-                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                            className="absolute inset-0 block h-full w-full max-w-none object-cover transition-transform duration-300 group-hover:scale-105"
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-600 to-slate-800">
