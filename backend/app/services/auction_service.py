@@ -501,7 +501,14 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
                 f"Auction is scheduled for {scheduled.isoformat()} and cannot start before then"
             )
 
+    active_player = await _load_active_player(db, event_id)
     event.status = AuctionStatus.active
+    if active_player and not was_first_start:
+        remaining = event.paused_remaining_seconds
+        if remaining is None:
+            remaining = Timing.for_event(event).base_seconds
+        event.deadline_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, remaining))
+        event.paused_remaining_seconds = None
     await record_audit(
         db,
         event_id=event_id,
@@ -511,9 +518,7 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     await db.commit()
     await db.refresh(event)
 
-    # The WebSocket already delivered the full snapshot on connect. Sending
-    # it again on START duplicates every player and squad; the next player is
-    # broadcast separately by set_next_player below.
+    # Initial player selection is handled by the backend, never by a browser timer.
     await manager.broadcast(
         event_id,
         {"type": "auction_started" if was_first_start else "auction_resumed", "event_id": event_id},
@@ -522,14 +527,6 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
     if was_first_start:
         await _notify_participants_starting(event, db)
 
-    active_player = await _load_active_player(db, event_id)
-    if active_player and not was_first_start:
-        remaining = event.paused_remaining_seconds
-        if remaining is None:
-            remaining = Timing.for_event(event).base_seconds
-        event.deadline_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, remaining))
-        event.paused_remaining_seconds = None
-        await db.commit()
     if not active_player:
         try:
             await set_next_player(event_id, None, db, actor=actor)
@@ -723,7 +720,11 @@ async def set_next_player(
         auction_player_id=ap.id, amount=base,
     )
     commit_started = time.perf_counter()
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConcurrentUpdate("Another request selected a player first. Refresh the auction state.") from exc
     await db.refresh(ap)
     commit_ms = (time.perf_counter() - commit_started) * 1000
 
