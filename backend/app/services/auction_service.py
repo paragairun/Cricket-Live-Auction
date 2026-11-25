@@ -46,6 +46,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.background import dispatch_email
+from app.models.auction_command import AuctionCommand
 from app.models.auction import (
     AuctionAuditLog,
     AuctionEvent,
@@ -80,6 +81,32 @@ class AuctionError(ValueError):
 
 class ConcurrentUpdate(AuctionError):
     """Another operator's action landed first. Surfaces as 409."""
+
+
+async def _existing_command(
+    db: AsyncSession, event_id: int, key: str, action: str
+) -> AuctionCommand | None:
+    result = await db.execute(
+        select(AuctionCommand).where(
+            AuctionCommand.event_id == event_id,
+            AuctionCommand.idempotency_key == key,
+        )
+    )
+    command = result.scalar_one_or_none()
+    if command and command.action != action:
+        raise ConcurrentUpdate("This idempotency key was already used for another action")
+    return command
+
+
+async def _duplicate_command_result(
+    db: AsyncSession, event_id: int, key: str, action: str
+) -> AuctionPlayer | None:
+    command = await _existing_command(db, event_id, key, action)
+    if command is None:
+        return None
+    if command.result_auction_player_id is None:
+        raise ConcurrentUpdate("That auction command is already being processed")
+    return await db.get(AuctionPlayer, command.result_auction_player_id)
 
 
 # ── Timing ────────────────────────────────────────────────────────────────────
@@ -662,6 +689,25 @@ async def set_next_player(
 ) -> AuctionPlayer:
     request_started = time.perf_counter()
     selection_started = request_started
+    command = None
+    if idempotency_key:
+        prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+        if prior is not None:
+            return prior
+        command = AuctionCommand(
+            event_id=event_id,
+            idempotency_key=idempotency_key,
+            action="next_player",
+        )
+        db.add(command)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+            if prior is not None:
+                return prior
+            raise ConcurrentUpdate("That Next Player request was already processed")
     event = await _get_event(db, event_id)
     if event.status != AuctionStatus.active:
         raise AuctionError("Auction is not active")
@@ -735,11 +781,17 @@ async def set_next_player(
         actor_user_id=actor.id if actor else None,
         auction_player_id=ap.id, amount=base,
     )
+    if command is not None:
+        command.result_auction_player_id = ap.id
     commit_started = time.perf_counter()
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        if idempotency_key:
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "next_player")
+            if prior is not None:
+                return prior
         raise ConcurrentUpdate("Another request selected a player first. Refresh the auction state.") from exc
     await db.refresh(ap)
     commit_ms = (time.perf_counter() - commit_started) * 1000
@@ -1048,6 +1100,26 @@ async def hammer_player(
     *,
     idempotency_key: str | None = None,
 ) -> AuctionPlayer | None:
+    command = None
+    if idempotency_key:
+        prior = await _duplicate_command_result(db, event_id, idempotency_key, "hammer")
+        if prior is not None:
+            return prior
+        command = AuctionCommand(
+            event_id=event_id,
+            idempotency_key=idempotency_key,
+            action="hammer",
+        )
+        db.add(command)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            prior = await _duplicate_command_result(db, event_id, idempotency_key, "hammer")
+            if prior is not None:
+                return prior
+            raise ConcurrentUpdate("That hammer request was already processed")
+
     result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.id == auction_player_id, AuctionPlayer.event_id == event_id
@@ -1055,9 +1127,15 @@ async def hammer_player(
     )
     ap = result.scalar_one_or_none()
     if not ap:
+        if command is not None:
+            await db.rollback()
         return None
     if ap.status != PlayerAuctionStatus.active:
+        if command is not None:
+            await db.rollback()
         return ap
+    if command is not None:
+        command.result_auction_player_id = ap.id
 
     sold = ap.current_bid_team_id is not None
     sale_price = ap.current_bid
