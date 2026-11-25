@@ -1263,6 +1263,8 @@ export default function OrganizerEventDetailPage() {
     auction_mode: "random",
     rtm_enabled: false,
     rtm_cards_per_team: "0",
+    exclude_captains_from_auction: true,
+    auto_reauction_unsold: false,
   });
   const [slabForm, setSlabForm] = useState({ min_value: 0, max_value: 0, increment: 1000, sort_order: 0 });
   const [catForm, setCatForm] = useState({ name: "", base_price: 1000, sort_order: 0, auction_first: false });
@@ -1309,6 +1311,8 @@ export default function OrganizerEventDetailPage() {
         auction_mode: evRes.data.auction_mode ?? "random",
         rtm_enabled: evRes.data.rtm_enabled ?? false,
         rtm_cards_per_team: (evRes.data.rtm_cards_per_team ?? 0).toString(),
+        exclude_captains_from_auction: evRes.data.exclude_captains_from_auction ?? true,
+        auto_reauction_unsold: evRes.data.auto_reauction_unsold ?? false,
       });
     }
     setRosterPlayers(aPlayers.data);
@@ -1450,6 +1454,8 @@ export default function OrganizerEventDetailPage() {
         auction_mode: settingsForm.auction_mode,
         rtm_enabled: settingsForm.rtm_enabled,
         rtm_cards_per_team: parseInt(settingsForm.rtm_cards_per_team) || 0,
+        exclude_captains_from_auction: settingsForm.exclude_captains_from_auction,
+        auto_reauction_unsold: settingsForm.auto_reauction_unsold,
       };
       const { data } = await api.patch(`/organizer/events/${eid}/settings`, payload);
       setEvent(data);
@@ -2136,6 +2142,24 @@ export default function OrganizerEventDetailPage() {
                         <option value="random">Random draw</option>
                         <option value="nomination">Teams nominate (accelerated round)</option>
                       </select>
+                    </div>
+
+                    <div className="h-px bg-gray-800 w-full"></div>
+
+                    {/* Auction pool rules */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-200 mb-1">Auction Pool &amp; Re-auction</h4>
+                      <p className="text-xs text-gray-500 mb-3">Control which players enter the auction and whether unsold players receive one final round.</p>
+                      <div className="space-y-3">
+                        <label className="flex items-start gap-2 text-xs text-gray-300">
+                          <input type="checkbox" checked={settingsForm.exclude_captains_from_auction} onChange={(e) => isDraft && setSettingsForm({ ...settingsForm, exclude_captains_from_auction: e.target.checked })} disabled={!isDraft} />
+                          <span><strong>Exclude assigned team captains</strong><span className="block text-gray-500">Players selected as team captains will not appear in the auction pool.</span></span>
+                        </label>
+                        <label className="flex items-start gap-2 text-xs text-gray-300">
+                          <input type="checkbox" checked={settingsForm.auto_reauction_unsold} onChange={(e) => isDraft && setSettingsForm({ ...settingsForm, auto_reauction_unsold: e.target.checked })} disabled={!isDraft} />
+                          <span><strong>Automatically re-auction NO BID / unsold players</strong><span className="block text-gray-500">After all other eligible players have been processed, run one additional pass of unsold players.</span></span>
+                        </label>
+                      </div>
                     </div>
 
                     <div className="h-px bg-gray-800 w-full"></div>
