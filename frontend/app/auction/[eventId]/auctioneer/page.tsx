@@ -1595,7 +1595,7 @@ export default function AuctioneerPage() {
                             <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-600 to-slate-900"><span className="text-7xl font-black text-slate-300">{name.charAt(0).toUpperCase()}</span></div>
                           )}
                           <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/90" />
-                          {captain && <span className="absolute left-3 top-3 z-10 rounded-full border border-amber-300/70 bg-black/65 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-amber-300">★</span>}
+                          {captain && <span aria-label="Captain" title="Captain" className="absolute left-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-amber-300/70 bg-black/65 p-0 text-sm font-black leading-none text-amber-300">★</span>}
                           <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2 pt-10">
                             <p className="w-full truncate text-sm sm:text-base font-extrabold text-white drop-shadow-lg">{name}</p>
                             {soldPrice !== undefined && (
