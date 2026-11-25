@@ -34,6 +34,20 @@ def upgrade() -> None:
     )
     op.create_index("ix_auth_tokens_email_purpose", "auth_tokens", ["email", "purpose"])
     op.create_index("ix_auth_tokens_expires_at", "auth_tokens", ["expires_at"])
+    op.create_table(
+        "auction_commands",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("event_id", sa.Integer(), nullable=False),
+        sa.Column("idempotency_key", sa.String(length=64), nullable=False),
+        sa.Column("action", sa.String(length=40), nullable=False),
+        sa.Column("result_auction_player_id", sa.Integer(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["event_id"], ["auction_events.id"]),
+        sa.ForeignKeyConstraint(["result_auction_player_id"], ["auction_players.id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("event_id", "idempotency_key", name="uq_auction_command_event_key"),
+    )
+    op.create_index("ix_auction_commands_created_at", "auction_commands", ["created_at"])
     op.create_index(
         "uq_auction_player_one_active_per_event",
         "auction_players",
@@ -46,6 +60,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_auction_player_one_active_per_event", table_name="auction_players")
+    op.drop_index("ix_auction_commands_created_at", table_name="auction_commands")
+    op.drop_table("auction_commands")
     op.drop_index("ix_auth_tokens_expires_at", table_name="auth_tokens")
     op.drop_index("ix_auth_tokens_email_purpose", table_name="auth_tokens")
     op.drop_table("auth_tokens")
