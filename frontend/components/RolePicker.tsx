@@ -20,7 +20,7 @@ const ROLE_CONFIG: Record<string, { label: string; description: string; icon: st
     label: "Auctioneer Panel",
     description: "Control the live auction",
     icon: "🔨",
-    href: "/organizer/events",
+    href: "/dashboard",
   },
   viewer: {
     label: "Dashboard",
