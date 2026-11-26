@@ -15,6 +15,7 @@ export default function OrganizerEventsPage() {
   const router = useRouter();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creatingPracticeFor, setCreatingPracticeFor] = useState<number | null>(null);
 
   useEffect(() => {
     api
@@ -28,6 +29,18 @@ export default function OrganizerEventsPage() {
       })
       .finally(() => setLoading(false));
   }, [router]);
+
+  const createPracticeCopy = async (eventId: number) => {
+    setCreatingPracticeFor(eventId);
+    try {
+      const { data } = await api.post(`/organizer/events/${eventId}/practice-copy`);
+      router.push(`/organizer/events/${data.id}`);
+    } catch (error: any) {
+      alert(error.response?.data?.detail || "Could not create practice auction.");
+    } finally {
+      setCreatingPracticeFor(null);
+    }
+  };
 
   return (
     <div className="min-h-screen p-8">
@@ -46,19 +59,28 @@ export default function OrganizerEventsPage() {
         ) : (
           <div className="space-y-4">
             {events.map((event) => (
-              <div key={event.id} className="card flex items-center justify-between">
+              <div key={event.id} className="card flex items-center justify-between gap-4">
                 <div>
                   <p className="font-semibold">{event.name}</p>
                   <p className="text-sm text-gray-500">
                     Status: <span className="capitalize text-amber-400">{event.status}</span>
                   </p>
                 </div>
-                <button
-                  className="btn-secondary text-sm"
-                  onClick={() => router.push(`/organizer/events/${event.id}`)}
-                >
-                  Setup
-                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    className="btn-secondary text-sm"
+                    onClick={() => router.push(`/organizer/events/${event.id}`)}
+                  >
+                    Setup
+                  </button>
+                  <button
+                    className="btn-secondary text-sm"
+                    disabled={creatingPracticeFor !== null}
+                    onClick={() => void createPracticeCopy(event.id)}
+                  >
+                    {creatingPracticeFor === event.id ? "Creating..." : "Create Practice Copy"}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

@@ -203,6 +203,167 @@ async def list_my_events(
     return [AuctionEventOut.model_validate(e) for e in result.scalars().all()]
 
 
+@router.post(
+    "/events/{event_id}/practice-copy",
+    response_model=AuctionEventOut,
+    status_code=201,
+)
+async def create_practice_copy(
+    event_id: int,
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a fully isolated, clean practice copy of an event.
+
+    Player rows are copied as well as event-scoped rows, so editing a practice
+    player's details cannot alter the original event's shared player records.
+    Auction results, bids, nominations and audit history are deliberately not
+    copied.
+    """
+    source = ctx.event
+    practice = AuctionEvent(
+        name=f"{source.name[:188]} - Practice",
+        description=(
+            f"Practice copy of event #{source.id}. "
+            "This event is isolated from the original auction."
+        ),
+        admin_id=source.admin_id,
+        organizer_id=source.organizer_id,
+        auctioneer_id=source.auctioneer_id,
+        status=AuctionStatus.draft,
+        allowed_domains=list(source.allowed_domains or []),
+        scheduled_at=None,
+        team_budget=source.team_budget,
+        team_max_players=source.team_max_players,
+        team_min_players=source.team_min_players,
+        player_base_price=source.player_base_price,
+        no_timer=source.no_timer,
+        deadline_at=None,
+        advance_at=None,
+        paused_remaining_seconds=None,
+        auto_advance=source.auto_advance,
+        timer_seconds=source.timer_seconds,
+        soft_close_threshold_seconds=source.soft_close_threshold_seconds,
+        soft_close_extension_seconds=source.soft_close_extension_seconds,
+        auction_mode=source.auction_mode,
+        rtm_enabled=source.rtm_enabled,
+        rtm_cards_per_team=source.rtm_cards_per_team,
+        exclude_captains_from_auction=source.exclude_captains_from_auction,
+        auto_reauction_unsold=source.auto_reauction_unsold,
+        unsold_reauction_started=False,
+        total_viewers=None,
+        logo=source.logo,
+        background_image=source.background_image,
+    )
+    db.add(practice)
+    await db.flush()
+
+    source_players_result = await db.execute(
+        select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
+    )
+    source_players = source_players_result.scalars().all()
+    source_teams_result = await db.execute(
+        select(Team).where(Team.event_id == event_id).order_by(Team.id)
+    )
+    source_teams = source_teams_result.scalars().all()
+    player_ids = {ap.player_id for ap in source_players}
+    player_ids.update(team.captain_id for team in source_teams if team.captain_id)
+    player_map: dict[int, int] = {}
+    if player_ids:
+        people_result = await db.execute(select(Player).where(Player.id.in_(player_ids)))
+        for person in people_result.scalars().all():
+            copied_person = Player(
+                name=person.name,
+                email=person.email,
+                phone=person.phone,
+                age=person.age,
+                profile_photo=person.profile_photo,
+                notes=person.notes,
+                batting_rating=person.batting_rating,
+                bowling_rating=person.bowling_rating,
+                fielding_rating=person.fielding_rating,
+                created_by_user_id=person.created_by_user_id,
+                legacy_user_id=person.legacy_user_id,
+                deleted_at=person.deleted_at,
+            )
+            db.add(copied_person)
+            await db.flush()
+            player_map[person.id] = copied_person.id
+
+    source_categories_result = await db.execute(
+        select(PlayerCategory)
+        .where(PlayerCategory.event_id == event_id)
+        .order_by(PlayerCategory.sort_order)
+    )
+    category_map: dict[int, int] = {}
+    for category in source_categories_result.scalars().all():
+        copied_category = PlayerCategory(
+            event_id=practice.id,
+            name=category.name,
+            base_price=category.base_price,
+            sort_order=category.sort_order,
+            auction_first=category.auction_first,
+        )
+        db.add(copied_category)
+        await db.flush()
+        category_map[category.id] = copied_category.id
+
+    team_map: dict[int, int] = {}
+    for team in source_teams:
+        copied_team = Team(
+            event_id=practice.id,
+            name=team.name,
+            color=team.color,
+            logo=team.logo,
+            captain_id=player_map.get(team.captain_id) if team.captain_id else None,
+            budget=team.budget,
+            spent=0,
+            max_players=team.max_players,
+            rtm_cards_used=0,
+        )
+        db.add(copied_team)
+        await db.flush()
+        team_map[team.id] = copied_team.id
+
+    for ap in source_players:
+        db.add(
+            AuctionPlayer(
+                event_id=practice.id,
+                player_id=player_map[ap.player_id],
+                base_price=ap.base_price,
+                category_id=category_map.get(ap.category_id) if ap.category_id else None,
+                current_bid=0,
+                current_bid_team_id=None,
+                status=PlayerAuctionStatus.pending,
+                auction_order=ap.auction_order,
+                version=0,
+                extension_count=0,
+                rtm_team_id=team_map.get(ap.rtm_team_id) if ap.rtm_team_id else None,
+                rtm_stage=None,
+                rtm_top_team_id=None,
+                rtm_top_amount=None,
+            )
+        )
+
+    slabs_result = await db.execute(
+        select(BidSlab).where(BidSlab.event_id == event_id).order_by(BidSlab.sort_order)
+    )
+    for slab in slabs_result.scalars().all():
+        db.add(
+            BidSlab(
+                event_id=practice.id,
+                min_value=slab.min_value,
+                max_value=slab.max_value,
+                increment=slab.increment,
+                sort_order=slab.sort_order,
+            )
+        )
+
+    await db.commit()
+    await db.refresh(practice)
+    return AuctionEventOut.model_validate(practice)
+
+
 # ── Players ───────────────────────────────────────────────────────────────────
 
 

@@ -71,7 +71,6 @@ export default function AuctioneerPage() {
   const [inspectTeamId, setInspectTeamId] = useState<number | null>(null);
   const [selectedSquadTeamId, setSelectedSquadTeamId] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState(false);
-  const [noBidCount, setNoBidCount] = useState(0);
 
   const syncState = useCallback(async () => {
     const [{ data }, teamRes] = await Promise.all([
@@ -672,7 +671,6 @@ export default function AuctioneerPage() {
       setSelectedTeamId(null);
       setJustSoldPlayerId(null);
       useAuctionStore.getState().markPlayerUnsold(displayActiveAP.id);
-      setNoBidCount((n) => n + 1);
     } catch (e: unknown) {
       alert(describeError(e).message || "Error marking no bid");
     } finally {
@@ -867,7 +865,7 @@ export default function AuctioneerPage() {
                 NO BID
               </div>
               <div className="text-sm sm:text-base font-black text-sky-400 tabular-nums leading-tight">
-                {noBidCount > 0 ? noBidCount : unsoldPlayers.length || "XX"}
+                {unsoldPlayers.length}
               </div>
             </button>
           </div>
