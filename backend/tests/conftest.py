@@ -45,7 +45,7 @@ def event_loop():
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_schema():
-    """Fresh schema and fresh fakeredis for every test."""
+    """Fresh SQLite schema for every test."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
