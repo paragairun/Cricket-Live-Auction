@@ -428,6 +428,14 @@ export default function AuctioneerPage() {
     [store.bidSlabs]
   );
 
+  const minEventBasePrice = useMemo(() => {
+    const prices = [
+      ...(store.categories || []).map((c) => c.base_price),
+      ...store.players.map((p) => getEffectiveBasePrice(p)),
+    ].filter((v) => v > 0);
+    return prices.length > 0 ? Math.min(...prices) : 1000;
+  }, [store.categories, store.players, getEffectiveBasePrice]);
+
   const getTeamMaxBid = useCallback(
     (team: {
       budget: number;
