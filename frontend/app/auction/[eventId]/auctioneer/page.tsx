@@ -428,13 +428,16 @@ export default function AuctioneerPage() {
     [store.bidSlabs]
   );
 
+  // The reserve price must come only from players who can still be
+  // auctioned. Pre-assigned captains occupy a squad slot but have no
+  // auction purchase price and must not influence the purse reserve.
   const minEventBasePrice = useMemo(() => {
-    const prices = [
-      ...(store.categories || []).map((c) => c.base_price),
-      ...store.players.map((p) => getEffectiveBasePrice(p)),
-    ].filter((v) => v > 0);
+    const prices = store.players
+      .filter((player) => !captainIds.has(Number(player.player_id)))
+      .map((player) => getEffectiveBasePrice(player))
+      .filter((price) => price > 0);
     return prices.length > 0 ? Math.min(...prices) : 1000;
-  }, [store.categories, store.players, getEffectiveBasePrice]);
+  }, [store.players, captainIds, getEffectiveBasePrice]);
 
   const getTeamMaxBid = useCallback(
     (team: {
