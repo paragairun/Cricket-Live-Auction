@@ -742,6 +742,23 @@ async def set_next_player(
             raise AuctionError("Player is not registered in this event")
         if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
+        if ap.status == PlayerAuctionStatus.unsold:
+            captain_ids = await _captain_player_ids(db, event_id)
+            pending_result = await db.execute(
+                select(AuctionPlayer.player_id).where(
+                    AuctionPlayer.event_id == event_id,
+                    AuctionPlayer.status == PlayerAuctionStatus.pending,
+                )
+            )
+            pending_player_ids = {
+                player_id
+                for player_id in pending_result.scalars().all()
+                if player_id not in captain_ids
+            }
+            if pending_player_ids:
+                raise AuctionError(
+                    "Unsold players can be re-auctioned only after all first-round players have been auctioned"
+                )
 
     if ap.player_id in await _captain_player_ids(db, event_id):
         raise AuctionError("Assigned team captains are excluded from the auction")

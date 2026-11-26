@@ -326,6 +326,36 @@ async def test_hammer_with_no_bids_marks_unsold(make_event, make_team, register_
     assert sales == []
 
 
+async def test_manual_unsold_pick_waits_until_first_round_is_exhausted(
+    make_event, make_team, register_player
+):
+    event, *_ = await make_event(status=AuctionStatus.active)
+    await make_team(event, name="A")
+    _unsold_player, unsold_ap = await register_player(event, name="Unsold player")
+    _pending_player, pending_ap = await register_player(event, name="First-round player")
+
+    async with AsyncSessionLocal() as session:
+        unsold_row = await session.get(AuctionPlayer, unsold_ap.id)
+        unsold_row.status = PlayerAuctionStatus.unsold
+        await session.commit()
+
+    # Categories are not configured in this event; the first-round gate still applies.
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(AuctionError, match="after all first-round players"):
+            await auction_service.set_next_player(event.id, unsold_ap.id, session)
+
+    async with AsyncSessionLocal() as session:
+        pending_row = await session.get(AuctionPlayer, pending_ap.id)
+        pending_row.status = PlayerAuctionStatus.sold
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        selected = await auction_service.set_next_player(event.id, unsold_ap.id, session)
+
+    assert selected.id == unsold_ap.id
+    assert selected.status == PlayerAuctionStatus.active
+
+
 async def test_sale_records_price_and_team(make_event, make_team, register_player):
     event, *_ = await make_event(status=AuctionStatus.active)
     team = await make_team(event, name="Winners")
