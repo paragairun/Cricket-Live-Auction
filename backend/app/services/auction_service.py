@@ -863,7 +863,7 @@ async def _pick_random_pending(db: AsyncSession, event_id: int) -> AuctionPlayer
         )
     )
     pending = [p for p in result.scalars().all() if p.player_id not in captain_ids]
-    if not pending and event.auto_reauction_unsold and not event.unsold_reauction_started:
+    if not pending and event.auto_reauction_unsold:
         unsold_result = await db.execute(
             select(AuctionPlayer).where(
                 AuctionPlayer.event_id == event_id,
