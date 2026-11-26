@@ -262,7 +262,12 @@ async def create_practice_copy(
         select(AuctionPlayer).where(AuctionPlayer.event_id == event_id)
     )
     source_players = source_players_result.scalars().all()
+    source_teams_result = await db.execute(
+        select(Team).where(Team.event_id == event_id).order_by(Team.id)
+    )
+    source_teams = source_teams_result.scalars().all()
     player_ids = {ap.player_id for ap in source_players}
+    player_ids.update(team.captain_id for team in source_teams if team.captain_id)
     player_map: dict[int, int] = {}
     if player_ids:
         people_result = await db.execute(select(Player).where(Player.id.in_(player_ids)))
@@ -303,11 +308,7 @@ async def create_practice_copy(
         await db.flush()
         category_map[category.id] = copied_category.id
 
-    source_teams_result = await db.execute(
-        select(Team).where(Team.event_id == event_id).order_by(Team.id)
-    )
     team_map: dict[int, int] = {}
-    source_teams = source_teams_result.scalars().all()
     for team in source_teams:
         copied_team = Team(
             event_id=practice.id,
