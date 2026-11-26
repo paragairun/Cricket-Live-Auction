@@ -1497,6 +1497,8 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
 async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -> None:
     """Compatibility helper; verifies the persisted deadline before hammering."""
     event = await _get_event(db, event_id)
+    if event.no_timer:
+        return
     deadline = event.deadline_at
     if deadline is None:
         return
