@@ -14,12 +14,19 @@ describe("formatAuctionPrice", () => {
     expect(formatAuctionPrice(1_020_000)).toEqual({ value: "10.2", unit: "LAKHS" });
   });
 
+  it("keeps up to two decimal places and trims trailing zeroes", () => {
+    expect(formatAuctionPrice(1_235_000)).toEqual({ value: "12.35", unit: "LAKHS" });
+    expect(formatAuctionPrice(1_250_000)).toEqual({ value: "12.5", unit: "LAKHS" });
+    expect(formatAuctionPrice(1_200_000)).toEqual({ value: "12", unit: "LAKHS" });
+  });
+
   it("formats crores with a scaled value", () => {
     expect(formatAuctionPrice(10_000_000)).toEqual({ value: "1", unit: "CRORES" });
   });
 
   it("promotes values that round into the next unit", () => {
     expect(formatAuctionPrice(9_999_999)).toEqual({ value: "1", unit: "CRORES" });
+    expect(formatAuctionPrice(9_999_499)).toEqual({ value: "99.99", unit: "LAKHS" });
     expect(formatAuctionPrice(99_999)).toEqual({ value: "1", unit: "LAKHS" });
   });
 
