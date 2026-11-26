@@ -223,3 +223,48 @@ async def test_the_auction_opens_at_the_category_price(
 
     assert ap.base_price == 1000000
     assert ap.current_bid == 1000000, "Bidding must open at the category price"
+
+
+
+async def test_changing_common_base_price_reprices_unpriced_players_only(
+    client, make_event, auth_headers
+):
+    """Changing the event default must update eligible stored player prices."""
+    from app.models.auction import AuctionEvent
+
+    event, _admin, organizer, _auctioneer = await make_event(player_base_price=500000)
+    pending = await _add_player(client, event, organizer, auth_headers, "Pending")
+    unsold = await _add_player(client, event, organizer, auth_headers, "Unsold")
+    sold = await _add_player(client, event, organizer, auth_headers, "Sold")
+    active = await _add_player(client, event, organizer, auth_headers, "On the block")
+    priced_category = await _category(
+        client, event, organizer, auth_headers, "Premium", 800000
+    )
+    categorized = await _add_player(
+        client, event, organizer, auth_headers, "Categorized",
+        category_id=priced_category["id"],
+    )
+
+    async with AsyncSessionLocal() as session:
+        for player, status in (
+            (unsold, PlayerAuctionStatus.unsold),
+            (sold, PlayerAuctionStatus.sold),
+            (active, PlayerAuctionStatus.active),
+        ):
+            row = await session.get(AuctionPlayer, player["auction_player_id"])
+            row.status = status
+        await session.commit()
+
+    response = await client.patch(
+        f"/api/organizer/events/{event.id}/settings",
+        json={"player_base_price": 200000},
+        headers=auth_headers(organizer),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["player_base_price"] == 200000
+
+    assert await _stored_base(pending["auction_player_id"]) == 200000
+    assert await _stored_base(unsold["auction_player_id"]) == 200000
+    assert await _stored_base(sold["auction_player_id"]) == 500000
+    assert await _stored_base(active["auction_player_id"]) == 500000
+    assert await _stored_base(categorized["auction_player_id"]) == 800000
