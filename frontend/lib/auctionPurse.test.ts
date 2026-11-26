@@ -47,13 +47,11 @@ describe("getRemainingAuctionReserveSlots", () => {
     expect(getRemainingAuctionReserveSlots(7, 1, true)).toBe(6);
   });
 
-  it("reduces the reserve after an auction player has been purchased", async () => {
-    const { getRemainingAuctionReserveSlots } = await import("./auctionPurse");
+  it("reduces the reserve after an auction player has been purchased", () => {
     expect(getRemainingAuctionReserveSlots(7, 2, true)).toBe(5);
   });
 
-  it("works normally for a team without an assigned captain", async () => {
-    const { getRemainingAuctionReserveSlots } = await import("./auctionPurse");
+  it("works normally for a team without an assigned captain", () => {
     expect(getRemainingAuctionReserveSlots(7, 0, false)).toBe(6);
   });
 });
