@@ -1021,6 +1021,32 @@ async def update_settings(
                 seconds=event.timer_seconds or 30
             )
 
+    # The event default is also the stored opening price for players who
+    # do not have a priced category. Keep those registrations in sync when
+    # the organizer changes the common base price. A priced category remains
+    # authoritative, and sold/on-the-block prices are already settled.
+    if "player_base_price" in data and data["player_base_price"] is not None:
+        unpriced_category_ids = select(PlayerCategory.id).where(
+            PlayerCategory.event_id == event_id,
+            PlayerCategory.base_price <= 0,
+        )
+        players_result = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.status.in_(
+                    [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold]
+                ),
+                or_(
+                    AuctionPlayer.category_id.is_(None),
+                    AuctionPlayer.category_id.in_(unpriced_category_ids),
+                ),
+            )
+        )
+        for auction_player in players_result.scalars().all():
+            if auction_player.base_price != event.player_base_price:
+                auction_player.base_price = event.player_base_price
+                auction_player.version += 1
+
     # Keep team budgets in step with the event budget during setup.
     if "team_budget" in data and data["team_budget"] is not None:
         teams_result = await db.execute(select(Team).where(Team.event_id == event_id))
