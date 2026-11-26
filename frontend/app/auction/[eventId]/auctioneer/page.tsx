@@ -448,16 +448,12 @@ export default function AuctioneerPage() {
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
       if (slotsLeft <= 0) return 0;
 
-      // The captain occupies a squad slot but is not an auction purchase.
-      // Exclude the pre-assigned captain when calculating the existing
-      // minimum-squad purse reserve.
-      const paidPlayerCount = Math.max(
-        0,
-        team.player_count - (team.captain_id ? 1 : 0)
-      );
+      // player_count already includes the pre-assigned captain. Count that
+      // slot toward the minimum squad so the reserve only covers players
+      // still needed after the current auction slot.
       const minSquad = store.rules?.team_min_players ?? 0;
       const reserveSlots =
-        minSquad > 0 ? Math.max(0, minSquad - paidPlayerCount - 1) : 0;
+        minSquad > 0 ? Math.max(0, minSquad - team.player_count - 1) : 0;
       const reserve = reserveSlots * minEventBasePrice;
       return Math.max(0, remainingPurse - reserve);
     },
