@@ -18,9 +18,9 @@ const ROLE_CONFIG: Record<string, { label: string; description: string; icon: st
   },
   auctioneer: {
     label: "Auctioneer Panel",
-    description: "Control the live auction",
+    description: "View assigned auctions and control live bidding",
     icon: "🔨",
-    href: "/organizer/events",
+    href: "/dashboard",
   },
   viewer: {
     label: "Dashboard",
