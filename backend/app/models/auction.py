@@ -223,7 +223,7 @@ class AuctionEvent(Base):
     rtm_cards_per_team: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Keep assigned captains out of the auction pool by default. Automatic
-    # unsold re-auction is a single second pass, never an endless loop.
+    # unsold re-auction may repeat until every eligible player is sold.
     exclude_captains_from_auction: Mapped[bool] = mapped_column(default=True, nullable=False)
     auto_reauction_unsold: Mapped[bool] = mapped_column(default=False, nullable=False)
     unsold_reauction_started: Mapped[bool] = mapped_column(default=False, nullable=False)

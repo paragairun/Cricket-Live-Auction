@@ -493,38 +493,33 @@ async def test_assigned_captains_are_excluded_when_setting_is_enabled(
     assert picked.id != captain_ap.id
 
 
-async def test_auto_unsold_round_requeues_unsold_players_once(
+async def test_auto_unsold_players_can_be_reauctioned_repeatedly(
     make_event, make_team, register_player
 ):
     event, *_ = await make_event(status=AuctionStatus.active)
     await make_team(event, name="Team A")
-    _player, unsold_ap = await register_player(event, name="Unsold")
+    _player, unsold_ap = await register_player(event, name="Repeatedly unsold")
     async with AsyncSessionLocal() as session:
         stored_event = await session.get(type(event), event.id)
         stored_event.auto_reauction_unsold = True
+        stored_event.unsold_reauction_started = True
         unsold = await session.get(AuctionPlayer, unsold_ap.id)
         unsold.status = PlayerAuctionStatus.unsold
         await session.commit()
 
-    async with AsyncSessionLocal() as session:
-        picked = await auction_service._pick_random_pending(session, event.id)
-        # Selection and the re-auction flag are committed by the caller as one
-        # transaction, so persist this direct service-level test setup too.
-        await session.commit()
-        stored_event = await session.get(type(event), event.id)
-        assert picked.id == unsold_ap.id
-        assert picked.status == PlayerAuctionStatus.pending
-        assert stored_event.unsold_reauction_started is True
+    # The same player can be returned to the pool on every exhausted round,
+    # including after the legacy one-time re-auction flag has been set.
+    for _round in range(3):
+        async with AsyncSessionLocal() as session:
+            picked = await auction_service._pick_random_pending(session, event.id)
+            assert picked.id == unsold_ap.id
+            assert picked.status == PlayerAuctionStatus.pending
+            await session.commit()
 
-    # Once that single extra pass is exhausted, the same unsold player is not
-    # recycled indefinitely.
-    async with AsyncSessionLocal() as session:
-        picked.status = PlayerAuctionStatus.unsold
-        session.add(picked)
-        await session.commit()
-    async with AsyncSessionLocal() as session:
-        with pytest.raises(AuctionError, match="No pending players left"):
-            await auction_service._pick_random_pending(session, event.id)
+        async with AsyncSessionLocal() as session:
+            picked = await session.get(AuctionPlayer, unsold_ap.id)
+            picked.status = PlayerAuctionStatus.unsold
+            await session.commit()
 
 
 async def test_player_up_persists_deadline_without_external_timer_queue(
