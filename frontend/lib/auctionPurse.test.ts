@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMinimumAuctionBasePrice } from "./auctionPurse";
+import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "./auctionPurse";
 
 describe("getMinimumAuctionBasePrice", () => {
   const effectivePrice = (player: { base_price: number; category_id?: number | null }) =>
@@ -37,5 +37,21 @@ describe("getMinimumAuctionBasePrice", () => {
     expect(
       getMinimumAuctionBasePrice(players, new Set([1]), effectivePrice)
     ).toBe(1000);
+  });
+});
+
+describe("getRemainingAuctionReserveSlots", () => {
+  it("does not let a free assigned captain reduce the required auction-player reserve", async () => {
+    // Seven paid players are required. The current bid is for the first;
+    // six more must be reserved at their base price.
+    expect(getRemainingAuctionReserveSlots(7, 1, true)).toBe(6);
+  });
+
+  it("reduces the reserve after an auction player has been purchased", () => {
+    expect(getRemainingAuctionReserveSlots(7, 2, true)).toBe(5);
+  });
+
+  it("works normally for a team without an assigned captain", () => {
+    expect(getRemainingAuctionReserveSlots(7, 0, false)).toBe(6);
   });
 });
