@@ -737,7 +737,7 @@ export default function AuctioneerPage() {
     ? getCategoryObj(displayActiveAP.category_id)
     : undefined;
 
-  const nameRef = useFitText<HTMLHeadingElement>(16, 36, [
+  const nameRef = useFitText<HTMLHeadingElement>(20, 48, [
     activeInfo?.name,
     displayActiveAP?.player_id,
   ]);
@@ -1071,7 +1071,7 @@ export default function AuctioneerPage() {
                     </span>
                   </div>
 
-                  <div className="min-w-0 flex-1 h-10 flex items-center">
+                  <div className="min-w-0 flex-1 h-14 flex items-center">
                     <h2
                       ref={nameRef}
                       className="w-full font-black uppercase tracking-tight text-[#111111] leading-none truncate"
@@ -1138,7 +1138,7 @@ export default function AuctioneerPage() {
           </div>
 
           {/* RIGHT ZONE: Bidding Controls + Active Bid / Winning Team Banner */}
-          <div className="lg:col-span-6 min-h-0 flex flex-col justify-between gap-2 max-w-[540px] w-full mx-auto lg:mx-0">
+          <div className="lg:col-span-6 min-h-0 flex flex-col justify-center gap-5 max-w-[640px] w-full mx-auto lg:mx-0">
             {/* Top action buttons row: UP | DOWN | NO BID */}
             <div className="grid grid-cols-3 gap-2">
               <button
@@ -1225,7 +1225,7 @@ export default function AuctioneerPage() {
             </div>
 
             {/* Two-tier banner: Gold BID FOR / SOLD FOR + Black TEAM NAME / BIDDING TEAM / WINNING TEAM */}
-            <div className="flex-1 min-h-0 flex flex-col justify-end">
+            <div className="w-full flex-none">
               <div className="w-full shadow-2xl overflow-hidden">
                 {/* Upper tier: Mustard/Gold (#B8860B) */}
                 <div className="relative bg-[#b8860b] px-4 py-2.5 text-white">
@@ -1233,18 +1233,18 @@ export default function AuctioneerPage() {
                     {isPlayerSold ? "SOLD FOR" : "BID FOR"}
                   </div>
 
-                  <div className="mt-1 flex items-baseline gap-2">
+                  <div className="mt-1 flex w-full items-baseline justify-between gap-3">
                     {(() => {
                       const formattedPrice = displayActiveAP
                         ? formatAuctionPrice(displayedCurrentBid)
                         : { value: "XX", unit: "" };
                       return (
                         <>
-                          <span className="text-3xl sm:text-5xl font-black tracking-tight tabular-nums leading-none">
+                          <span className="text-4xl sm:text-6xl font-black tracking-tight tabular-nums leading-none">
                             {formattedPrice.value}
                           </span>
                           {formattedPrice.unit && (
-                            <span className="text-sm sm:text-lg font-extrabold uppercase tracking-wide">
+                            <span className="text-base sm:text-xl font-extrabold uppercase tracking-wide text-right">
                               {formattedPrice.unit}
                             </span>
                           )}
@@ -1278,7 +1278,7 @@ export default function AuctioneerPage() {
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="text-lg sm:text-2xl font-black uppercase tracking-tight text-white truncate leading-tight">
+                    <div className="w-full text-xl sm:text-3xl font-black uppercase tracking-tight text-white leading-tight break-words text-center">
                       {leadingTeam ? leadingTeam.name : "TEAM NAME"}
                     </div>
                     <div className="border-t border-[#333333] mt-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wider text-white/75">
@@ -1338,7 +1338,7 @@ export default function AuctioneerPage() {
                     : "cursor-pointer hover:bg-neutral-900"
                 }`}
               >
-                <div className="flex items-start gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 w-full">
                   <div className="w-8 h-8 shrink-0 flex items-center justify-center overflow-hidden">
                     {team.logo && (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -1351,7 +1351,7 @@ export default function AuctioneerPage() {
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-white truncate leading-tight">
+                    <div className="w-full text-base sm:text-lg font-extrabold text-white leading-tight break-words text-center">
                       {team.name}
                     </div>
                     <div className="text-[10px] text-white/75 tabular-nums leading-tight mt-0.5">
