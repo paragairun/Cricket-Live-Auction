@@ -551,6 +551,31 @@ async def test_player_up_persists_deadline_without_external_timer_queue(
         assert stored_event.no_timer is False
 
 
+
+
+async def test_disabled_event_timer_never_hammers_or_recovers_deadline(
+    make_event, register_player
+):
+    event, *_ = await make_event(status=AuctionStatus.active, no_timer=True)
+    _player, ap = await register_player(event, name="No clock lot", base_price=5000)
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.set_next_player(event.id, ap.id, session)
+        stored_event = await session.get(AuctionEvent, event.id)
+        assert stored_event.no_timer is True
+        assert stored_event.deadline_at is None
+
+    async with AsyncSessionLocal() as session:
+        processed = await auction_service.run_due_hammers(session)
+
+    async with AsyncSessionLocal() as session:
+        stored_event = await session.get(AuctionEvent, event.id)
+        stored_player = await session.get(AuctionPlayer, ap.id)
+        assert processed == 0
+        assert stored_event.deadline_at is None
+        assert stored_player.status == PlayerAuctionStatus.active
+
+
 async def test_local_timer_hammers_expired_player_once(
     make_event, register_player
 ):

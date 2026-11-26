@@ -294,7 +294,7 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
         "server_time": _now(),
         "deadline_epoch": deadline,
         "active_auction_player_id": int(active_player_id) if active_player_id else None,
-        "no_timer": False,
+        "no_timer": bool(event.no_timer),
         "auto_advance": event.auto_advance,
         "timing": {
             "base_seconds": timing.base_seconds,
@@ -532,7 +532,10 @@ async def start_auction(event_id: int, db: AsyncSession, actor: User | None = No
         remaining = event.paused_remaining_seconds
         if remaining is None:
             remaining = Timing.for_event(event).base_seconds
-        event.deadline_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, remaining))
+        event.deadline_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=max(1, remaining))
+            if not event.no_timer else None
+        )
         event.paused_remaining_seconds = None
     await record_audit(
         db,
@@ -768,11 +771,12 @@ async def set_next_player(
         await db.rollback()
         raise ConcurrentUpdate("Another request selected this player first. Refresh the auction state.")
     timing = Timing.for_event(event)
-    deadline = _now() + timing.base_seconds
-    event.deadline_at = datetime.fromtimestamp(deadline, tz=timezone.utc)
+    deadline = _now() + timing.base_seconds if not event.no_timer else None
+    event.deadline_at = (
+        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+    )
     event.advance_at = None
     event.paused_remaining_seconds = None
-    event.no_timer = False
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.player_put_up,
@@ -813,7 +817,7 @@ async def set_next_player(
             "base_price": ap.base_price,
             "current_bid": ap.current_bid,
             "version": ap.version,
-            "no_timer": False,
+            "no_timer": bool(event.no_timer),
             "deadline_epoch": deadline,
             "server_time": _now(),
         },
@@ -1000,7 +1004,10 @@ async def place_bid(
     current_deadline_epoch = current_deadline.timestamp() if current_deadline else None
     if current_deadline_epoch is not None and current_deadline_epoch <= _now():
         raise AuctionError("The bidding deadline has passed; the server is processing the hammer.")
-    if current_deadline_epoch is None:
+    if event.no_timer:
+        new_deadline = None
+        new_extension_count = ap.extension_count
+    elif current_deadline_epoch is None:
         new_deadline = _now() + timing.base_seconds
         new_extension_count = ap.extension_count
     else:
@@ -1046,7 +1053,10 @@ async def place_bid(
         idempotency_key=idempotency_key or uuid.uuid4().hex,
         placed_by_user_id=actor.id if actor else None,
     )
-    event.deadline_at = datetime.fromtimestamp(new_deadline, tz=timezone.utc)
+    event.deadline_at = (
+        datetime.fromtimestamp(new_deadline, tz=timezone.utc)
+        if new_deadline is not None else None
+    )
     db.add(bid)
     await record_audit(
         db, event_id=event_id, action=AuditAction.bid_placed,
@@ -1422,6 +1432,7 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
     missing_result = await db.execute(
         select(AuctionEvent).where(
             AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.no_timer.is_not(True),
             AuctionEvent.deadline_at.is_(None),
         )
     )
@@ -1437,6 +1448,7 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
     due_result = await db.execute(
         select(AuctionEvent).where(
             AuctionEvent.status == AuctionStatus.active,
+            AuctionEvent.no_timer.is_not(True),
             AuctionEvent.deadline_at.is_not(None),
             AuctionEvent.deadline_at <= now - timedelta(seconds=grace_seconds),
         )
@@ -1485,6 +1497,8 @@ async def run_due_hammers(db: AsyncSession, *, grace_seconds: float = 0.0) -> in
 async def auto_hammer(event_id: int, auction_player_id: int, db: AsyncSession) -> None:
     """Compatibility helper; verifies the persisted deadline before hammering."""
     event = await _get_event(db, event_id)
+    if event.no_timer:
+        return
     deadline = event.deadline_at
     if deadline is None:
         return

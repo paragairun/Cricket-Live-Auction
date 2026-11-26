@@ -843,6 +843,23 @@ async def update_settings(
     for field, value in data.items():
         setattr(event, field, value)
 
+    # Disabling the clock invalidates any deadline already queued for this lot.
+    # Re-enabling it on a live lot starts a fresh full window.
+    if data.get("no_timer") is True:
+        event.deadline_at = None
+        event.paused_remaining_seconds = None
+    elif data.get("no_timer") is False and event.status == AuctionStatus.active:
+        active_result = await db.execute(
+            select(AuctionPlayer).where(
+                AuctionPlayer.event_id == event_id,
+                AuctionPlayer.status == PlayerAuctionStatus.active,
+            )
+        )
+        if active_result.scalar_one_or_none():
+            event.deadline_at = datetime.now(timezone.utc) + timedelta(
+                seconds=event.timer_seconds or 30
+            )
+
     # Keep team budgets in step with the event budget during setup.
     if "team_budget" in data and data["team_budget"] is not None:
         teams_result = await db.execute(select(Team).where(Team.event_id == event_id))

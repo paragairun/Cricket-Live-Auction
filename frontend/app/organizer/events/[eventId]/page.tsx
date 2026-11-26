@@ -1445,7 +1445,7 @@ export default function OrganizerEventDetailPage() {
         team_max_players: parseInt(settingsForm.max_players),
         team_min_players: parseInt(settingsForm.min_players) || 0,
         player_base_price: parseInt(settingsForm.base_price),
-        no_timer: false,
+        no_timer: settingsForm.no_timer,
         timer_seconds: parseInt(settingsForm.timer_seconds) || 30,
         soft_close_threshold_seconds:
           parseInt(settingsForm.soft_close_threshold_seconds) || 0,
@@ -2073,7 +2073,16 @@ export default function OrganizerEventDetailPage() {
                         tuned while the auction is running.
                       </p>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <label className="flex items-start gap-2 mb-4 text-xs text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={settingsForm.no_timer}
+                          onChange={(e) => setSettingsForm({ ...settingsForm, no_timer: e.target.checked })}
+                        />
+                        <span><strong>Disable auction timer</strong><span className="block text-gray-500">Players will remain on the block until the auctioneer manually selects Hammer or No Bid. Auto-advance after that manual action remains controlled separately.</span></span>
+                      </label>
+
+                      <div className={settingsForm.no_timer ? "opacity-40 pointer-events-none grid grid-cols-1 sm:grid-cols-3 gap-4" : "grid grid-cols-1 sm:grid-cols-3 gap-4"}>
                           <div>
                             <label className="label text-gray-300 mb-1 block text-xs">
                               Base countdown (s)
