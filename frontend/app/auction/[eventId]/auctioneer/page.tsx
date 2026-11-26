@@ -1298,6 +1298,8 @@ export default function AuctioneerPage() {
           {stripTeams.map((team) => {
             const remainingPurse = Math.max(0, team.budget - team.spent);
             const maxBid = getTeamMaxBid(team);
+            const pursePrice = formatAuctionPrice(remainingPurse);
+            const maxBidPrice = formatAuctionPrice(maxBid);
             const isLeading =
               !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
             const isSelected = selectedTeamId === team.id;
@@ -1363,18 +1365,14 @@ export default function AuctioneerPage() {
                     <div className="text-[9px] text-white/65 leading-none">
                       Purse
                     </div>
-                    <div className="text-[11px] font-bold text-white tabular-nums truncate mt-0.5">
-                      ₹ {formatMoney(remainingPurse)}
-                    </div>
+                    <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">{"₹"}{pursePrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{pursePrice.unit}</span></div>
                   </div>
 
                   <div>
                     <div className="text-[9px] text-white/65 leading-none">
                       Max Bid
                     </div>
-                    <div className="text-[11px] font-bold text-white tabular-nums truncate mt-0.5">
-                      ₹ {formatMoney(maxBid)}
-                    </div>
+                    <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">{"₹"}{maxBidPrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{maxBidPrice.unit}</span></div>
                   </div>
                 </div>
               </div>
@@ -1695,7 +1693,7 @@ export default function AuctioneerPage() {
                       );
                     };
                     return (
-                      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden" style={team.logo ? { backgroundImage: `linear-gradient(rgba(15, 23, 42, 0.91), rgba(15, 23, 42, 0.91)), url("${team.logo}")`, backgroundRepeat: "no-repeat", backgroundPosition: "center", backgroundSize: "min(48%, 420px) auto" } : undefined}>
                         <div className="mb-2 shrink-0 pr-10 text-xs text-slate-300">
                           <strong className="text-lg text-white">{team.name} Squad</strong>
                         </div>
@@ -1783,7 +1781,7 @@ export default function AuctioneerPage() {
       {/* ── TEAM SQUAD INSPECTOR MODAL ── */}
       {inspectedTeam && (
         <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-2 sm:p-3">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden" style={inspectedTeam.logo ? { backgroundImage: `linear-gradient(rgba(15, 23, 42, 0.90), rgba(15, 23, 42, 0.90)), url("${inspectedTeam.logo}")`, backgroundRepeat: "no-repeat", backgroundPosition: "center", backgroundSize: "min(42%, 460px) auto" } : undefined}>
             <div className="flex items-center justify-between mb-4 shrink-0">
               <div>
                 <h3 className="text-xl sm:text-2xl font-extrabold text-white">
