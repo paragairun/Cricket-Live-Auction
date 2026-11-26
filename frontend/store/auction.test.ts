@@ -112,3 +112,65 @@ describe("setFullState", () => {
     expect(useAuctionStore.getState().status).toBe("active");
   });
 });
+
+
+describe("markPlayerSold", () => {
+  it("counts a sold player and sale price only once when the event is repeated", () => {
+    useAuctionStore.setState({
+      activePlayerId: 101,
+      teams: [{
+        id: 7,
+        name: "Team Seven",
+        color: "#123456",
+        captain_id: null,
+        budget: 100000,
+        spent: 10000,
+        remaining: 90000,
+        max_players: 8,
+        player_count: 2,
+      }],
+      players: [{
+        id: 101,
+        player_id: 501,
+        name: "Auction Player",
+        base_price: 5000,
+        current_bid: 15000,
+        current_bid_team_id: 7,
+        status: "active",
+        version: 2,
+      }],
+    });
+
+    const { markPlayerSold } = useAuctionStore.getState();
+    markPlayerSold(101, 7, 15000);
+    markPlayerSold(101, 7, 15000);
+
+    const state = useAuctionStore.getState();
+    expect(state.teams[0].player_count).toBe(3);
+    expect(state.teams[0].spent).toBe(25000);
+    expect(state.teams[0].remaining).toBe(75000);
+    expect(state.players[0].status).toBe("sold");
+    expect(state.activePlayerId).toBeNull();
+  });
+
+  it("does not change team counts for an unknown auction player", () => {
+    useAuctionStore.setState({
+      teams: [{
+        id: 7,
+        name: "Team Seven",
+        color: "#123456",
+        captain_id: null,
+        budget: 100000,
+        spent: 10000,
+        remaining: 90000,
+        max_players: 8,
+        player_count: 2,
+      }],
+      players: [],
+    });
+
+    useAuctionStore.getState().markPlayerSold(999, 7, 15000);
+    expect(useAuctionStore.getState().teams[0].player_count).toBe(2);
+    expect(useAuctionStore.getState().teams[0].spent).toBe(10000);
+  });
+});
