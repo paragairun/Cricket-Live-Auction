@@ -442,13 +442,22 @@ export default function AuctioneerPage() {
       spent: number;
       max_players: number;
       player_count: number;
+      captain_id?: number | null;
     }) => {
       const remainingPurse = Math.max(0, team.budget - team.spent);
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
       if (slotsLeft <= 0) return 0;
+
+      // The captain occupies a squad slot but is not an auction purchase.
+      // Exclude the pre-assigned captain when calculating the existing
+      // minimum-squad purse reserve.
+      const paidPlayerCount = Math.max(
+        0,
+        team.player_count - (team.captain_id ? 1 : 0)
+      );
       const minSquad = store.rules?.team_min_players ?? 0;
       const reserveSlots =
-        minSquad > 0 ? Math.max(0, minSquad - team.player_count - 1) : 0;
+        minSquad > 0 ? Math.max(0, minSquad - paidPlayerCount - 1) : 0;
       const reserve = reserveSlots * minEventBasePrice;
       return Math.max(0, remainingPurse - reserve);
     },
