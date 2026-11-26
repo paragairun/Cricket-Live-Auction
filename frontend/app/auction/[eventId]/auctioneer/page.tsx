@@ -867,7 +867,7 @@ export default function AuctioneerPage() {
                 NO BID
               </div>
               <div className="text-sm sm:text-base font-black text-sky-400 tabular-nums leading-tight">
-                {noBidCount > 0 ? noBidCount : unsoldPlayers.length || "XX"}
+                {noBidCount > 0 ? noBidCount : unsoldPlayers.length || 0}
               </div>
             </button>
           </div>
