@@ -3,7 +3,7 @@ import { getMinimumAuctionBasePrice } from "./auctionPurse";
 
 describe("getMinimumAuctionBasePrice", () => {
   const effectivePrice = (player: { base_price: number; category_id?: number | null }) =>
-    player.category_id === 10 ? 900000 : player.base_price;
+    player.category_id === 10 ? 250000 : player.base_price;
 
   it("does not reserve purse using a captain-only category price", () => {
     const players = [
@@ -26,7 +26,7 @@ describe("getMinimumAuctionBasePrice", () => {
 
     expect(
       getMinimumAuctionBasePrice(players, new Set([1]), effectivePrice)
-    ).toBe(500000);
+    ).toBe(250000);
   });
 
   it("uses the fallback when there are no eligible auction players", () => {
