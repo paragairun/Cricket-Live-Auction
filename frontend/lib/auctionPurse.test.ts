@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMinimumAuctionBasePrice } from "./auctionPurse";
+import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "./auctionPurse";
 
 describe("getMinimumAuctionBasePrice", () => {
   const effectivePrice = (player: { base_price: number; category_id?: number | null }) =>
@@ -42,7 +42,6 @@ describe("getMinimumAuctionBasePrice", () => {
 
 describe("getRemainingAuctionReserveSlots", () => {
   it("does not let a free assigned captain reduce the required auction-player reserve", async () => {
-    const { getRemainingAuctionReserveSlots } = await import("./auctionPurse");
     // Seven paid players are required. The current bid is for the first;
     // six more must be reserved at their base price.
     expect(getRemainingAuctionReserveSlots(7, 1, true)).toBe(6);
