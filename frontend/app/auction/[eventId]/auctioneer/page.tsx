@@ -1248,7 +1248,7 @@ export default function AuctioneerPage() {
                     title="Edit bid amount manually"
                     className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-xs text-white"
                   >
-                    ✎
+                    <span className="inline-block -scale-x-100">✎</span>
                   </button>
                 </div>
 
