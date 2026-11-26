@@ -467,9 +467,6 @@ export default function AuctioneerPage() {
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
       if (slotsLeft <= 0) return 0;
 
-      // player_count already includes the pre-assigned captain. Count that
-      // slot toward the minimum squad so the reserve only covers players
-      // still needed after the current auction slot.
       const minSquad = store.rules?.team_min_players ?? 0;
       // The captain occupies a max-squad slot but is not an auction purchase.
       // Exclude the captain from the minimum number of paid players to acquire.
