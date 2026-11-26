@@ -16,6 +16,7 @@ export default function OrganizerEventsPage() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingPracticeFor, setCreatingPracticeFor] = useState<number | null>(null);
+  const [deletingEventId, setDeletingEventId] = useState<number | null>(null);
 
   useEffect(() => {
     api
@@ -29,6 +30,23 @@ export default function OrganizerEventsPage() {
       })
       .finally(() => setLoading(false));
   }, [router]);
+
+  const deleteEvent = async (event: Event) => {
+    const confirmed = window.confirm(
+      `Delete "${event.name}"? The event will be archived and hidden from event lists. Its auction results will be preserved.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingEventId(event.id);
+    try {
+      await api.delete(`/organizer/events/${event.id}`);
+      setEvents((current) => current.filter((item) => item.id !== event.id));
+    } catch (error: any) {
+      alert(error.response?.data?.detail || "Could not delete this event.");
+    } finally {
+      setDeletingEventId(null);
+    }
+  };
 
   const createPracticeCopy = async (eventId: number) => {
     setCreatingPracticeFor(eventId);
@@ -79,6 +97,13 @@ export default function OrganizerEventsPage() {
                     onClick={() => void createPracticeCopy(event.id)}
                   >
                     {creatingPracticeFor === event.id ? "Creating..." : "Create Practice Copy"}
+                  </button>
+                  <button
+                    className="btn-secondary text-sm text-red-400 hover:text-red-300"
+                    disabled={deletingEventId !== null || creatingPracticeFor !== null}
+                    onClick={() => void deleteEvent(event)}
+                  >
+                    {deletingEventId === event.id ? "Deleting..." : "Delete"}
                   </button>
                 </div>
               </div>
