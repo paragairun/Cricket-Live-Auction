@@ -428,14 +428,6 @@ export default function AuctioneerPage() {
     [store.bidSlabs]
   );
 
-  const minEventBasePrice = useMemo(() => {
-    const prices = [
-      ...(store.categories || []).map((c) => c.base_price),
-      ...store.players.map((p) => getEffectiveBasePrice(p)),
-    ].filter((v) => v > 0);
-    return prices.length > 0 ? Math.min(...prices) : 1000;
-  }, [store.categories, store.players, getEffectiveBasePrice]);
-
   const getTeamMaxBid = useCallback(
     (team: {
       budget: number;
@@ -445,14 +437,13 @@ export default function AuctioneerPage() {
     }) => {
       const remainingPurse = Math.max(0, team.budget - team.spent);
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
-      if (slotsLeft <= 0) return 0;
-      const minSquad = store.rules?.team_min_players ?? 0;
-      const reserveSlots =
-        minSquad > 0 ? Math.max(0, minSquad - team.player_count - 1) : 0;
-      const reserve = reserveSlots * minEventBasePrice;
-      return Math.max(0, remainingPurse - reserve);
+
+      // Captains are assigned before the auction and do not consume purse.
+      // Max Bid therefore reflects the full unspent purse; roster capacity
+      // remains enforced separately through slotsLeft and backend validation.
+      return slotsLeft > 0 ? remainingPurse : 0;
     },
-    [minEventBasePrice, store.rules]
+    []
   );
 
   const rtmAction = async (path: string, body?: Record<string, unknown>) => {
