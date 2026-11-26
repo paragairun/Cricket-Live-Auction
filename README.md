@@ -28,7 +28,7 @@ Experience the thrill of live player auctions — perfect for office cricket lea
 - **Secure Auth** — JWT-based authentication with magic link support
 - **Docker Ready** — One-command deployment with Docker Compose
 - **Single source of truth** — auction state and deadlines live in the database
-- **Local server timer** — no database-backed local timer or separate worker process required
+- **Local server timer** — deadlines and progression state are persisted in the database; no Redis service or separate worker is required
 
 ---
 
@@ -137,8 +137,6 @@ DATABASE_URL=postgresql+asyncpg://auction:auction@db:5432/auction
 
 # Option B: Use your own PostgreSQL
 # DATABASE_URL=postgresql+asyncpg://user:password@your-host:5432/your_db
-
-# ── Redis ────────────────────────────────────────────────────────────────────
 
 # ── Frontend URLs ────────────────────────────────────────────────────────────
 NEXT_PUBLIC_API_URL=http://localhost/api
@@ -253,13 +251,13 @@ To use an external PostgreSQL (e.g., AWS RDS, Supabase, Neon):
 ├─────────────────────────────────────────────────────────────────┤
 │  4. AUCTIONEER starts auction:                                  │
 │     • Pick player (random or manual)                            │
-│     • Timer starts (180 seconds default)                        │
+│     • Server records the configured auction deadline                        │
 ├─────────────────────────────────────────────────────────────────┤
 │  5. CAPTAINS bid in real-time:                                  │
-│     • Timer resets on each bid                                  │
+│     • Bids update the persisted deadline according to the soft-close rules                                  │
 │     • Max bid increment: min(50% of current, 5% of budget)      │
 ├─────────────────────────────────────────────────────────────────┤
-│  6. Timer expires → Player SOLD or UNSOLD                       │
+│  6. Server timer processes expired players                      │
 │     • Unsold players can be re-auctioned                        │
 ├─────────────────────────────────────────────────────────────────┤
 │  7. AUCTIONEER finishes auction → Summary displayed             │
@@ -277,7 +275,6 @@ Connect to: `ws://your-domain/api/auction/ws/{eventId}?token=<jwt>`
 | `auction_state` | Full state snapshot on connect |
 | `player_up` | New player put up for auction |
 | `new_bid` | A captain placed a bid |
-| `timer_tick` | Timer countdown (every second) |
 | `player_sold` | Player sold to a captain |
 | `player_unsold` | Player went unsold |
 | `auction_paused` | Auctioneer paused the auction |
