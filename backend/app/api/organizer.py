@@ -203,6 +203,29 @@ async def list_my_events(
     return [AuctionEventOut.model_validate(e) for e in result.scalars().all()]
 
 
+@router.delete("/events/{event_id}", status_code=200)
+async def archive_organizer_event(
+    event_id: int,
+    ctx: EventContext = SetupCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Archive an event from the organizer panel without destroying its results."""
+    if ctx.event.status == AuctionStatus.active:
+        raise HTTPException(
+            status_code=409,
+            detail="This auction is running. Pause or finish it before deleting.",
+        )
+
+    from datetime import datetime, timezone
+
+    ctx.event.deleted_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {
+        "status": "archived",
+        "message": f"'{ctx.event.name}' archived. Its results are preserved.",
+    }
+
+
 @router.post(
     "/events/{event_id}/practice-copy",
     response_model=AuctionEventOut,
