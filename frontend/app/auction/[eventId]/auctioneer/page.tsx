@@ -438,13 +438,26 @@ export default function AuctioneerPage() {
 
   const getTeamMaxBid = useCallback(
     (team: {
+      id: number;
       budget: number;
       spent: number;
       max_players: number;
       player_count: number;
       captain_id?: number | null;
     }) => {
-      const remainingPurse = Math.max(0, team.budget - team.spent);
+      // A pre-assigned captain is a free squad assignment, not an auction
+      // purchase. If legacy/team-roster data includes a captain row in spent,
+      // add that amount back before calculating the team's available purse.
+      const captainPrice =
+        team.captain_id == null
+          ? 0
+          : teamRosters[team.id]?.find(
+              (player) => player.player_id === team.captain_id
+            )?.sold_price ?? 0;
+      const remainingPurse = Math.max(
+        0,
+        team.budget - team.spent + captainPrice
+      );
       const slotsLeft = Math.max(0, team.max_players - team.player_count);
       if (slotsLeft <= 0) return 0;
 
@@ -457,7 +470,7 @@ export default function AuctioneerPage() {
       const reserve = reserveSlots * minEventBasePrice;
       return Math.max(0, remainingPurse - reserve);
     },
-    [minEventBasePrice, store.rules]
+    [minEventBasePrice, store.rules, teamRosters]
   );
 
   const rtmAction = async (path: string, body?: Record<string, unknown>) => {
