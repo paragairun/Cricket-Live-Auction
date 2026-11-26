@@ -848,7 +848,7 @@ export default function AuctioneerPage() {
                 PLAYERS
               </div>
               <div className="text-sm sm:text-base font-black text-amber-400 tabular-nums leading-tight">
-                {soldPlayers.length + unsoldPlayers.length} / {lotTotal || "XX"}
+                {soldPlayers.length} / {lotTotal || "XX"}
               </div>
             </button>
 
