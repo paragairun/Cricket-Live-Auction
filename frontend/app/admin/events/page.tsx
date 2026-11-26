@@ -50,6 +50,7 @@ export default function AdminEventsPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", domains: "", scheduled_at: "" });
   const [error, setError] = useState("");
+  const [deletingEventId, setDeletingEventId] = useState<number | null>(null);
 
   const fetchEvents = useCallback(async () => {
     try {
@@ -66,6 +67,23 @@ export default function AdminEventsPage() {
     fetchEvents();
   }, [fetchEvents]);
 
+  const deleteEvent = async (event: Event) => {
+    const confirmed = window.confirm(
+      "Delete “" + event.name + "”? This will archive the event and remove it from active event lists. Its auction results and data will be preserved."
+    );
+    if (!confirmed) return;
+    setDeletingEventId(event.id);
+    setError("");
+    try {
+      await api.delete("/admin/events/" + event.id);
+      setEvents((current) => current.filter((item) => item.id !== event.id));
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(msg || "Failed to delete event");
+    } finally {
+      setDeletingEventId(null);
+    }
+  };
   const createEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreating(true);
@@ -168,6 +186,10 @@ export default function AdminEventsPage() {
           </div>
         )}
 
+        {error && !showForm && (
+          <div className="bg-red-500/20 text-red-400 rounded-lg p-3 mb-4 text-sm">{error}</div>
+        )}
+
         {/* Events list */}
         {loading ? (
           <div className="space-y-3">
@@ -208,12 +230,22 @@ export default function AdminEventsPage() {
                       </span>
                     </div>
                   </div>
-                  <button
-                    className="btn-secondary text-sm shrink-0"
-                    onClick={() => router.push(`/admin/events/${event.id}`)}
-                  >
-                    Manage →
-                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      className="btn-secondary text-sm"
+                      onClick={() => router.push(`/admin/events/${event.id}`)}
+                    >
+                      Manage →
+                    </button>
+                    <button
+                      className="text-sm text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/60 rounded-lg px-3 py-2 disabled:opacity-50"
+                      onClick={() => void deleteEvent(event)}
+                      disabled={deletingEventId !== null || event.status === "active"}
+                      title={event.status === "active" ? "Pause the auction before deleting" : "Archive this event"}
+                    >
+                      {deletingEventId === event.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
                 </div>
               );
             })}
