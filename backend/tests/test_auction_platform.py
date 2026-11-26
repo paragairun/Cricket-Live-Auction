@@ -521,7 +521,10 @@ async def test_practice_copy_isolated_and_starts_clean(
         original_ap = await session.get(AuctionPlayer, ap.id)
         copied_ap = (
             await session.execute(
-                select(AuctionPlayer).where(AuctionPlayer.event_id == practice_id)
+                select(AuctionPlayer).where(
+                    AuctionPlayer.event_id == practice_id,
+                    AuctionPlayer.base_price == 5000,
+                )
             )
         ).scalar_one()
         copied_team = (
