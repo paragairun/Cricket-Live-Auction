@@ -755,3 +755,31 @@ async def test_retried_hammer_cannot_hammer_the_next_player(
         second = await session.get(AuctionPlayer, second_ap.id)
         assert retry.id == first_ap.id
         assert second.status == PlayerAuctionStatus.active
+
+
+async def test_team_state_count_includes_assigned_captain(make_event, make_team, register_player):
+    event, *_ = await make_event(status=AuctionStatus.active)
+    captain, _captain_ap = await register_player(event, name="Captain")
+    team = await make_team(event, name="Team A", captain_id=captain.id)
+
+    async with AsyncSessionLocal() as session:
+        state = await auction_service.get_auction_state(event.id, session)
+        squad_size = await auction_service._squad_size(session, event.id, team.id)
+
+    team_state = next(item for item in state["teams"] if item["id"] == team.id)
+    assert team_state["player_count"] == 1
+    assert squad_size == 1
+
+
+async def test_captain_uses_a_team_roster_slot(make_event, make_team, register_player, make_slab):
+    event, *_ = await make_event(status=AuctionStatus.active, team_max_players=1)
+    await make_slab(event, min_value=0, max_value=0, increment=1000)
+    captain, _captain_ap = await register_player(event, name="Captain")
+    team = await make_team(event, name="Team A", captain_id=captain.id, max_players=1)
+    _candidate, candidate_ap = await register_player(event, name="Candidate", base_price=1000)
+    await _activate(event, candidate_ap)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(AuctionError, match="Team roster is full"):
+            await auction_service.place_bid(event.id, team.id, 1000, session)
+

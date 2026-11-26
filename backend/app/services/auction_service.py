@@ -223,11 +223,20 @@ async def _get_event(db: AsyncSession, event_id: int) -> AuctionEvent:
 
 async def _squad_size(db: AsyncSession, event_id: int, team_id: int) -> int:
     result = await db.execute(
-        select(TeamPlayer).where(
+        select(TeamPlayer.player_id).where(
             TeamPlayer.event_id == event_id, TeamPlayer.team_id == team_id
         )
     )
-    return len(result.scalars().all())
+    player_ids = set(result.scalars().all())
+    team_result = await db.execute(
+        select(Team.captain_id).where(
+            Team.event_id == event_id, Team.id == team_id
+        )
+    )
+    captain_id = team_result.scalar_one_or_none()
+    if captain_id is not None:
+        player_ids.add(captain_id)
+    return len(player_ids)
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -350,7 +359,7 @@ async def get_auction_state(event_id: int, db: AsyncSession) -> dict:
                 "spent": t.spent,
                 "remaining": t.budget - t.spent,
                 "max_players": t.max_players,
-                "player_count": len(t.players),
+                "player_count": len({tp.player_id for tp in t.players} | ({t.captain_id} if t.captain_id is not None else set())),
                 "rtm_cards_used": t.rtm_cards_used,
             }
             for t in teams
