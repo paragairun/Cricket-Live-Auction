@@ -28,20 +28,24 @@ export function formatAuctionPrice(amount: number): FormattedAuctionPrice {
   }
 
   let scaledAmount = absoluteAmount / divisor;
+  let roundedAmount = Number(scaledAmount.toFixed(2));
 
-  // Avoid displaying a rounded "100.0 THOUSANDS" or "100.0 LAKHS".
-  if (unit === "THOUSANDS" && scaledAmount >= 99.95) {
+  // Promote a value when two-decimal rounding would display 100.00 units.
+  if (unit === "THOUSANDS" && roundedAmount >= 100) {
     divisor = 100_000;
     unit = "LAKHS";
     scaledAmount = absoluteAmount / divisor;
-  } else if (unit === "LAKHS" && scaledAmount >= 99.95) {
+    roundedAmount = Number(scaledAmount.toFixed(2));
+  } else if (unit === "LAKHS" && roundedAmount >= 100) {
     divisor = 10_000_000;
     unit = "CRORES";
     scaledAmount = absoluteAmount / divisor;
+    roundedAmount = Number(scaledAmount.toFixed(2));
   }
 
-  const rounded = scaledAmount.toFixed(1);
-  const formatted = Number(rounded).toString();
+  // Number conversion removes insignificant trailing zeroes:
+  // 12.50 -> 12.5, 12.00 -> 12, while 12.35 remains 12.35.
+  const formatted = roundedAmount.toString();
   const sign = amount < 0 ? "-" : "";
 
   return {
