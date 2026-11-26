@@ -719,6 +719,10 @@ export default function AuctioneerPage() {
       alert("All available players must be auctioned before finishing.");
       return;
     }
+    if (unsoldPlayers.length > 0) {
+      alert("Unsold players must be re-auctioned before finishing.");
+      return;
+    }
     if (!confirm("Complete and lock this auction permanently?")) return;
     await api.post(`/auction/events/${eid}/finish`);
     await syncState();
@@ -1207,7 +1211,7 @@ export default function AuctioneerPage() {
                 </label>
 
                 <div className="flex items-center gap-3">
-                  {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && !store.rules?.auto_reauction_unsold && (
+                  {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && (
                     <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-100">re-auction unsold</button>
                   )}
                   <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">view squads</button>
@@ -1419,6 +1423,7 @@ export default function AuctioneerPage() {
                     )}
                   {activeDrawerTab === "available" &&
                     pendingPlayers.length === 0 &&
+                    unsoldPlayers.length === 0 &&
                     !displayActiveAP &&
                     status !== "completed" && (
                       <button
