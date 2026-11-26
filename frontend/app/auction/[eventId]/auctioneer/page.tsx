@@ -1384,7 +1384,7 @@ export default function AuctioneerPage() {
       {/* ── DRAWER FOR SOLD / UNSOLD / AVAILABLE / TEAMS ── */}
       {activeDrawerTab !== "none" && (
         <div className="fixed inset-0 z-40 bg-black/75 flex items-end sm:items-center justify-center p-4">
-          <div className={`relative bg-slate-900 border border-slate-700 rounded-2xl w-full ${activeDrawerTab === "squads" ? "max-w-[96vw] h-[94vh] max-h-[1100px]" : "max-w-2xl max-h-[80vh]"} flex flex-col overflow-hidden shadow-2xl`}>
+          <div className={`relative bg-slate-900 border border-slate-700 rounded-2xl w-full ${activeDrawerTab === "squads" ? "max-w-[96vw] h-[94vh] max-h-[1100px]" : "max-w-2xl h-[80vh] max-h-[80vh] min-h-0"} flex flex-col overflow-hidden shadow-2xl`}>
             {activeDrawerTab === "squads" ? (
               <button
                 onClick={() => setActiveDrawerTab("none")}
@@ -1394,7 +1394,7 @@ export default function AuctioneerPage() {
                 ✕
               </button>
             ) : (
-              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-slate-800 flex shrink-0 items-center justify-between">
                 <h3 className="font-extrabold text-base uppercase tracking-wide text-amber-300">
                   {activeDrawerTab === "sold" &&
                     `Sold Players (${soldPlayers.length})`}
@@ -1440,7 +1440,7 @@ export default function AuctioneerPage() {
             )}
 
             {activeDrawerTab === "available" && store.categories.length > 0 && (
-              <div className="px-4 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5">
+              <div className="px-4 py-2 bg-slate-950 border-b border-slate-800 flex shrink-0 flex-wrap gap-1.5">
                 <button
                   onClick={() => setSelectedCategoryFilter("all")}
                   className={`px-2.5 py-1 rounded-full text-xs font-bold ${
@@ -1472,7 +1472,7 @@ export default function AuctioneerPage() {
               </div>
             )}
 
-            <div className={`${activeDrawerTab === "squads" ? "p-2 overflow-hidden" : "p-4 overflow-y-auto"} space-y-2 flex-1 min-h-0`}>
+            <div className={`${activeDrawerTab === "squads" ? "p-2 overflow-hidden" : "p-4 overflow-y-auto overscroll-contain"} space-y-2 flex-1 min-h-0`}>
               {activeDrawerTab === "available" &&
                 (filteredPending.length === 0 ? (
                   <p className="text-center text-slate-500 text-sm py-8">
