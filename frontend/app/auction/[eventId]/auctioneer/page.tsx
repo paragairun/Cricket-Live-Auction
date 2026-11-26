@@ -12,7 +12,7 @@ import { AuctionSocket } from "@/lib/ws";
 import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
-import { getMinimumAuctionBasePrice } from "@/lib/auctionPurse";
+import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "@/lib/auctionPurse";
 
 interface PlayerDetail {
   player_id: number;
@@ -471,8 +471,13 @@ export default function AuctioneerPage() {
       // slot toward the minimum squad so the reserve only covers players
       // still needed after the current auction slot.
       const minSquad = store.rules?.team_min_players ?? 0;
-      const reserveSlots =
-        minSquad > 0 ? Math.max(0, minSquad - team.player_count - 1) : 0;
+      // The captain occupies a max-squad slot but is not an auction purchase.
+      // Exclude the captain from the minimum number of paid players to acquire.
+      const reserveSlots = getRemainingAuctionReserveSlots(
+        minSquad,
+        team.player_count,
+        team.captain_id != null
+      );
       const reserve = reserveSlots * minEventBasePrice;
       return Math.max(0, remainingPurse - reserve);
     },
