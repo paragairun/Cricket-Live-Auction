@@ -12,6 +12,7 @@ import { AuctionSocket } from "@/lib/ws";
 import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
+import { getMinimumAuctionBasePrice } from "@/lib/auctionPurse";
 
 interface PlayerDetail {
   player_id: number;
@@ -428,13 +429,18 @@ export default function AuctioneerPage() {
     [store.bidSlabs]
   );
 
-  const minEventBasePrice = useMemo(() => {
-    const prices = [
-      ...(store.categories || []).map((c) => c.base_price),
-      ...store.players.map((p) => getEffectiveBasePrice(p)),
-    ].filter((v) => v > 0);
-    return prices.length > 0 ? Math.min(...prices) : 1000;
-  }, [store.categories, store.players, getEffectiveBasePrice]);
+  // Only players who can actually be auctioned may determine the minimum
+  // reserve price. Categories used exclusively by pre-assigned captains must
+  // never reserve purse money because captains are free and not auction lots.
+  const minEventBasePrice = useMemo(
+    () =>
+      getMinimumAuctionBasePrice(
+        store.players,
+        captainIds,
+        getEffectiveBasePrice
+      ),
+    [store.players, captainIds, getEffectiveBasePrice]
+  );
 
   const getTeamMaxBid = useCallback(
     (team: {
