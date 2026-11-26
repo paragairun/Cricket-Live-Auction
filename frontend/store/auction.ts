@@ -273,31 +273,39 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
     })),
 
   markPlayerSold: (auctionPlayerId, teamId, price) =>
-    set((prev) => ({
-      activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
-      deadlineEpoch: null,
-      rtm: null,
-      players: prev.players.map((p) =>
-        p.id === auctionPlayerId
-          ? {
-              ...p,
-              status: "sold" as const,
-              current_bid: price,
-              current_bid_team_id: teamId,
-            }
-          : p
-      ),
-      teams: prev.teams.map((t) =>
-        t.id === teamId
-          ? {
-              ...t,
-              spent: t.spent + price,
-              remaining: t.budget - (t.spent + price),
-              player_count: t.player_count + 1,
-            }
-          : t
-      ),
-    })),
+    set((prev) => {
+      // WebSocket delivery can be repeated around reconnects or snapshot
+      // refreshes. A sale is a one-time roster mutation: never add its price
+      // or player count twice.
+      const player = prev.players.find((p) => p.id === auctionPlayerId);
+      if (!player || player.status === "sold") return prev;
+
+      return {
+        activePlayerId: prev.activePlayerId === auctionPlayerId ? null : prev.activePlayerId,
+        deadlineEpoch: null,
+        rtm: null,
+        players: prev.players.map((p) =>
+          p.id === auctionPlayerId
+            ? {
+                ...p,
+                status: "sold" as const,
+                current_bid: price,
+                current_bid_team_id: teamId,
+              }
+            : p
+        ),
+        teams: prev.teams.map((t) =>
+          t.id === teamId
+            ? {
+                ...t,
+                spent: t.spent + price,
+                remaining: t.budget - (t.spent + price),
+                player_count: t.player_count + 1,
+              }
+            : t
+        ),
+      };
+    }),
 
   markPlayerUnsold: (auctionPlayerId) =>
     set((prev) => ({
