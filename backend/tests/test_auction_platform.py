@@ -15,11 +15,13 @@ from app.models.auction import (
     AuctionEvent,
     AuctionPlayer,
     AuctionStatus,
+    Bid,
     BidSlab,
     Player,
     PlayerAuctionStatus,
     PlayerCategory,
     Team,
+    TeamPlayer,
 )
 from app.models.user import ROLE_ADMIN, ROLE_AUCTIONEER, ROLE_ORGANIZER
 
@@ -467,7 +469,7 @@ async def test_practice_copy_isolated_and_starts_clean(
     event, _admin, organizer, _auctioneer = await make_event(
         name="Championship", status=AuctionStatus.completed, team_budget=250000
     )
-    captain = await make_player(name="Captain")
+    captain, captain_ap = await register_player(event, name="Captain", base_price=1000)
     player, ap = await register_player(event, name="Auction Player", base_price=5000)
     async with AsyncSessionLocal() as session:
         source_team = Team(
@@ -490,10 +492,20 @@ async def test_practice_copy_isolated_and_starts_clean(
         source_ap.status = PlayerAuctionStatus.sold
         source_ap.current_bid = 15000
         source_ap.current_bid_team_id = source_team.id
-        session.add(BidSlab(
-            event_id=event.id, min_value=0, max_value=50000, increment=1000,
-            sort_order=0,
-        ))
+        session.add_all([
+            BidSlab(
+                event_id=event.id, min_value=0, max_value=50000, increment=1000,
+                sort_order=0,
+            ),
+            TeamPlayer(
+                event_id=event.id, team_id=source_team.id, player_id=player.id,
+                sold_price=15000,
+            ),
+            Bid(
+                event_id=event.id, auction_player_id=source_ap.id,
+                team_id=source_team.id, amount=15000,
+            ),
+        ])
         await session.commit()
 
     response = await client.post(
@@ -531,9 +543,16 @@ async def test_practice_copy_isolated_and_starts_clean(
         assert copied_ap.current_bid == 0
         assert copied_ap.current_bid_team_id is None
         assert copied_ap.category_id == copied_category.id
+        assert copied_team.captain_id is not None
         assert copied_team.captain_id != captain.id
         assert copied_team.budget == 200000
         assert copied_team.spent == 0
         assert copied_team.rtm_cards_used == 0
         assert copied_slab.increment == 1000
         assert copied_category.name == "Premium"
+        assert (await session.execute(
+            select(TeamPlayer).where(TeamPlayer.event_id == practice_id)
+        )).scalars().all() == []
+        assert (await session.execute(
+            select(Bid).where(Bid.event_id == practice_id)
+        )).scalars().all() == []
