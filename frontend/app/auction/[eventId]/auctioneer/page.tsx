@@ -11,6 +11,7 @@ import {
 import { AuctionSocket } from "@/lib/ws";
 import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
+import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
 
 interface PlayerDetail {
   player_id: number;
@@ -1231,14 +1232,23 @@ export default function AuctioneerPage() {
                   </div>
 
                   <div className="mt-1 flex items-baseline gap-2">
-                    <span className="text-3xl sm:text-5xl font-black tracking-tight tabular-nums leading-none">
-                      {displayActiveAP
-                        ? formatMoney(displayedCurrentBid)
-                        : "XX"}
-                    </span>
-                    <span className="text-sm sm:text-lg font-extrabold uppercase tracking-wide">
-                      LAKHS
-                    </span>
+                    {(() => {
+                      const formattedPrice = displayActiveAP
+                        ? formatAuctionPrice(displayedCurrentBid)
+                        : { value: "XX", unit: "" };
+                      return (
+                        <>
+                          <span className="text-3xl sm:text-5xl font-black tracking-tight tabular-nums leading-none">
+                            {formattedPrice.value}
+                          </span>
+                          {formattedPrice.unit && (
+                            <span className="text-sm sm:text-lg font-extrabold uppercase tracking-wide">
+                              {formattedPrice.unit}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <button
