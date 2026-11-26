@@ -1405,7 +1405,7 @@ export default function AuctioneerPage() {
                   {activeDrawerTab === "unsold" &&
                     `Unsold Players (${unsoldPlayers.length})`}
                   {activeDrawerTab === "available" &&
-                    `Available Players (${filteredPending.length})`}
+                    `Pick Manually (${filteredPending.length + unsoldPlayers.length})`}
                   {activeDrawerTab === "teams" && `Teams Summary (${store.teams.length})`}
                 </h3>
                 <div className="flex items-center gap-2">
@@ -1515,6 +1515,66 @@ export default function AuctioneerPage() {
                   })
                 ))}
 
+              {activeDrawerTab === "available" && (
+                <section className="mt-5 border-t border-slate-700 pt-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className="text-sm font-extrabold uppercase tracking-wide text-red-300">
+                      Unsold ({unsoldPlayers.length})
+                    </h4>
+                    {unsoldPlayers.length > 0 && pendingPlayers.length > 0 && (
+                      <span className="text-[10px] font-semibold text-slate-400">
+                        Available after the first round
+                      </span>
+                    )}
+                  </div>
+                  {unsoldPlayers.length === 0 ? (
+                    <p className="py-3 text-center text-xs text-slate-500">
+                      No unsold players.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {unsoldPlayers.map((p) => {
+                        const info = playerDetails[p.player_id];
+                        const effBase = getEffectiveBasePrice(p);
+                        const canReAuction =
+                          pendingPlayers.length === 0 &&
+                          status === "active" &&
+                          !displayActiveAP &&
+                          !busyAction;
+                        return (
+                          <div
+                            key={p.id}
+                            className="flex items-center justify-between rounded-xl border border-red-500/30 bg-slate-800/80 px-3 py-2.5"
+                          >
+                            <div className="min-w-0">
+                              <p className="font-bold text-sm text-white">
+                                #{p.player_id} {info?.name || `Player #${p.player_id}`}
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                Base: ₹{formatMoney(effBase)}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handlePickPlayer(p.id)}
+                              disabled={!canReAuction}
+                              title={
+                                pendingPlayers.length > 0
+                                  ? "Unsold players become available after all first-round players have been auctioned"
+                                  : undefined
+                              }
+                              className="shrink-0 rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Re-Auction
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              )}
+
               {activeDrawerTab === "sold" &&
                 (soldPlayers.length === 0 ? (
                   <p className="text-center text-slate-500 text-sm py-8">
@@ -1569,14 +1629,23 @@ export default function AuctioneerPage() {
                             Base: ₹{formatMoney(effBase)}
                           </p>
                         </div>
-                        {status === "active" && !displayActiveAP && (
-                          <button
-                            onClick={() => handlePickPlayer(p.id)}
-                            className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs px-3 py-1.5 rounded-lg"
-                          >
-                            Re-Auction
-                          </button>
-                        )}
+                        <button
+                          onClick={() => handlePickPlayer(p.id)}
+                          disabled={
+                            status !== "active" ||
+                            !!displayActiveAP ||
+                            pendingPlayers.length > 0 ||
+                            busyAction
+                          }
+                          title={
+                            pendingPlayers.length > 0
+                              ? "Unsold players become available after all first-round players have been auctioned"
+                              : undefined
+                          }
+                          className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Re-Auction
+                        </button>
                       </div>
                     );
                   })
