@@ -385,21 +385,23 @@ export default function AuctioneerPage() {
     !!displayActiveAP &&
     (displayActiveAP.status === "sold" || justSoldPlayerId === displayActiveAP.id);
 
-  const excludeCaptains = true; // Assigned captains are never part of the auction pool.
+  // Keep every auction count aligned to the eligible auction pool. Assigned
+  // captains are excluded from both the progress denominator and status totals.
+  const auctionPoolPlayers = useMemo(
+    () => store.players.filter((p) => !captainIds.has(Number(p.player_id))),
+    [store.players, captainIds]
+  );
   const pendingPlayers = useMemo(
-    () =>
-      store.players.filter(
-        (p) => p.status === "pending" && (!excludeCaptains || !captainIds.has(p.player_id))
-      ),
-    [store.players, captainIds, excludeCaptains]
+    () => auctionPoolPlayers.filter((p) => p.status === "pending"),
+    [auctionPoolPlayers]
   );
   const soldPlayers = useMemo(
-    () => store.players.filter((p) => p.status === "sold"),
-    [store.players]
+    () => auctionPoolPlayers.filter((p) => p.status === "sold"),
+    [auctionPoolPlayers]
   );
   const unsoldPlayers = useMemo(
-    () => store.players.filter((p) => p.status === "unsold"),
-    [store.players]
+    () => auctionPoolPlayers.filter((p) => p.status === "unsold"),
+    [auctionPoolPlayers]
   );
 
   const getCategoryObj = useCallback(
@@ -652,7 +654,7 @@ export default function AuctioneerPage() {
     }
   };
 
-  const lotTotal = store.players.length;
+  const lotTotal = auctionPoolPlayers.length;
   const canAdjustPrice = !!displayActiveAP;
 
   const handleNoBid = async () => {
