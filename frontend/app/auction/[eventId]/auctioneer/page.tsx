@@ -1277,7 +1277,7 @@ export default function AuctioneerPage() {
                   {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && (
                     <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-100">re-auction unsold</button>
                   )}
-                  <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">view squads</button>
+                  <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">Squad Overview</button>
                   <button
                     type="button"
                     onClick={() => setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")}
@@ -1453,7 +1453,7 @@ export default function AuctioneerPage() {
             {activeDrawerTab === "squads" ? (
               <button
                 onClick={() => setActiveDrawerTab("none")}
-                aria-label="Close View Squads"
+                aria-label="Close Squad Overview"
                 className="absolute right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/80 text-slate-300 text-lg font-bold shadow-lg ring-1 ring-white/15 hover:bg-slate-800 hover:text-white"
               >
                 ✕
@@ -1732,7 +1732,7 @@ export default function AuctioneerPage() {
                 ))}
 
               {activeDrawerTab === "squads" && (
-                <div className="flex min-h-0 h-full flex-1 flex-row gap-3">
+                <div className="relative isolate flex min-h-0 h-full flex-1 flex-row gap-3">
                   <nav className="flex w-40 shrink-0 flex-col gap-2 overflow-y-auto border-r border-slate-700 pr-3" aria-label="Select team squad">
                     {store.teams.map((team) => (
                       <button
@@ -1777,11 +1777,20 @@ export default function AuctioneerPage() {
                       );
                     };
                     return (
-                      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                        <div className="mb-2 shrink-0 pr-10 text-xs text-slate-300">
-                          <strong className="text-lg text-white">{team.name} Squad</strong>
+                      <div className="relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        {team.logo && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={resolveMediaUrl(team.logo)}
+                            alt=""
+                            aria-hidden="true"
+                            className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(48vw,560px)] max-h-[70%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.20]"
+                          />
+                        )}
+                        <div className="relative z-30 mb-2 shrink-0 pr-10 text-xs text-slate-300">
+                          <strong className="text-lg text-white">Squad Overview · {team.name}</strong>
                         </div>
-                        <div className="min-h-0 flex-1 overflow-hidden">
+                        <div className="relative z-10 min-h-0 flex-1 overflow-hidden">
                           {captainId || roster.length > 0 ? (
                             <div className="grid grid-cols-2 justify-items-center content-start gap-2 sm:grid-cols-4 lg:grid-cols-6">
                               {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
@@ -1789,7 +1798,7 @@ export default function AuctioneerPage() {
                             </div>
                           ) : <p className="py-12 text-center text-sm text-slate-500">No captain or players assigned yet.</p>}
                         </div>
-                        <div className="mt-2 shrink-0 border-t border-slate-700 pt-2 text-right text-xs font-semibold text-slate-300 tabular-nums">
+                        <div className="relative z-30 mt-2 shrink-0 border-t border-slate-700 pt-2 text-right text-xs font-semibold text-slate-300 tabular-nums">
                           {team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}
                         </div>
                       </div>
@@ -1815,7 +1824,7 @@ export default function AuctioneerPage() {
                       onClick={() => setInspectTeamId(t.id)}
                       className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg"
                     >
-                      View Squad
+                      Open Team Squad Details
                     </button>
                   </div>
                 ))}
@@ -1874,13 +1883,13 @@ export default function AuctioneerPage() {
                 src={resolveMediaUrl(inspectedTeam.logo)}
                 alt=""
                 aria-hidden="true"
-                className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(58vw,620px)] max-h-[72%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.14] mix-blend-screen"
+                className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(58vw,620px)] max-h-[72%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.20]"
               />
             )}
             <div className="relative z-30 flex items-center justify-between mb-4 shrink-0">
               <div>
                 <h3 className="text-xl sm:text-2xl font-extrabold text-white">
-                  {inspectedTeam.name} — Squad
+                  Team Squad Details — {inspectedTeam.name}
                 </h3>
                 <p className="text-sm text-slate-400 mt-1">
                   Purse Left: ₹
@@ -1890,7 +1899,7 @@ export default function AuctioneerPage() {
               </div>
               <button
                 onClick={() => setInspectTeamId(null)}
-                aria-label="Close squad window"
+                aria-label="Close Team Squad Details"
                 className="text-slate-400 hover:text-white font-bold text-2xl px-2"
               >
                 ✕
