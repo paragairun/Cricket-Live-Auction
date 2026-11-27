@@ -67,36 +67,70 @@ async def test_reverse_sale_refunds_team_and_immediately_reopens_player(
     assert audits[0].team_id == team.id and audits[0].amount == 11000
 
 
-async def test_reverse_sale_is_blocked_while_another_player_is_active(
-    make_event, make_team, register_player
+@pytest.mark.parametrize("current_outcome", ["sold", "no_bid"])
+async def test_reverse_sale_queues_during_live_lot_and_auto_activates_after_finalisation(
+    make_event, make_team, register_player, current_outcome
 ):
+    from datetime import datetime, timedelta, timezone
+
     event, _admin, _organizer, auctioneer = await make_event(status=AuctionStatus.active)
-    team = await make_team(event, name="Wrong Team")
-    _sold_player, sold_ap = await register_player(event, name="Sold player", base_price=10000)
-    _active_player, active_ap = await register_player(event, name="Current player", base_price=5000)
+    wrong_team = await make_team(event, name="Wrong Team")
+    winning_team = await make_team(event, name="Current Winner")
+    _sold_player, sold_ap = await register_player(event, name="Queued player", base_price=10000)
+    _current_player, current_ap = await register_player(event, name="Current lot", base_price=5000)
 
     async with AsyncSessionLocal() as session:
+        event_row = await session.get(type(event), event.id)
+        event_row.auto_advance = False  # Queue progression must work even when normal auto-advance is off.
+        deadline_before = datetime.now(timezone.utc) + timedelta(seconds=45)
+        event_row.deadline_at = deadline_before
         sold_row = await session.get(AuctionPlayer, sold_ap.id)
         sold_row.status = PlayerAuctionStatus.sold
         sold_row.current_bid = 12000
-        sold_row.current_bid_team_id = team.id
-        active_row = await session.get(AuctionPlayer, active_ap.id)
+        sold_row.current_bid_team_id = wrong_team.id
+        active_row = await session.get(AuctionPlayer, current_ap.id)
         active_row.status = PlayerAuctionStatus.active
+        active_row.current_bid = 7000
+        active_row.current_bid_team_id = winning_team.id if current_outcome == "sold" else None
         session.add(TeamPlayer(
-            event_id=event.id, team_id=team.id, player_id=sold_ap.player_id, sold_price=12000
+            event_id=event.id, team_id=wrong_team.id,
+            player_id=sold_ap.player_id, sold_price=12000
         ))
-        team_row = await session.get(Team, team.id)
-        team_row.spent = 12000
+        wrong_team_row = await session.get(Team, wrong_team.id)
+        wrong_team_row.spent = 12000
         await session.commit()
 
     async with AsyncSessionLocal() as session:
-        with pytest.raises(AuctionError, match="another player is on the block"):
-            await auction_service.reverse_sale_and_reauction(
-                event.id, sold_ap.id, session, actor=auctioneer
-            )
+        queued_player = await auction_service.reverse_sale_and_reauction(
+            event.id, sold_ap.id, session, actor=auctioneer
+        )
+        assert queued_player.status == PlayerAuctionStatus.queued
+        assert queued_player.current_bid == 10000
+        assert queued_player.current_bid_team_id is None
+        assert await session.get(AuctionPlayer, current_ap.id) is not None
 
     async with AsyncSessionLocal() as session:
-        team_row = await session.get(Team, team.id)
-        sold_row = await session.get(AuctionPlayer, sold_ap.id)
-    assert team_row.spent == 12000
-    assert sold_row.status == PlayerAuctionStatus.sold
+        wrong_team_row = await session.get(Team, wrong_team.id)
+        current_event = await session.get(type(event), event.id)
+        assert wrong_team_row.spent == 0
+        assert current_event.deadline_at.replace(tzinfo=timezone.utc) == deadline_before
+
+    async with AsyncSessionLocal() as session:
+        await auction_service.hammer_player(event.id, current_ap.id, session, actor=auctioneer)
+
+    async with AsyncSessionLocal() as session:
+        current_event = await session.get(type(event), event.id)
+        current_event.advance_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+        await auction_service.run_due_hammers(session)
+
+    async with AsyncSessionLocal() as session:
+        queued_row = await session.get(AuctionPlayer, sold_ap.id)
+        current_row = await session.get(AuctionPlayer, current_ap.id)
+        current_event = await session.get(type(event), event.id)
+
+    assert current_row.status == (
+        PlayerAuctionStatus.sold if current_outcome == "sold" else PlayerAuctionStatus.unsold
+    )
+    assert queued_row.status == PlayerAuctionStatus.active
+    assert current_event.deadline_at is not None or event.no_timer

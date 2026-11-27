@@ -636,6 +636,15 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     if event.status not in (AuctionStatus.active, AuctionStatus.paused):
         raise AuctionError("Auction must be active or paused to finish")
 
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    if queued_result.scalar_one_or_none() is not None:
+        raise AuctionError("A player is queued for re-auction. Complete the queued player before finishing the auction.")
+
     active_result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
@@ -734,12 +743,25 @@ async def set_next_player(
             "A player is still on the block. Hammer the sale or pull the player first."
         )
 
-    if auction_player_id is None:
+    queued_result = await db.execute(
+        select(AuctionPlayer)
+        .where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        )
+        .order_by(AuctionPlayer.auction_order, AuctionPlayer.id)
+        .limit(1)
+    )
+    ap = queued_result.scalars().first()
+
+    # A queued correction has priority over both random progression and a
+    # simultaneous manual player selection. Never let the next lot skip it.
+    if ap is None and auction_player_id is None:
         if event.auction_mode == AuctionMode.nomination:
             ap = await _next_nominated(db, event_id)
         else:
             ap = await _pick_random_pending(db, event_id)
-    else:
+    elif ap is None:
         result = await db.execute(
             select(AuctionPlayer).where(
                 AuctionPlayer.id == auction_player_id,
@@ -780,7 +802,7 @@ async def set_next_player(
             AuctionPlayer.id == ap.id,
             AuctionPlayer.event_id == event_id,
             AuctionPlayer.status.in_(
-                [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold]
+                [PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold, PlayerAuctionStatus.queued]
             ),
             AuctionPlayer.version == ap.version,
         )
@@ -925,9 +947,16 @@ async def pull_player(
     )
     event = await _get_event(db, event_id)
     event.deadline_at = None
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    has_queued_reauction = queued_result.scalar_one_or_none() is not None
     event.advance_at = (
         datetime.now(timezone.utc) + timedelta(seconds=1.5)
-        if event.auto_advance else None
+        if event.auto_advance or has_queued_reauction else None
     )
     await db.commit()
 
@@ -1203,9 +1232,16 @@ async def hammer_player(
 
     event.deadline_at = None
     event.paused_remaining_seconds = None
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    has_queued_reauction = queued_result.scalar_one_or_none() is not None
     event.advance_at = (
         datetime.now(timezone.utc) + timedelta(seconds=1.5)
-        if event.auto_advance else None
+        if event.auto_advance or has_queued_reauction else None
     )
 
     await _record_outcome(
@@ -1314,24 +1350,13 @@ async def reverse_sale_and_reauction(
 ) -> AuctionPlayer:
     """Refund a completed sale and put that player straight back on the block.
 
-    The roster removal, purse refund, sale audit, bid-history reversal and
-    activation of the player are committed as one transaction.
+    The roster removal, purse refund, sale audit and bid-history reversal are
+    committed atomically. If another player is active, this player is queued
+    and automatically takes the block when that auction is finalised.
     """
     event = await _get_event(db, event_id)
     if event.status != AuctionStatus.active:
         raise AuctionError("Sale correction is available only while the auction is active")
-
-    active_result = await db.execute(
-        select(AuctionPlayer.id).where(
-            AuctionPlayer.event_id == event_id,
-            AuctionPlayer.status == PlayerAuctionStatus.active,
-        )
-    )
-    if active_result.scalar_one_or_none() is not None:
-        raise AuctionError(
-            "Cannot reverse a sale while another player is on the block. "
-            "Hammer the current player or mark them No Bid first."
-        )
 
     ap_result = await db.execute(
         select(AuctionPlayer).where(
@@ -1383,6 +1408,21 @@ async def reverse_sale_and_reauction(
 
     # Claim the sold row before changing any money or roster data. A second
     # correction request cannot refund the same sale twice.
+    active_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status.in_([PlayerAuctionStatus.active, PlayerAuctionStatus.rtm_pending]),
+        ).limit(1)
+    )
+    another_player_active = active_result.scalar_one_or_none() is not None
+    next_order_result = await db.execute(
+        select(AuctionPlayer.auction_order)
+        .where(AuctionPlayer.event_id == event_id)
+        .order_by(AuctionPlayer.auction_order.desc())
+        .limit(1)
+    )
+    next_queue_order = (next_order_result.scalar_one_or_none() or 0) + 1
+    target_status = PlayerAuctionStatus.queued if another_player_active else PlayerAuctionStatus.active
     claim = await db.execute(
         update(AuctionPlayer)
         .where(
@@ -1391,7 +1431,7 @@ async def reverse_sale_and_reauction(
             AuctionPlayer.status == PlayerAuctionStatus.sold,
             AuctionPlayer.version == ap.version,
         )
-        .values(status=PlayerAuctionStatus.active)
+        .values(status=target_status, auction_order=next_queue_order if another_player_active else ap.auction_order)
     )
     if claim.rowcount == 0:
         await db.rollback()
@@ -1420,12 +1460,13 @@ async def reverse_sale_and_reauction(
     ap.version += 1
 
     timing = Timing.for_event(event)
-    deadline = _now() + timing.base_seconds if not event.no_timer else None
-    event.deadline_at = (
-        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
-    )
-    event.advance_at = None
-    event.paused_remaining_seconds = None
+    if not another_player_active:
+        deadline = _now() + timing.base_seconds if not event.no_timer else None
+        event.deadline_at = (
+            datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+        )
+        event.advance_at = None
+        event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.sale_reversed,
@@ -1434,7 +1475,7 @@ async def reverse_sale_and_reauction(
         amount=sale_price, previous_amount=sale_price,
         detail=(
             f"Sale reversed; ₹{sale_price} refunded to {team.name}. "
-            "Player returned directly to the auction block."
+            + ("Player queued for re-auction after the current lot." if another_player_active else "Player returned directly to the auction block.")
         ),
     )
     await db.commit()
@@ -1447,6 +1488,7 @@ async def reverse_sale_and_reauction(
         "player_id": ap.player_id,
         "team_id": team_id,
         "refunded_amount": sale_price,
+        "queued": another_player_active,
     })
     # Send a complete snapshot so every connected console and spectator sees
     # the refunded purse, corrected roster, and newly active player together.
@@ -1842,9 +1884,16 @@ async def _settle_rtm(
 
     event = await _get_event(db, event_id)
     event.deadline_at = None
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    has_queued_reauction = queued_result.scalar_one_or_none() is not None
     event.advance_at = (
         datetime.now(timezone.utc) + timedelta(seconds=1.5)
-        if event.auto_advance else None
+        if event.auto_advance or has_queued_reauction else None
     )
     await record_audit(
         db, event_id=event_id, action=action,
