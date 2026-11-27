@@ -1391,7 +1391,7 @@ async def reverse_sale_and_reauction(
             AuctionPlayer.status == PlayerAuctionStatus.sold,
             AuctionPlayer.version == ap.version,
         )
-        .values(status=PlayerAuctionStatus.active, version=AuctionPlayer.version + 1)
+        .values(status=PlayerAuctionStatus.active)
     )
     if claim.rowcount == 0:
         await db.rollback()
