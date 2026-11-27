@@ -70,7 +70,7 @@ async def test_reverse_sale_refunds_team_and_immediately_reopens_player(
 async def test_reverse_sale_is_blocked_while_another_player_is_active(
     make_event, make_team, register_player
 ):
-    event, _admin, _organizer, auctioneer = await make_event(status="active")
+    event, _admin, _organizer, auctioneer = await make_event(status=AuctionStatus.active)
     team = await make_team(event, name="Wrong Team")
     _sold_player, sold_ap = await register_player(event, name="Sold player", base_price=10000)
     _active_player, active_ap = await register_player(event, name="Current player", base_price=5000)
