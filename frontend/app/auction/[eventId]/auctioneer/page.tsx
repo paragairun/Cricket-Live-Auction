@@ -1137,7 +1137,52 @@ export default function AuctioneerPage() {
         <div className="relative z-10 mx-auto h-full w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-2.5 px-5 py-3">
           {/* LEFT ZONE: Player Showcase Card (Photo Placeholder) */}
           <div className="lg:col-span-6 min-h-0 flex flex-col justify-center">
-            {displayActiveAP ? (
+            {saleCelebration ? (
+                <div className="relative isolate flex min-h-[280px] max-h-full w-full max-w-[520px] mx-auto lg:mx-0 flex-col items-center justify-center overflow-hidden border border-amber-300/50 bg-gradient-to-br from-[#17100a]/95 via-[#35120d]/95 to-[#101827]/95 px-5 py-6 text-center shadow-[0_0_55px_rgba(251,191,36,0.22)]">
+                  <style>{`
+                    @keyframes sold-pop { 0% { opacity: 0; transform: scale(.45) rotate(-12deg); } 65% { opacity: 1; transform: scale(1.12) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+                    @keyframes sold-rise { 0% { opacity: 0; transform: translateY(22px); } 100% { opacity: 1; transform: translateY(0); } }
+                    @keyframes sold-firework { 0% { opacity: 0; transform: scale(.2) rotate(-20deg); } 35% { opacity: 1; transform: scale(1.25) rotate(12deg); } 100% { opacity: 0; transform: scale(1.65) rotate(28deg); } }
+                    @keyframes sold-confetti { 0% { opacity: 0; transform: translateY(-18px) rotate(0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(230px) rotate(540deg); } }
+                    .sold-pop { animation: sold-pop .65s cubic-bezier(.2,.9,.25,1.3) both; }
+                    .sold-rise { animation: sold-rise .55s ease-out both; }
+                    .sold-firework { animation: sold-firework 1.6s ease-out infinite; }
+                    .sold-confetti { animation: sold-confetti 2.8s linear infinite; }
+                    @media (prefers-reduced-motion: reduce) { .sold-pop, .sold-rise, .sold-firework, .sold-confetti { animation: none !important; } }
+                  `}</style>
+                  <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+                    <span className="sold-firework absolute left-[7%] top-[12%] text-4xl">🎆</span>
+                    <span className="sold-firework absolute right-[8%] top-[10%] text-5xl" style={{ animationDelay: ".45s" }}>🎇</span>
+                    <span className="sold-firework absolute left-[18%] bottom-[12%] text-3xl" style={{ animationDelay: ".8s" }}>🎆</span>
+                    <span className="sold-firework absolute right-[18%] bottom-[12%] text-4xl" style={{ animationDelay: ".25s" }}>🎇</span>
+                    <span className="sold-confetti absolute left-[28%] top-0 text-xl" style={{ animationDelay: ".1s" }}>🎊</span>
+                    <span className="sold-confetti absolute left-[48%] top-0 text-xl" style={{ animationDelay: ".7s" }}>✨</span>
+                    <span className="sold-confetti absolute right-[30%] top-0 text-xl" style={{ animationDelay: "1.1s" }}>🎉</span>
+                    <span className="sold-confetti absolute right-[12%] top-0 text-lg" style={{ animationDelay: ".4s" }}>✨</span>
+                  </div>
+                  <div className="relative z-10 flex flex-col items-center">
+                    <div className="sold-pop mb-1 text-5xl sm:text-6xl" aria-hidden="true">🎉</div>
+                    <p className="sold-pop text-4xl sm:text-5xl font-black uppercase italic tracking-wider text-amber-300 drop-shadow-[0_3px_0_#7c2d12]">SOLD!</p>
+                    <p className="sold-rise mt-2 text-xs sm:text-sm font-bold uppercase tracking-[0.28em] text-white/75">Congratulations</p>
+                    <p className="sold-rise mt-2 max-w-full truncate text-xl sm:text-2xl font-black uppercase tracking-tight text-white">{saleCelebration.playerName}</p>
+                    <div className="sold-rise mt-3 flex items-center justify-center gap-3 rounded-xl border border-white/15 bg-black/35 px-4 py-2.5">
+                      {saleCelebration.teamLogo ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={resolveMediaUrl(saleCelebration.teamLogo)} alt="" className="h-12 w-12 object-contain" />
+                      ) : (
+                        <span className="text-3xl" aria-hidden="true">🏆</span>
+                      )}
+                      <div className="text-left">
+                        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-200/80">Sold to</p>
+                        <p className="max-w-[240px] truncate text-base sm:text-lg font-black uppercase text-white">{saleCelebration.teamName}</p>
+                      </div>
+                    </div>
+                    <p className="sold-rise mt-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">Winning bid</p>
+                    <p className="sold-rise text-2xl sm:text-3xl font-black tabular-nums text-emerald-300 drop-shadow-lg">₹{formatMoney(saleCelebration.soldPrice)}</p>
+                    <p className="mt-3 text-[9px] font-bold uppercase tracking-[0.22em] text-white/55">Next player coming up...</p>
+                  </div>
+                </div>
+              ) : displayActiveAP ? (
               <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
                 {/* Player photo placeholder */}
                 <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
@@ -1208,54 +1253,7 @@ export default function AuctioneerPage() {
                   </div>
                 </div>
               </div>
-            ) : (
-              {saleCelebration ? (
-                <div className="relative isolate flex min-h-[280px] max-h-full w-full max-w-[520px] mx-auto lg:mx-0 flex-col items-center justify-center overflow-hidden border border-amber-300/50 bg-gradient-to-br from-[#17100a]/95 via-[#35120d]/95 to-[#101827]/95 px-5 py-6 text-center shadow-[0_0_55px_rgba(251,191,36,0.22)]">
-                  <style>{`
-                    @keyframes sold-pop { 0% { opacity: 0; transform: scale(.45) rotate(-12deg); } 65% { opacity: 1; transform: scale(1.12) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
-                    @keyframes sold-rise { 0% { opacity: 0; transform: translateY(22px); } 100% { opacity: 1; transform: translateY(0); } }
-                    @keyframes sold-firework { 0% { opacity: 0; transform: scale(.2) rotate(-20deg); } 35% { opacity: 1; transform: scale(1.25) rotate(12deg); } 100% { opacity: 0; transform: scale(1.65) rotate(28deg); } }
-                    @keyframes sold-confetti { 0% { opacity: 0; transform: translateY(-18px) rotate(0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(230px) rotate(540deg); } }
-                    .sold-pop { animation: sold-pop .65s cubic-bezier(.2,.9,.25,1.3) both; }
-                    .sold-rise { animation: sold-rise .55s ease-out both; }
-                    .sold-firework { animation: sold-firework 1.6s ease-out infinite; }
-                    .sold-confetti { animation: sold-confetti 2.8s linear infinite; }
-                    @media (prefers-reduced-motion: reduce) { .sold-pop, .sold-rise, .sold-firework, .sold-confetti { animation: none !important; } }
-                  `}</style>
-                  <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-                    <span className="sold-firework absolute left-[7%] top-[12%] text-4xl">🎆</span>
-                    <span className="sold-firework absolute right-[8%] top-[10%] text-5xl" style={{ animationDelay: ".45s" }}>🎇</span>
-                    <span className="sold-firework absolute left-[18%] bottom-[12%] text-3xl" style={{ animationDelay: ".8s" }}>🎆</span>
-                    <span className="sold-firework absolute right-[18%] bottom-[12%] text-4xl" style={{ animationDelay: ".25s" }}>🎇</span>
-                    <span className="sold-confetti absolute left-[28%] top-0 text-xl" style={{ animationDelay: ".1s" }}>🎊</span>
-                    <span className="sold-confetti absolute left-[48%] top-0 text-xl" style={{ animationDelay: ".7s" }}>✨</span>
-                    <span className="sold-confetti absolute right-[30%] top-0 text-xl" style={{ animationDelay: "1.1s" }}>🎉</span>
-                    <span className="sold-confetti absolute right-[12%] top-0 text-lg" style={{ animationDelay: ".4s" }}>✨</span>
-                  </div>
-                  <div className="relative z-10 flex flex-col items-center">
-                    <div className="sold-pop mb-1 text-5xl sm:text-6xl" aria-hidden="true">🎉</div>
-                    <p className="sold-pop text-4xl sm:text-5xl font-black uppercase italic tracking-wider text-amber-300 drop-shadow-[0_3px_0_#7c2d12]">SOLD!</p>
-                    <p className="sold-rise mt-2 text-xs sm:text-sm font-bold uppercase tracking-[0.28em] text-white/75">Congratulations</p>
-                    <p className="sold-rise mt-2 max-w-full truncate text-xl sm:text-2xl font-black uppercase tracking-tight text-white">{saleCelebration.playerName}</p>
-                    <div className="sold-rise mt-3 flex items-center justify-center gap-3 rounded-xl border border-white/15 bg-black/35 px-4 py-2.5">
-                      {saleCelebration.teamLogo ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={resolveMediaUrl(saleCelebration.teamLogo)} alt="" className="h-12 w-12 object-contain" />
-                      ) : (
-                        <span className="text-3xl" aria-hidden="true">🏆</span>
-                      )}
-                      <div className="text-left">
-                        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-200/80">Sold to</p>
-                        <p className="max-w-[240px] truncate text-base sm:text-lg font-black uppercase text-white">{saleCelebration.teamName}</p>
-                      </div>
-                    </div>
-                    <p className="sold-rise mt-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">Winning bid</p>
-                    <p className="sold-rise text-2xl sm:text-3xl font-black tabular-nums text-emerald-300 drop-shadow-lg">₹{formatMoney(saleCelebration.soldPrice)}</p>
-                    <p className="mt-3 text-[9px] font-bold uppercase tracking-[0.22em] text-white/55">Next player coming up...</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto lg:mx-0">
+            ) : ( border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto lg:mx-0">
                   <p className="text-lg font-black uppercase tracking-wide text-amber-300">
                     {status === "active"
                       ? "NO PLAYER ON THE BLOCK"
@@ -1271,7 +1269,6 @@ export default function AuctioneerPage() {
                       : "Click START in the top-right header to begin."}
                   </p>
                 </div>
-              )}
             )}
           </div>
 
