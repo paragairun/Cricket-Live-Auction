@@ -1308,6 +1308,167 @@ async def _broadcast_outcome(
         )
 
 
+async def reverse_sale_and_reauction(
+    event_id: int, auction_player_id: int, db: AsyncSession,
+    actor: User | None = None,
+) -> AuctionPlayer:
+    """Refund a completed sale and put that player straight back on the block.
+
+    The roster removal, purse refund, sale audit, bid-history reversal and
+    activation of the player are committed as one transaction.
+    """
+    event = await _get_event(db, event_id)
+    if event.status != AuctionStatus.active:
+        raise AuctionError("Sale correction is available only while the auction is active")
+
+    active_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.active,
+        )
+    )
+    if active_result.scalar_one_or_none() is not None:
+        raise AuctionError(
+            "Cannot reverse a sale while another player is on the block. "
+            "Hammer the current player or mark them No Bid first."
+        )
+
+    ap_result = await db.execute(
+        select(AuctionPlayer).where(
+            AuctionPlayer.id == auction_player_id,
+            AuctionPlayer.event_id == event_id,
+        )
+    )
+    ap = ap_result.scalar_one_or_none()
+    if ap is None or ap.status != PlayerAuctionStatus.sold:
+        raise AuctionError("This player is not currently recorded as sold")
+
+    sale_price = ap.current_bid
+    team_id = ap.current_bid_team_id
+    if team_id is None or sale_price < 0:
+        raise AuctionError("The recorded sale is missing its team or sale amount")
+
+    team_result = await db.execute(
+        select(Team).where(Team.id == team_id, Team.event_id == event_id)
+    )
+    team = team_result.scalar_one_or_none()
+    if team is None or team.spent < sale_price:
+        raise AuctionError("The original team's purse does not match the recorded sale")
+
+    sale_result = await db.execute(
+        select(TeamPlayer).where(
+            TeamPlayer.event_id == event_id,
+            TeamPlayer.team_id == team_id,
+            TeamPlayer.player_id == ap.player_id,
+        )
+    )
+    roster_entry = sale_result.scalar_one_or_none()
+    if roster_entry is None or roster_entry.sold_price != sale_price:
+        raise AuctionError("The original team roster does not match the recorded sale")
+
+    prior_sale_audit = await db.execute(
+        select(AuctionAuditLog)
+        .where(
+            AuctionAuditLog.event_id == event_id,
+            AuctionAuditLog.auction_player_id == ap.id,
+            AuctionAuditLog.action == AuditAction.player_sold,
+        )
+        .order_by(AuctionAuditLog.id.desc())
+        .limit(1)
+    )
+    sale_audit = prior_sale_audit.scalars().first()
+    acquired_via_rtm = bool(
+        sale_audit and sale_audit.detail == "Acquired via Right to Match"
+    )
+
+    # Claim the sold row before changing any money or roster data. A second
+    # correction request cannot refund the same sale twice.
+    claim = await db.execute(
+        update(AuctionPlayer)
+        .where(
+            AuctionPlayer.id == ap.id,
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.sold,
+            AuctionPlayer.version == ap.version,
+        )
+        .values(status=PlayerAuctionStatus.active, version=AuctionPlayer.version + 1)
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        raise ConcurrentUpdate("This sale was already changed. Refresh the auction state.")
+
+    await db.delete(roster_entry)
+    team.spent -= sale_price
+    if acquired_via_rtm and team.rtm_cards_used > 0:
+        team.rtm_cards_used -= 1
+
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        update(Bid)
+        .where(Bid.event_id == event_id, Bid.auction_player_id == ap.id, Bid.reverted_at.is_(None))
+        .values(reverted_at=now, reverted_by_user_id=actor.id if actor else None)
+    )
+
+    base = await _effective_base_price(ap, db)
+    ap.base_price = base
+    ap.current_bid = base
+    ap.current_bid_team_id = None
+    ap.rtm_stage = None
+    ap.rtm_top_team_id = None
+    ap.rtm_top_amount = None
+    ap.extension_count = 0
+    ap.version += 1
+
+    timing = Timing.for_event(event)
+    deadline = _now() + timing.base_seconds if not event.no_timer else None
+    event.deadline_at = (
+        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+    )
+    event.advance_at = None
+    event.paused_remaining_seconds = None
+
+    await record_audit(
+        db, event_id=event_id, action=AuditAction.sale_reversed,
+        actor_user_id=actor.id if actor else None,
+        auction_player_id=ap.id, team_id=team_id,
+        amount=sale_price, previous_amount=sale_price,
+        detail=(
+            f"Sale reversed; ₹{sale_price} refunded to {team.name}. "
+            "Player returned directly to the auction block."
+        ),
+    )
+    await db.commit()
+    await db.refresh(ap)
+
+    await manager.broadcast(event_id, {
+        "type": "sale_reversed",
+        "event_id": event_id,
+        "auction_player_id": ap.id,
+        "player_id": ap.player_id,
+        "team_id": team_id,
+        "refunded_amount": sale_price,
+    })
+    await manager.broadcast(event_id, {
+        "type": "player_up",
+        "event_id": event_id,
+        "auction_player_id": ap.id,
+        "player_id": ap.player_id,
+        "player_name": ap.player.name if ap.player else None,
+        "profile_photo": ap.player.profile_photo if ap.player else None,
+        "batting_rating": ap.player.batting_rating if ap.player else None,
+        "bowling_rating": ap.player.bowling_rating if ap.player else None,
+        "fielding_rating": ap.player.fielding_rating if ap.player else None,
+        "age": ap.player.age if ap.player else None,
+        "base_price": ap.base_price,
+        "current_bid": ap.current_bid,
+        "version": ap.version,
+        "no_timer": bool(event.no_timer),
+        "deadline_epoch": event.deadline_at.timestamp() if event.deadline_at else None,
+        "server_time": _now(),
+    })
+    return ap
+
+
 # ── Operator corrections ──────────────────────────────────────────────────────
 
 
