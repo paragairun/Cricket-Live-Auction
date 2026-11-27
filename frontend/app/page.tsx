@@ -40,7 +40,7 @@ export default function LandingPage() {
       </div>
 
       <footer className="absolute bottom-6 flex items-center gap-4 text-gray-700 text-sm">
-        <span>Powered by Techiebutler</span>
+        <span>Powered by Padmajak Innovations</span>
       </footer>
     </main>
   );

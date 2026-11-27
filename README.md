@@ -341,14 +341,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**A project by [Techiebutler](https://techiebutler.com)**
+**A project by Padmajak Innovations**
 
 Have questions? Need help?
 
-**Email:** [support@techiebutler.com](mailto:support@techiebutler.com)
-
-[![Instagram](https://img.shields.io/badge/Instagram-%23E4405F.svg?style=for-the-badge&logo=Instagram&logoColor=white)](https://www.instagram.com/techie_butler/)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-%230077B5.svg?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/techiebutler/)
+For questions or support, please contact the repository maintainers.
 
 ---
 

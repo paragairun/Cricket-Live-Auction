@@ -168,7 +168,7 @@ export default function AdminEventsPage() {
                     className="input"
                     value={form.domains}
                     onChange={(e) => setForm({ ...form, domains: e.target.value })}
-                    placeholder="techiebutler.com, example.com"
+                    placeholder="company.com, example.com"
                   />
                   <p className="text-xs text-gray-600 mt-1">Comma-separated. Leave blank for all.</p>
                 </div>

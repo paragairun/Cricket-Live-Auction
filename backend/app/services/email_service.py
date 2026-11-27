@@ -83,7 +83,7 @@ def _base_template(title: str, body_html: str) -> str:
         <tr>
           <td style="padding:20px 40px;border-top:1px solid #1f2937;text-align:center;">
             <p style="margin:0;font-size:12px;color:#4b5563;">
-              Powered by Techiebutler · Cricket Auction Platform
+              Powered by Padmajak Innovations · Cricket Auction Platform
             </p>
           </td>
         </tr>
