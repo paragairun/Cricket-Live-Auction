@@ -74,13 +74,14 @@ async def test_reverse_sale_queues_during_live_lot_and_auto_activates_after_fina
     from datetime import datetime, timedelta, timezone
 
     event, _admin, _organizer, auctioneer = await make_event(status=AuctionStatus.active)
-    event.auto_advance = False  # A queued correction must advance even when normal auto-advance is off.
     wrong_team = await make_team(event, name="Wrong Team")
     winning_team = await make_team(event, name="Current Winner")
     _sold_player, sold_ap = await register_player(event, name="Queued player", base_price=10000)
     _current_player, current_ap = await register_player(event, name="Current lot", base_price=5000)
 
     async with AsyncSessionLocal() as session:
+        event_row = await session.get(type(event), event.id)
+        event_row.auto_advance = False  # Queue progression must work even when normal auto-advance is off.
         sold_row = await session.get(AuctionPlayer, sold_ap.id)
         sold_row.status = PlayerAuctionStatus.sold
         sold_row.current_bid = 12000
