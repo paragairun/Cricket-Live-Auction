@@ -1864,8 +1864,17 @@ export default function AuctioneerPage() {
       {/* ── TEAM SQUAD INSPECTOR MODAL ── */}
       {inspectedTeam && (
         <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-2 sm:p-3">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between mb-4 shrink-0">
+          <div className="relative isolate bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden">
+            {inspectedTeam.logo && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={inspectedTeam.logo}
+                alt=""
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-1/2 z-0 h-auto w-[min(58vw,620px)] max-h-[72%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.09]"
+              />
+            )}
+            <div className="relative z-10 flex items-center justify-between mb-4 shrink-0">
               <div>
                 <h3 className="text-xl sm:text-2xl font-extrabold text-white">
                   {inspectedTeam.name} — Squad
@@ -1884,7 +1893,7 @@ export default function AuctioneerPage() {
                 ✕
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+            <div className="relative z-10 flex-1 min-h-0 overflow-y-auto pr-1">
               {(() => {
                 const roster = teamRosters[inspectedTeam.id] || [];
                 const captainId = inspectedTeam.captain_id;
