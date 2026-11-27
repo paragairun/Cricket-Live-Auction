@@ -809,13 +809,12 @@ async def set_next_player(
         await db.rollback()
         raise ConcurrentUpdate("Another request selected this player first. Refresh the auction state.")
     timing = Timing.for_event(event)
-    if not another_player_active:
-        deadline = _now() + timing.base_seconds if not event.no_timer else None
-        event.deadline_at = (
-            datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
-        )
-        event.advance_at = None
-        event.paused_remaining_seconds = None
+    deadline = _now() + timing.base_seconds if not event.no_timer else None
+    event.deadline_at = (
+        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+    )
+    event.advance_at = None
+    event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.player_put_up,
@@ -1451,12 +1450,13 @@ async def reverse_sale_and_reauction(
     ap.version += 1
 
     timing = Timing.for_event(event)
-    deadline = _now() + timing.base_seconds if not event.no_timer else None
-    event.deadline_at = (
-        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
-    )
-    event.advance_at = None
-    event.paused_remaining_seconds = None
+    if not another_player_active:
+        deadline = _now() + timing.base_seconds if not event.no_timer else None
+        event.deadline_at = (
+            datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+        )
+        event.advance_at = None
+        event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.sale_reversed,
