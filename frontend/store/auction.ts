@@ -54,7 +54,7 @@ export interface PlayerState {
   category_id?: number | null;
   current_bid: number;
   current_bid_team_id: number | null;
-  status: "pending" | "active" | "sold" | "unsold";
+  status: "pending" | "active" | "queued" | "sold" | "unsold";
   version: number;
 }
 
