@@ -44,6 +44,13 @@ async def test_reverse_sale_refunds_team_and_immediately_reopens_player(
         assert reversed_player.current_bid_team_id is None
         assert reversed_player.version == 3
 
+        # The broadcast snapshot is assembled in the same session that loaded
+        # the original team roster. It must not reuse a stale player_count.
+        state = await auction_service.get_auction_state(event.id, session)
+        team_state = next(row for row in state["teams"] if row["id"] == team.id)
+        assert team_state["spent"] == 0
+        assert team_state["player_count"] == 0
+
     async with AsyncSessionLocal() as session:
         team_row = await session.get(Team, team.id)
         roster = (await session.execute(
