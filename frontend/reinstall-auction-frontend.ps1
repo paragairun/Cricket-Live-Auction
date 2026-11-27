@@ -1,9 +1,14 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
-$NSSM = "C:\Users\Admin\Documents\Parag_Airun\Techiebutlers Cricket Auction\Cricket-Auction-Platform\backend\nssm\nssm-2.24\win64\nssm.exe"
-$APP  = "C:\Users\Admin\Documents\Parag_Airun\Techiebutlers Cricket Auction\Cricket-Auction-Platform\frontend"
-$NPM  = "C:\Program Files\nodejs\npm.cmd"
-$SVC  = "auction-frontend"
+$APP = $PSScriptRoot
+$PROJECT_ROOT = Split-Path -Parent $APP
+$NSSM = Join-Path $PROJECT_ROOT "backend\nssm\nssm-2.24\win64\nssm.exe"
+$NPM = (Get-Command npm.cmd -ErrorAction Stop).Source
+$SVC = "auction-frontend"
+
+if (-not (Test-Path $NSSM)) {
+    throw "NSSM executable not found at '$NSSM'. Check the project folder structure."
+}
 
 Write-Host "==> Stopping auction-frontend service" -ForegroundColor Cyan
 $ErrorActionPreference = "Continue"
@@ -16,9 +21,7 @@ if ($LASTEXITCODE -eq 0) {
 
 Write-Host "==> Deleting auction-frontend service" -ForegroundColor Cyan
 & $NSSM remove $SVC confirm 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "   Deleted" -ForegroundColor Green
-} else {
+if ($LASTEXITCODE -ne 0) {
     sc.exe delete $SVC 2>&1 | Out-Null
     Start-Sleep -Seconds 3
 }
@@ -41,8 +44,8 @@ Write-Host "==> Installing auction-frontend service (fresh)" -ForegroundColor Cy
 & $NSSM set $SVC AppParameters "run start"
 & $NSSM set $SVC Description "Cricket Auction Platform - Next.js Frontend"
 & $NSSM set $SVC AppEnvironmentExtra "NEXT_PUBLIC_API_URL=http://localhost:8000/api" "NEXT_PUBLIC_WS_URL=ws://localhost:8000/api/auction/ws"
-& $NSSM set $SVC AppStdout "$APP\frontend.log"
-& $NSSM set $SVC AppStderr "$APP\frontend.log"
+& $NSSM set $SVC AppStdout (Join-Path $APP "frontend.log")
+& $NSSM set $SVC AppStderr (Join-Path $APP "frontend.log")
 & $NSSM set $SVC AppRotateFiles 1
 & $NSSM set $SVC AppRotateSeconds 86400
 & $NSSM set $SVC AppRotateBytes 10485760
