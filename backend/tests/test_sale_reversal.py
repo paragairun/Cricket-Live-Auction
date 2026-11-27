@@ -7,6 +7,7 @@ from app.models.auction import (
     AuctionAuditLog,
     AuditAction,
     AuctionPlayer,
+    AuctionStatus,
     PlayerAuctionStatus,
     Bid,
     Team,
@@ -19,7 +20,7 @@ from app.services.auction_service import AuctionError
 async def test_reverse_sale_refunds_team_and_immediately_reopens_player(
     make_event, make_team, register_player, make_slab
 ):
-    event, _admin, _organizer, auctioneer = await make_event(status="active")
+    event, _admin, _organizer, auctioneer = await make_event(status=AuctionStatus.active)
     team = await make_team(event, name="Wrong Team")
     _player, ap = await register_player(event, name="Wrongly assigned", base_price=10000)
     await make_slab(event, min_value=0, max_value=0, increment=1000)
