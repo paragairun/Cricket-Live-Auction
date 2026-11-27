@@ -1253,7 +1253,8 @@ export default function AuctioneerPage() {
                   </div>
                 </div>
               </div>
-            ) : ( border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto lg:mx-0">
+            ) : (
+              <div className="bg-black/45 border border-white/20 p-6 text-center max-w-[460px] w-full mx-auto lg:mx-0">
                   <p className="text-lg font-black uppercase tracking-wide text-amber-300">
                     {status === "active"
                       ? "NO PLAYER ON THE BLOCK"
