@@ -1476,6 +1476,7 @@ export default function AuctioneerPage() {
                   {activeDrawerTab === "available" &&
                     pendingPlayers.length === 0 &&
                     unsoldPlayers.length === 0 &&
+                    !auctionPoolPlayers.some((player) => player.status === "queued") &&
                     !displayActiveAP &&
                     status !== "completed" && (
                       <button
