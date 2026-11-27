@@ -809,15 +809,13 @@ async def set_next_player(
         await db.rollback()
         raise ConcurrentUpdate("Another request selected this player first. Refresh the auction state.")
     timing = Timing.for_event(event)
-    deadline = (
-        _now() + timing.base_seconds
-        if not another_player_active and not event.no_timer else None
-    )
-    event.deadline_at = (
-        datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
-    )
-    event.advance_at = None
-    event.paused_remaining_seconds = None
+    if not another_player_active:
+        deadline = _now() + timing.base_seconds if not event.no_timer else None
+        event.deadline_at = (
+            datetime.fromtimestamp(deadline, tz=timezone.utc) if deadline is not None else None
+        )
+        event.advance_at = None
+        event.paused_remaining_seconds = None
 
     await record_audit(
         db, event_id=event_id, action=AuditAction.player_put_up,
@@ -1404,7 +1402,7 @@ async def reverse_sale_and_reauction(
     active_result = await db.execute(
         select(AuctionPlayer.id).where(
             AuctionPlayer.event_id == event_id,
-            AuctionPlayer.status == PlayerAuctionStatus.active,
+            AuctionPlayer.status.in_([PlayerAuctionStatus.active, PlayerAuctionStatus.rtm_pending]),
         ).limit(1)
     )
     another_player_active = active_result.scalar_one_or_none() is not None
@@ -1876,9 +1874,16 @@ async def _settle_rtm(
 
     event = await _get_event(db, event_id)
     event.deadline_at = None
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    has_queued_reauction = queued_result.scalar_one_or_none() is not None
     event.advance_at = (
         datetime.now(timezone.utc) + timedelta(seconds=1.5)
-        if event.auto_advance else None
+        if event.auto_advance or has_queued_reauction else None
     )
     await record_audit(
         db, event_id=event_id, action=action,
