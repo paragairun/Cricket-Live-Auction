@@ -1382,13 +1382,9 @@ export default function AuctioneerPage() {
                 onClick={() => {
                   if (!disabled) placeBidForTeam(team.id, teamBidAmount);
                 }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setInspectTeamId(team.id);
-                }}
                 title={
                   disabled
-                    ? `${team.name} — right-click to view squad`
+                    ? `${team.name}`
                     : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`
                 }
                 className={`px-2.5 py-2 flex flex-col justify-between transition ${
