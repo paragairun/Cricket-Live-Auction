@@ -1479,6 +1479,12 @@ async def reverse_sale_and_reauction(
         ),
     )
     await db.commit()
+    # The Team row was loaded before its roster entry was deleted. SQLAlchemy's
+    # already-loaded Team.players collection can therefore still contain the
+    # deleted player when the state snapshot is built in this same session.
+    # Expire the identity map so the broadcast reloads both roster counts and
+    # auction-player statuses from the committed database state.
+    db.expire_all()
     await db.refresh(ap)
 
     await manager.broadcast(event_id, {
