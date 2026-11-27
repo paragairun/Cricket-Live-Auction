@@ -574,7 +574,7 @@ export default function AuctioneerPage() {
   const handleReverseSale = async (auctionPlayerId: number, playerName: string, teamName: string, salePrice: number) => {
     if (status !== "active" || displayActiveAP || busyAction) return;
     const ok = confirm(
-      `Reverse the sale of ${playerName} to ${teamName} for ₹${formatMoney(salePrice)}?\\n\\nThe amount will be refunded to ${teamName}, the player will be removed from that squad, and will immediately return to the auction block at the applicable base price.`
+      `Reverse the sale of ${playerName} to ${teamName} for ₹${formatMoney(salePrice)}?\n\nThe amount will be refunded to ${teamName}, the player will be removed from that squad, and will immediately return to the auction block at the applicable base price.`
     );
     if (!ok) return;
     setBusyAction(true);
