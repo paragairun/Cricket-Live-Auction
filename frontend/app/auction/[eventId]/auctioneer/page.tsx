@@ -1824,7 +1824,7 @@ export default function AuctioneerPage() {
                       onClick={() => setInspectTeamId(t.id)}
                       className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg"
                     >
-                      Open Team Squad Details
+                      Team Details
                     </button>
                   </div>
                 ))}
