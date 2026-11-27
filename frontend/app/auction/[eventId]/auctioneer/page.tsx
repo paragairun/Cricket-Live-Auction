@@ -70,7 +70,6 @@ export default function AuctioneerPage() {
     "none" | "sold" | "unsold" | "available" | "teams" | "squads"
   >("none");
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<number | "all">("all");
-  const [inspectTeamId, setInspectTeamId] = useState<number | null>(null);
   const [selectedSquadTeamId, setSelectedSquadTeamId] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState(false);
 
@@ -853,7 +852,6 @@ export default function AuctioneerPage() {
       ? pendingPlayers
       : pendingPlayers.filter((p) => p.category_id === selectedCategoryFilter);
 
-  const inspectedTeam = store.teams.find((t) => t.id === inspectTeamId);
   const stripTeams = store.teams.slice(0, 6);
 
   const resolvedBgUrl = backgroundImage
@@ -1277,7 +1275,7 @@ export default function AuctioneerPage() {
                   {unsoldPlayers.length > 0 && pendingPlayers.length === 0 && status === "active" && (
                     <button type="button" onClick={reAuctionAllUnsold} disabled={busyAction || !!displayActiveAP} className="text-[11px] text-amber-300 underline hover:text-amber-200 disabled:opacity-100">re-auction unsold</button>
                   )}
-                  <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">view squads</button>
+                  <button type="button" onClick={() => { setSelectedSquadTeamId(store.teams[0]?.id ?? null); setActiveDrawerTab("squads"); }} className="text-[11px] text-white underline hover:text-amber-200 font-medium">Squad Overview</button>
                   <button
                     type="button"
                     onClick={() => setActiveDrawerTab(activeDrawerTab === "available" ? "none" : "available")}
@@ -1384,13 +1382,9 @@ export default function AuctioneerPage() {
                 onClick={() => {
                   if (!disabled) placeBidForTeam(team.id, teamBidAmount);
                 }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setInspectTeamId(team.id);
-                }}
                 title={
                   disabled
-                    ? `${team.name} — right-click to view squad`
+                    ? `${team.name}`
                     : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`
                 }
                 className={`px-2.5 py-2 flex flex-col justify-between transition ${
@@ -1453,7 +1447,7 @@ export default function AuctioneerPage() {
             {activeDrawerTab === "squads" ? (
               <button
                 onClick={() => setActiveDrawerTab("none")}
-                aria-label="Close View Squads"
+                aria-label="Close Squad Overview"
                 className="absolute right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/80 text-slate-300 text-lg font-bold shadow-lg ring-1 ring-white/15 hover:bg-slate-800 hover:text-white"
               >
                 ✕
@@ -1732,7 +1726,7 @@ export default function AuctioneerPage() {
                 ))}
 
               {activeDrawerTab === "squads" && (
-                <div className="flex min-h-0 h-full flex-1 flex-row gap-3">
+                <div className="relative isolate flex min-h-0 h-full flex-1 flex-row gap-3">
                   <nav className="flex w-40 shrink-0 flex-col gap-2 overflow-y-auto border-r border-slate-700 pr-3" aria-label="Select team squad">
                     {store.teams.map((team) => (
                       <button
@@ -1777,11 +1771,20 @@ export default function AuctioneerPage() {
                       );
                     };
                     return (
-                      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                        <div className="mb-2 shrink-0 pr-10 text-xs text-slate-300">
-                          <strong className="text-lg text-white">{team.name} Squad</strong>
+                      <div className="relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        {team.logo && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={resolveMediaUrl(team.logo)}
+                            alt=""
+                            aria-hidden="true"
+                            className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(48vw,560px)] max-h-[70%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.20]"
+                          />
+                        )}
+                        <div className="relative z-30 mb-2 shrink-0 pr-10 text-xs text-slate-300">
+                          <strong className="text-lg text-white">Squad Overview · {team.name}</strong>
                         </div>
-                        <div className="min-h-0 flex-1 overflow-hidden">
+                        <div className="relative z-10 min-h-0 flex-1 overflow-hidden">
                           {captainId || roster.length > 0 ? (
                             <div className="grid grid-cols-2 justify-items-center content-start gap-2 sm:grid-cols-4 lg:grid-cols-6">
                               {captainId && renderCard(captainId, captainPurchase?.sold_price, true)}
@@ -1789,7 +1792,7 @@ export default function AuctioneerPage() {
                             </div>
                           ) : <p className="py-12 text-center text-sm text-slate-500">No captain or players assigned yet.</p>}
                         </div>
-                        <div className="mt-2 shrink-0 border-t border-slate-700 pt-2 text-right text-xs font-semibold text-slate-300 tabular-nums">
+                        <div className="relative z-30 mt-2 shrink-0 border-t border-slate-700 pt-2 text-right text-xs font-semibold text-slate-300 tabular-nums">
                           {team.player_count}/{team.max_players} players · Purse ₹{formatMoney(team.budget - team.spent)}
                         </div>
                       </div>
@@ -1811,12 +1814,6 @@ export default function AuctioneerPage() {
                         Players: {t.player_count}/{t.max_players}
                       </p>
                     </div>
-                    <button
-                      onClick={() => setInspectTeamId(t.id)}
-                      className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg"
-                    >
-                      View Squad
-                    </button>
                   </div>
                 ))}
             </div>
@@ -1862,143 +1859,6 @@ export default function AuctioneerPage() {
         </div>
       )}
 
-      {/* ── TEAM SQUAD INSPECTOR MODAL ── */}
-      {inspectedTeam && (
-        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-2 sm:p-3">
-          <div className="relative isolate bg-slate-900 border border-slate-700 rounded-2xl w-[96vw] max-w-[1600px] h-[94vh] max-h-[1100px] p-4 sm:p-6 shadow-2xl flex flex-col overflow-hidden">
-            {inspectedTeam.logo && (
-              // Keep the watermark above player-card photos: card images otherwise
-              // completely cover a watermark placed at the modal's background layer.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={resolveMediaUrl(inspectedTeam.logo)}
-                alt=""
-                aria-hidden="true"
-                className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(58vw,620px)] max-h-[72%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.14] mix-blend-screen"
-              />
-            )}
-            <div className="relative z-30 flex items-center justify-between mb-4 shrink-0">
-              <div>
-                <h3 className="text-xl sm:text-2xl font-extrabold text-white">
-                  {inspectedTeam.name} — Squad
-                </h3>
-                <p className="text-sm text-slate-400 mt-1">
-                  Purse Left: ₹
-                  {formatMoney(inspectedTeam.budget - inspectedTeam.spent)} •
-                  Max Bid: ₹{formatMoney(getTeamMaxBid(inspectedTeam))}
-                </p>
-              </div>
-              <button
-                onClick={() => setInspectTeamId(null)}
-                aria-label="Close squad window"
-                className="text-slate-400 hover:text-white font-bold text-2xl px-2"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="relative z-10 flex-1 min-h-0 overflow-y-auto pr-1">
-              {(() => {
-                const roster = teamRosters[inspectedTeam.id] || [];
-                const captainId = inspectedTeam.captain_id;
-                const captainPurchase = captainId
-                  ? roster.find((player) => player.player_id === captainId)
-                  : undefined;
-                const squadPlayers = roster.filter(
-                  (player) => player.player_id !== captainId
-                );
-                const renderPlayerCard = (
-                  playerId: number,
-                  soldPrice?: number,
-                  isCaptain = false
-                ) => {
-                  const info = playerDetails[playerId];
-                  const playerName =
-                    info?.name ||
-                    (isCaptain && inspectedTeam.captain_name) ||
-                    `Player #${playerId}`;
-                  return (
-                    <div
-                      key={playerId}
-                      className={`group relative min-h-[360px] sm:min-h-[420px] overflow-hidden rounded-2xl border text-center shadow-lg transition duration-200 hover:-translate-y-1 hover:shadow-2xl ${
-                        isCaptain
-                          ? "border-amber-400/70 ring-1 ring-amber-400/20"
-                          : "border-slate-700 hover:border-slate-500"
-                      }`}
-                    >
-                      {info?.profile_photo ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={info.profile_photo}
-                          alt={playerName}
-                          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-600 to-slate-900">
-                          <span className="text-7xl font-black text-slate-300">
-                            {playerName.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
-                      )}
-                      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/90" />
-                      {isCaptain && (
-                        <span className="absolute left-3 top-3 z-10 rounded-full border border-amber-300/70 bg-black/65 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
-                          ★
-                        </span>
-                      )}
-                      <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-4 pt-16">
-                        <p className="w-full truncate text-lg sm:text-xl font-extrabold text-white drop-shadow-lg">
-                          {playerName}
-                        </p>
-                        <div className="mt-2 min-h-14 flex flex-col items-center justify-center">
-                          {soldPrice !== undefined ? (
-                            <>
-                              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/75">
-                                Winning Bid
-                              </span>
-                              <strong className="mt-1 text-2xl sm:text-3xl font-black tabular-nums text-amber-300 drop-shadow-lg">
-                                ₹{formatMoney(soldPrice)}
-                              </strong>
-                            </>
-                          ) : (
-                            <span className="text-xs font-semibold uppercase tracking-wider text-amber-200">
-                              Team Captain
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                };
-
-                if (!captainId && roster.length === 0) {
-                  return (
-                    <p className="py-12 text-center text-sm text-slate-500">
-                      No players bought yet.
-                    </p>
-                  );
-                }
-
-                return (
-                  <div className="grid grid-cols-1 gap-4 pb-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                    {captainId &&
-                      renderPlayerCard(
-                        captainId,
-                        captainPurchase?.sold_price,
-                        true
-                      )}
-                    {squadPlayers.map((player) =>
-                      renderPlayerCard(player.player_id, player.sold_price)
-                    )}
-                    {!captainId && roster.length === 0 && (
-                      <p className="text-sm text-slate-500">No players bought yet.</p>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
