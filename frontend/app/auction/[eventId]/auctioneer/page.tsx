@@ -284,13 +284,8 @@ export default function AuctioneerPage() {
 
           case "sale_reversed":
             setJustSoldPlayerId(null);
-            void api.get(`/auction/events/${eid}/teams`).then(({ data }) => {
-              const rosters: Record<number, { player_id: number; sold_price: number }[]> = {};
-              data.forEach((team: { id: number; players?: { player_id: number; sold_price: number }[] }) => {
-                rosters[team.id] = team.players || [];
-              });
-              setTeamRosters(rosters);
-            }).catch(() => {});
+            // The following auction_state snapshot refreshes the purse, roster,
+            // and active player for every connected client.
             break;
 
           case "player_sold":
