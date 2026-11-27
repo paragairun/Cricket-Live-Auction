@@ -82,6 +82,8 @@ async def test_reverse_sale_queues_during_live_lot_and_auto_activates_after_fina
     async with AsyncSessionLocal() as session:
         event_row = await session.get(type(event), event.id)
         event_row.auto_advance = False  # Queue progression must work even when normal auto-advance is off.
+        deadline_before = datetime.now(timezone.utc) + timedelta(seconds=45)
+        event_row.deadline_at = deadline_before
         sold_row = await session.get(AuctionPlayer, sold_ap.id)
         sold_row.status = PlayerAuctionStatus.sold
         sold_row.current_bid = 12000
@@ -110,9 +112,8 @@ async def test_reverse_sale_queues_during_live_lot_and_auto_activates_after_fina
     async with AsyncSessionLocal() as session:
         wrong_team_row = await session.get(Team, wrong_team.id)
         current_event = await session.get(type(event), event.id)
-        current_event.advance_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-        await session.commit()
         assert wrong_team_row.spent == 0
+        assert current_event.deadline_at == deadline_before
 
     async with AsyncSessionLocal() as session:
         await auction_service.hammer_player(event.id, current_ap.id, session, actor=auctioneer)
