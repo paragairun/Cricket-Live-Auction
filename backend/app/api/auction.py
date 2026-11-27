@@ -334,6 +334,23 @@ async def hammer(
     }
 
 
+@router.post("/events/{event_id}/players/{auction_player_id}/reverse-sale", response_model=AuctionPlayerOut)
+async def reverse_sale(
+    event_id: int,
+    auction_player_id: int,
+    ctx: EventContext = OperatorCtx,
+    db: AsyncSession = Depends(get_db),
+):
+    """Refund a mistaken sale and immediately put the player back on the block."""
+    try:
+        ap = await auction_service.reverse_sale_and_reauction(
+            event_id, auction_player_id, db, actor=ctx.user
+        )
+        return AuctionPlayerOut.model_validate(ap)
+    except AuctionError as exc:
+        raise _handle(exc)
+
+
 @router.post("/events/{event_id}/bid-down")
 async def bid_down(
     event_id: int,

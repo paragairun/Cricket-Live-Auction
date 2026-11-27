@@ -282,6 +282,12 @@ export default function AuctioneerPage() {
             setSelectedTeamId(null);
             break;
 
+          case "sale_reversed":
+            setJustSoldPlayerId(null);
+            // The following auction_state snapshot refreshes the purse, roster,
+            // and active player for every connected client.
+            break;
+
           case "player_sold":
             setJustSoldPlayerId(msg.auction_player_id);
             useAuctionStore.getState().markPlayerSold(
@@ -555,6 +561,29 @@ export default function AuctioneerPage() {
       }
     } catch (e: unknown) {
       alert(describeError(e).message || "Error selecting player");
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleReverseSale = async (auctionPlayerId: number, playerName: string, teamName: string, salePrice: number) => {
+    if (status !== "active" || displayActiveAP || busyAction) return;
+    const ok = confirm(
+      `Reverse the sale of ${playerName} to ${teamName} for ₹${formatMoney(salePrice)}?\n\nThe amount will be refunded to ${teamName}, the player will be removed from that squad, and will immediately return to the auction block at the applicable base price.`
+    );
+    if (!ok) return;
+    setBusyAction(true);
+    setActionError(null);
+    try {
+      await api.post(`/auction/events/${eid}/players/${auctionPlayerId}/reverse-sale`);
+      setSelectedTeamId(null);
+      setJustSoldPlayerId(null);
+      setActiveDrawerTab("none");
+      if (useAuctionStore.getState().connection !== "live") await syncState();
+    } catch (error: unknown) {
+      const info = describeError(error);
+      setActionError(info.message || "Could not reverse the sale");
+      await syncState().catch(() => {});
     } finally {
       setBusyAction(false);
     }
@@ -1621,9 +1650,31 @@ export default function AuctioneerPage() {
                             Sold to {buyer?.name || "Team"}
                           </p>
                         </div>
-                        <span className="font-black text-sm text-emerald-300">
-                          ₹{formatMoney(p.current_bid)}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <span className="font-black text-sm text-emerald-300">
+                            ₹{formatMoney(p.current_bid)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleReverseSale(
+                              p.id,
+                              info?.name || `Player #${p.player_id}`,
+                              buyer?.name || "the original team",
+                              p.current_bid
+                            )}
+                            disabled={status !== "active" || !!displayActiveAP || busyAction}
+                            title={
+                              displayActiveAP
+                                ? "Finish the current player first, then reverse this sale"
+                                : status !== "active"
+                                  ? "Sale correction is available while the auction is active"
+                                  : "Refund the team and return this player to the auction block"
+                            }
+                            className="rounded-lg bg-red-600/90 px-3 py-1.5 text-xs font-extrabold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Re-auction
+                          </button>
+                        </div>
                       </div>
                     );
                   })
