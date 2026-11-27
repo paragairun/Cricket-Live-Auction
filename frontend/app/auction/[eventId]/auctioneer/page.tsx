@@ -403,7 +403,7 @@ export default function AuctioneerPage() {
     [auctionPoolPlayers]
   );
   const soldPlayers = useMemo(
-    () => auctionPoolPlayers.filter((p) => p.status === "sold"),
+    () => auctionPoolPlayers.filter((p) => p.status === "sold" || p.status === "queued"),
     [auctionPoolPlayers]
   );
   const unsoldPlayers = useMemo(
@@ -567,9 +567,10 @@ export default function AuctioneerPage() {
   };
 
   const handleReverseSale = async (auctionPlayerId: number, playerName: string, teamName: string, salePrice: number) => {
-    if (status !== "active" || displayActiveAP || busyAction) return;
+    if (status !== "active" || busyAction) return;
+    const queued = Boolean(displayActiveAP);
     const ok = confirm(
-      `Reverse the sale of ${playerName} to ${teamName} for ₹${formatMoney(salePrice)}?\n\nThe amount will be refunded to ${teamName}, the player will be removed from that squad, and will immediately return to the auction block at the applicable base price.`
+      `Reverse the sale of ${playerName} to ${teamName} for ₹${formatMoney(salePrice)}?\n\nThe amount will be refunded to ${teamName} and the player removed from that squad. ${queued ? "The player will be queued and automatically appear as soon as the current player's auction is finalised." : "The player will immediately return to the auction block at the applicable base price."}`
     );
     if (!ok) return;
     setBusyAction(true);
@@ -1640,40 +1641,36 @@ export default function AuctioneerPage() {
                     return (
                       <div
                         key={p.id}
-                        className="flex items-center justify-between bg-slate-800/80 border border-emerald-500/30 rounded-xl px-3 py-2.5"
+                        className={`flex items-center justify-between bg-slate-800/80 border rounded-xl px-3 py-2.5 ${p.status === "queued" ? "border-amber-400/40" : "border-emerald-500/30"}`}
                       >
                         <div>
                           <p className="font-bold text-sm text-white">
                             {info?.name || `Player #${p.player_id}`}
                           </p>
-                          <p className="text-xs text-emerald-400">
-                            Sold to {buyer?.name || "Team"}
+                          <p className={`text-xs ${p.status === "queued" ? "text-amber-300" : "text-emerald-400"}`}>
+                            {p.status === "queued" ? "Queued for re-auction" : `Sold to ${buyer?.name || "Team"}`}
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-3">
-                          <span className="font-black text-sm text-emerald-300">
-                            ₹{formatMoney(p.current_bid)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleReverseSale(
-                              p.id,
-                              info?.name || `Player #${p.player_id}`,
-                              buyer?.name || "the original team",
-                              p.current_bid
-                            )}
-                            disabled={status !== "active" || !!displayActiveAP || busyAction}
-                            title={
-                              displayActiveAP
-                                ? "Finish the current player first, then reverse this sale"
-                                : status !== "active"
-                                  ? "Sale correction is available while the auction is active"
-                                  : "Refund the team and return this player to the auction block"
-                            }
-                            className="rounded-lg bg-red-600/90 px-3 py-1.5 text-xs font-extrabold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            Re-auction
-                          </button>
+                          {p.status === "sold" && <span className="font-black text-sm text-emerald-300">₹{formatMoney(p.current_bid)}</span>}
+                          {p.status === "queued" ? (
+                            <span className="rounded-lg bg-amber-400/15 px-3 py-1.5 text-xs font-extrabold text-amber-300">Queued</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleReverseSale(
+                                p.id,
+                                info?.name || `Player #${p.player_id}`,
+                                buyer?.name || "the original team",
+                                p.current_bid
+                              )}
+                              disabled={status !== "active" || busyAction}
+                              title={status !== "active" ? "Sale correction is available while the auction is active" : displayActiveAP ? "Queue this player to appear after the current lot is finalised" : "Refund the team and return this player to the auction block"}
+                              className="rounded-lg bg-red-600/90 px-3 py-1.5 text-xs font-extrabold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Re-auction
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
