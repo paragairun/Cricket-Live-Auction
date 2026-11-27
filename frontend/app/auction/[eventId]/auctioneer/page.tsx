@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { shallow } from "zustand/shallow";
 import { useParams, useRouter } from "next/navigation";
 import api, { describeError, newIdempotencyKey, postIdempotent } from "@/lib/api";
+import { resolveMediaUrl } from "@/lib/mediaUrl";
 import {
   useAuctionStore,
   PlayerCategory,
@@ -1870,7 +1871,7 @@ export default function AuctioneerPage() {
               // completely cover a watermark placed at the modal's background layer.
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={inspectedTeam.logo}
+                src={resolveMediaUrl(inspectedTeam.logo)}
                 alt=""
                 aria-hidden="true"
                 className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(58vw,620px)] max-h-[72%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.14] mix-blend-screen"
