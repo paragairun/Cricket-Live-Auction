@@ -1448,24 +1448,9 @@ async def reverse_sale_and_reauction(
         "team_id": team_id,
         "refunded_amount": sale_price,
     })
-    await manager.broadcast(event_id, {
-        "type": "player_up",
-        "event_id": event_id,
-        "auction_player_id": ap.id,
-        "player_id": ap.player_id,
-        "player_name": ap.player.name if ap.player else None,
-        "profile_photo": ap.player.profile_photo if ap.player else None,
-        "batting_rating": ap.player.batting_rating if ap.player else None,
-        "bowling_rating": ap.player.bowling_rating if ap.player else None,
-        "fielding_rating": ap.player.fielding_rating if ap.player else None,
-        "age": ap.player.age if ap.player else None,
-        "base_price": ap.base_price,
-        "current_bid": ap.current_bid,
-        "version": ap.version,
-        "no_timer": bool(event.no_timer),
-        "deadline_epoch": event.deadline_at.timestamp() if event.deadline_at else None,
-        "server_time": _now(),
-    })
+    # Send a complete snapshot so every connected console and spectator sees
+    # the refunded purse, corrected roster, and newly active player together.
+    await manager.broadcast(event_id, await get_auction_state(event_id, db))
     return ap
 
 
