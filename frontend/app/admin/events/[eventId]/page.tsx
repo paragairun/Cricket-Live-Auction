@@ -169,7 +169,7 @@ export default function AdminEventDetailPage() {
               className={`input mb-3 ${isCompleted ? "bg-gray-900 text-gray-500 cursor-not-allowed" : ""}`}
               value={domains}
               onChange={(e) => setDomains(e.target.value)}
-              placeholder="techiebutler.com, saasflash.ai"
+              placeholder="company.com, saasflash.ai"
               disabled={isCompleted}
             />
             {!isCompleted && (
