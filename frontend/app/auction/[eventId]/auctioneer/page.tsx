@@ -292,6 +292,7 @@ export default function AuctioneerPage() {
 
           case "sale_reversed":
             setJustSoldPlayerId(null);
+            setSaleCelebration(null);
             // The following auction_state snapshot refreshes the purse, roster,
             // and active player for every connected client.
             break;
@@ -328,15 +329,18 @@ export default function AuctioneerPage() {
               setTeamRosters(rosters);
             }).catch(() => {});
             break;
+          }
 
           case "player_unsold":
             setJustSoldPlayerId(null);
+            setSaleCelebration(null);
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
             break;
 
           case "player_pulled":
             setJustSoldPlayerId(null);
+            setSaleCelebration(null);
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
             break;
