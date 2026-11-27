@@ -403,8 +403,16 @@ export default function AuctioneerPage() {
     [auctionPoolPlayers]
   );
   const soldPlayers = useMemo(
-    () => auctionPoolPlayers.filter((p) => p.status === "sold" || p.status === "queued"),
+    () => auctionPoolPlayers.filter((p) => p.status === "sold"),
     [auctionPoolPlayers]
+  );
+  const queuedPlayers = useMemo(
+    () => auctionPoolPlayers.filter((p) => p.status === "queued"),
+    [auctionPoolPlayers]
+  );
+  const soldPlayersAndQueue = useMemo(
+    () => [...soldPlayers, ...queuedPlayers],
+    [soldPlayers, queuedPlayers]
   );
   const unsoldPlayers = useMemo(
     () => auctionPoolPlayers.filter((p) => p.status === "unsold"),
@@ -1453,7 +1461,7 @@ export default function AuctioneerPage() {
               <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
                 <h3 className="font-extrabold text-base uppercase tracking-wide text-amber-300">
                   {activeDrawerTab === "sold" &&
-                    `Sold Players (${soldPlayers.length})`}
+                    `Sold Players (${soldPlayers.length}) · Queued (${queuedPlayers.length})`}
                   {activeDrawerTab === "unsold" &&
                     `Unsold Players (${unsoldPlayers.length})`}
                   {activeDrawerTab === "available" &&
@@ -1629,12 +1637,12 @@ export default function AuctioneerPage() {
               )}
 
               {activeDrawerTab === "sold" &&
-                (soldPlayers.length === 0 ? (
+                (soldPlayersAndQueue.length === 0 ? (
                   <p className="text-center text-slate-500 text-sm py-8">
                     No players sold yet.
                   </p>
                 ) : (
-                  soldPlayers.map((p) => {
+                  soldPlayersAndQueue.map((p) => {
                     const info = playerDetails[p.player_id];
                     const buyer = store.teams.find(
                       (t) => t.id === p.current_bid_team_id
