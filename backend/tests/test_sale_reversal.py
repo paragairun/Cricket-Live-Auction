@@ -113,7 +113,7 @@ async def test_reverse_sale_queues_during_live_lot_and_auto_activates_after_fina
         wrong_team_row = await session.get(Team, wrong_team.id)
         current_event = await session.get(type(event), event.id)
         assert wrong_team_row.spent == 0
-        assert current_event.deadline_at == deadline_before
+        assert current_event.deadline_at.replace(tzinfo=timezone.utc) == deadline_before
 
     async with AsyncSessionLocal() as session:
         await auction_service.hammer_player(event.id, current_ap.id, session, actor=auctioneer)
