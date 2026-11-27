@@ -743,24 +743,25 @@ async def set_next_player(
             "A player is still on the block. Hammer the sale or pull the player first."
         )
 
-    if auction_player_id is None:
-        queued_result = await db.execute(
-            select(AuctionPlayer)
-            .where(
-                AuctionPlayer.event_id == event_id,
-                AuctionPlayer.status == PlayerAuctionStatus.queued,
-            )
-            .order_by(AuctionPlayer.auction_order, AuctionPlayer.id)
-            .limit(1)
+    queued_result = await db.execute(
+        select(AuctionPlayer)
+        .where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
         )
-        ap = queued_result.scalars().first()
-        if ap is not None:
-            pass  # A requested sale correction always takes priority over normal progression.
-        elif event.auction_mode == AuctionMode.nomination:
+        .order_by(AuctionPlayer.auction_order, AuctionPlayer.id)
+        .limit(1)
+    )
+    ap = queued_result.scalars().first()
+
+    # A queued correction has priority over both random progression and a
+    # simultaneous manual player selection. Never let the next lot skip it.
+    if ap is None and auction_player_id is None:
+        if event.auction_mode == AuctionMode.nomination:
             ap = await _next_nominated(db, event_id)
         else:
             ap = await _pick_random_pending(db, event_id)
-    else:
+    elif ap is None:
         result = await db.execute(
             select(AuctionPlayer).where(
                 AuctionPlayer.id == auction_player_id,
@@ -770,7 +771,7 @@ async def set_next_player(
         ap = result.scalar_one_or_none()
         if not ap:
             raise AuctionError("Player is not registered in this event")
-        if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold, PlayerAuctionStatus.queued):
+        if ap.status not in (PlayerAuctionStatus.pending, PlayerAuctionStatus.unsold):
             raise AuctionError("Player has already been auctioned")
         if ap.status == PlayerAuctionStatus.unsold:
             captain_ids = await _captain_player_ids(db, event_id)
