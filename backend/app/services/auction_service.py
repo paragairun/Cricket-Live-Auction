@@ -636,6 +636,15 @@ async def finish_auction(event_id: int, db: AsyncSession, actor: User | None = N
     if event.status not in (AuctionStatus.active, AuctionStatus.paused):
         raise AuctionError("Auction must be active or paused to finish")
 
+    queued_result = await db.execute(
+        select(AuctionPlayer.id).where(
+            AuctionPlayer.event_id == event_id,
+            AuctionPlayer.status == PlayerAuctionStatus.queued,
+        ).limit(1)
+    )
+    if queued_result.scalar_one_or_none() is not None:
+        raise AuctionError("A player is queued for re-auction. Complete the queued player before finishing the auction.")
+
     active_result = await db.execute(
         select(AuctionPlayer).where(
             AuctionPlayer.event_id == event_id,
