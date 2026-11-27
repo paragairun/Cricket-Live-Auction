@@ -53,6 +53,7 @@ class AuctionStatus(str, enum.Enum):
 class PlayerAuctionStatus(str, enum.Enum):
     pending = "pending"
     active = "active"
+    queued = "queued"  # Sale reversal requested while another player is on the block.
     # Bidding has closed but a Right-to-Match decision is outstanding, so the
     # player is neither sold nor back in the pool. New in 2.1.0.
     rtm_pending = "rtm_pending"
