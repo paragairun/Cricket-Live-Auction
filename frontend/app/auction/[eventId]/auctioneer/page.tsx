@@ -1087,7 +1087,7 @@ export default function AuctioneerPage() {
             </div>
           </header>
 
-          <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-10 py-10 sm:py-14 flex flex-col justify-center">
+          <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-10 py-10 sm:py-14 flex flex-col justify-center overflow-y-auto">
             <div className="text-center">
               <div className="mx-auto mb-8 w-40 h-40 sm:w-52 sm:h-52 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center p-5 sm:p-7">
                 {eventLogo ? (
@@ -1106,9 +1106,9 @@ export default function AuctioneerPage() {
               <h1 className="mx-auto max-w-5xl text-4xl sm:text-6xl lg:text-7xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
                 {eventName}
               </h1>
-              {eventDescription && (
+              {(eventDescription || eventDetails.tagline) && (
                 <p className="mx-auto mt-5 max-w-2xl text-sm sm:text-base text-white/55 leading-relaxed">
-                  {eventDescription}
+                  {eventDetails.tagline || eventDescription}
                 </p>
               )}
             </div>
@@ -1140,6 +1140,8 @@ export default function AuctioneerPage() {
                   {eventDetails.tournament_start_date && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Dates</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_start_date}{eventDetails.tournament_end_date ? " – " + eventDetails.tournament_end_date : ""}</div></div>}
                   {eventDetails.tournament_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_format}</div></div>}
                   {eventDetails.match_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Match Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.match_format}</div></div>}
+                  {eventDetails.captain_selection && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Captain Selection</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.captain_selection}</div></div>}
+                  {eventDetails.overseas_player_limit && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Overseas Player Limit</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.overseas_player_limit}</div></div>}
                   {eventDetails.season && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Season</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.season}</div></div>}
                   {eventDetails.edition_year && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Edition</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.edition_year}</div></div>}
                 </div>
