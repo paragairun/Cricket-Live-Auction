@@ -14,6 +14,8 @@ import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
 import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "@/lib/auctionPurse";
+import TeamIntroductionCeremony from "@/components/TeamIntroductionCeremony";
+import { createTeamIntroAudioController, TeamIntroAudioController } from "@/components/teamIntroductionAudio";
 
 interface PlayerDetail {
   player_id: number;
@@ -53,6 +55,8 @@ export default function AuctioneerPage() {
   const [eventLogo, setEventLogo] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
+  const [showTeamIntroduction, setShowTeamIntroduction] = useState(false);
+  const [teamIntroAudio, setTeamIntroAudio] = useState<TeamIntroAudioController | null>(null);
   const [playerDetails, setPlayerDetails] = useState<Record<number, PlayerDetail>>({});
   // Keep the latest player metadata available to the long-lived auction WebSocket handler.
   const playerDetailsRef = useRef(playerDetails);
@@ -600,12 +604,20 @@ export default function AuctioneerPage() {
   const startAuction = async () => {
     setBusyAction(true);
     setActionError(null);
+    // A resume must not replay the opening ceremony. Create the audio context
+    // synchronously in the Start click so browsers allow sound playback.
+    const shouldIntroduceTeams = status !== "paused";
+    const introAudio = shouldIntroduceTeams ? createTeamIntroAudioController() : null;
+    if (shouldIntroduceTeams) setTeamIntroAudio(introAudio);
     try {
       await api.post(`/auction/events/${eid}/start`);
       // The connected WebSocket already owns the current snapshot and receives
       // player_up / auction_started events. Avoid a duplicate full roster fetch.
       setStatus("active");
+      if (shouldIntroduceTeams) setShowTeamIntroduction(true);
     } catch (e: unknown) {
+      introAudio?.stop();
+      if (shouldIntroduceTeams) setTeamIntroAudio(null);
       setActionError(describeError(e).message || "Failed to start auction");
     } finally {
       setBusyAction(false);
@@ -1005,6 +1017,17 @@ export default function AuctioneerPage() {
 
   return (
     <div className="h-[100dvh] w-full overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-[#000000] text-white select-none">
+      {showTeamIntroduction && (
+        <TeamIntroductionCeremony
+          teams={store.teams}
+          playerDetails={playerDetails}
+          audio={teamIntroAudio}
+          onComplete={() => {
+            setShowTeamIntroduction(false);
+            setTeamIntroAudio(null);
+          }}
+        />
+      )}
       {/* ── TOP HEADER BAR ── */}
       <header className="bg-[#000000] border-b border-[#262626] px-4 py-2">
         <div className="mx-auto w-full max-w-[1920px] grid grid-cols-1 md:grid-cols-3 items-center gap-2">
