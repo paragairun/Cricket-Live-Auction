@@ -54,6 +54,9 @@ export default function AuctioneerPage() {
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
   const [playerDetails, setPlayerDetails] = useState<Record<number, PlayerDetail>>({});
+  // Keep the latest player metadata available to the long-lived auction WebSocket handler.
+  const playerDetailsRef = useRef(playerDetails);
+  playerDetailsRef.current = playerDetails;
   const [teamRosters, setTeamRosters] = useState<
     Record<number, { player_id: number; sold_price: number }[]>
   >({});
@@ -317,7 +320,7 @@ export default function AuctioneerPage() {
               (team) => team.id === msg.sold_to_team_id
             );
             const soldPlayerInfo = soldPlayer
-              ? playerDetails[soldPlayer.player_id]
+              ? playerDetailsRef.current[soldPlayer.player_id]
               : undefined;
             const soldPlayerCategory = currentAuctionState.categories.find(
               (category) => category.id === soldPlayer?.category_id
@@ -327,7 +330,12 @@ export default function AuctioneerPage() {
                 msg.player_name ||
                 soldPlayer?.name ||
                 `Player #${soldPlayer?.player_id ?? msg.player_id ?? "—"}`,
-              playerPhoto: soldPlayerInfo?.profile_photo || null,
+              // Prefer the latest players-info record, then fall back to the photo
+              // already carried by the active auction-player snapshot.
+              playerPhoto:
+                soldPlayerInfo?.profile_photo ||
+                soldPlayer?.profile_photo ||
+                null,
               playerCategory: soldPlayerCategory?.name || "EMERALD",
               playerAge: soldPlayerInfo?.age ?? null,
               battingRating: soldPlayerInfo?.batting_rating ?? null,
