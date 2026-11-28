@@ -1678,7 +1678,7 @@ export default function AuctioneerPage() {
               // On the opening bid, use the player's base price.
               const teamClickBid = displayActiveAP
                 ? displayActiveAP.current_bid_team_id
-                  ? displayActiveAP.current_bid + getBidIncrement(displayActiveAP.current_bid)
+                  ? displayActiveAP.current_bid
                   : getEffectiveBasePrice(displayActiveAP)
                 : 0;
               const cannotAfford = !!displayActiveAP && maxBid < teamClickBid;
