@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     DateTime,
     Float,
+    JSON,
     ForeignKey,
     Index,
     Integer,
@@ -232,6 +233,8 @@ class AuctionEvent(Base):
     total_viewers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     logo: Mapped[str | None] = mapped_column(String(500), nullable=True)
     background_image: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Flexible tournament profile: venue, formats, sponsors, prizes and contact details.
+    event_details: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
