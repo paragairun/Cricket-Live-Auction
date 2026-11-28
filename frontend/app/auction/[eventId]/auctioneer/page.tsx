@@ -15,7 +15,7 @@ import { incrementFor } from "@/lib/bidRules";
 import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
 import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "@/lib/auctionPurse";
 import TeamIntroductionCeremony from "@/components/TeamIntroductionCeremony";
-import { createTeamIntroAudioController, TeamIntroAudioController } from "@/components/teamIntroductionAudio";
+import { createTeamIntroAudioController, type TeamIntroAudioController } from "@/components/teamIntroductionAudio";
 
 interface PlayerDetail {
   player_id: number;
