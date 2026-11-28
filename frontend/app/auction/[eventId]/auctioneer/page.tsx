@@ -610,6 +610,23 @@ export default function AuctioneerPage() {
     const introAudio = shouldIntroduceTeams ? createTeamIntroAudioController() : null;
     if (shouldIntroduceTeams) setTeamIntroAudio(introAudio);
     try {
+      const captainPhotoMissing = store.teams.some(
+        (team) =>
+          team.captain_id != null &&
+          !playerDetails[Number(team.captain_id)]?.profile_photo
+      );
+      if (shouldIntroduceTeams && captainPhotoMissing) {
+        const playerInfoResponse = await api
+          .get(`/auction/events/${eid}/players-info`)
+          .catch(() => null);
+        if (playerInfoResponse?.data) {
+          const refreshedDetails: Record<number, PlayerDetail> = {};
+          playerInfoResponse.data.forEach((row: PlayerDetail) => {
+            refreshedDetails[row.player_id] = row;
+          });
+          setPlayerDetails(refreshedDetails);
+        }
+      }
       await api.post(`/auction/events/${eid}/start`);
       // The connected WebSocket already owns the current snapshot and receives
       // player_up / auction_started events. Avoid a duplicate full roster fetch.
