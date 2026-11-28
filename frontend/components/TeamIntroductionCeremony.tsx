@@ -36,6 +36,7 @@ export default function TeamIntroductionCeremony({
   const [teamIndex, setTeamIndex] = useState(0);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  const [animatedPurse, setAnimatedPurse] = useState(0);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
@@ -91,6 +92,23 @@ export default function TeamIntroductionCeremony({
   useEffect(() => {
     audio?.setVolume(volume);
   }, [audio, volume]);
+
+  useEffect(() => {
+    if (phase !== "team" || !team) return;
+    const target = Math.max(0, team.budget || 0);
+    const duration = Math.min(620, Math.max(360, teamDuration * 0.68));
+    let frame = 0;
+    const startedAt = performance.now();
+    setAnimatedPurse(0);
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setAnimatedPurse(Math.round(target * eased));
+      if (progress < 1) frame = window.requestAnimationFrame(animate);
+    };
+    frame = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frame);
+  }, [phase, team, teamDuration]);
 
   useEffect(() => () => audio?.stop(), [audio]);
 
@@ -247,7 +265,7 @@ export default function TeamIntroductionCeremony({
                 Initial purse
               </p>
               <p className="mt-2 text-3xl font-black tabular-nums text-amber-200 drop-shadow-[0_0_18px_rgba(245,190,70,0.25)] sm:text-5xl">
-                {money.format(team.budget)}
+                {money.format(animatedPurse)}
               </p>
               <p className="mt-1 text-[9px] font-semibold uppercase tracking-[0.24em] text-slate-400 sm:text-[10px]">
                 Available auction budget
