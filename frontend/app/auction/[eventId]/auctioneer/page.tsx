@@ -1136,7 +1136,9 @@ export default function AuctioneerPage() {
                   <button
                     type="button"
                     onClick={startAuction}
-                    className="flex flex-col items-center text-emerald-400 hover:text-emerald-300 transition"
+                    disabled={busyAction || store.teams.length === 0}
+                    title={store.teams.length === 0 ? "Loading team details…" : undefined}
+                    className="flex flex-col items-center text-emerald-400 hover:text-emerald-300 transition disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span className="text-[10px] font-extrabold uppercase tracking-wider">
                       {status === "paused" ? "RESUME" : "START"}
