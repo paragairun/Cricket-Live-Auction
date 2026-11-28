@@ -60,6 +60,9 @@ def _build_legacy_db(path, *, add_null_columns: bool) -> None:
             ("rtm_enabled", "INTEGER"),
             ("rtm_cards_per_team", "INTEGER"),
             ("team_min_players", "INTEGER"),
+            # Added by the event-profile feature; legacy SQLite files need the
+            # same empty-object default as fresh databases.
+            ("event_details", "TEXT"),
         ):
             con.execute(f"ALTER TABLE auction_events ADD COLUMN {column} {sql_type}")
     con.commit()
@@ -107,6 +110,7 @@ async def test_legacy_database_upgrades_to_a_readable_row(
     assert row.rtm_enabled is False, label
     assert row.auction_mode is not None, label
     assert getattr(row.auction_mode, "value", row.auction_mode) == "random", label
+    assert row.event_details == {}, label
 
     # And the row must serialise — this is what GET /auction/events/{id} does,
     # and what used to raise and surface as a 500.
@@ -122,7 +126,10 @@ async def test_existing_values_are_not_overwritten(tmp_path):
     _build_legacy_db(db_path, add_null_columns=True)
 
     con = sqlite3.connect(db_path)
-    con.execute("UPDATE auction_events SET team_min_players = 7, rtm_enabled = 1")
+    con.execute(
+        "UPDATE auction_events SET team_min_players = 7, rtm_enabled = 1, "
+        "event_details = '{\"tagline\": \"Keep this profile\"}'"
+    )
     con.commit()
     con.close()
 
@@ -142,3 +149,6 @@ async def test_existing_values_are_not_overwritten(tmp_path):
 
     assert row.team_min_players == 7, "A configured value must survive the repair"
     assert row.rtm_enabled is True, "A configured value must survive the repair"
+    assert row.event_details == {"tagline": "Keep this profile"}, (
+        "An existing event profile must survive the repair"
+    )
