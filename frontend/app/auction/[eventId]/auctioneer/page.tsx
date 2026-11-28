@@ -715,6 +715,10 @@ export default function AuctioneerPage() {
   const handleBidUp = async () => {
     if (!displayActiveAP) return;
     const isOpening = !displayActiveAP.current_bid_team_id;
+    if (selectedTeamId == null && isOpening) {
+      setActionError("Select a team before increasing the bid.");
+      return;
+    }
     const activeBase = getEffectiveBasePrice(displayActiveAP);
     const referenceBid =
       displayActiveAP.current_bid > 0
@@ -724,6 +728,11 @@ export default function AuctioneerPage() {
         : 0;
     const increment = getBidIncrement(referenceBid);
     const nextAmount = referenceBid + increment;
+
+    if (selectedTeamId != null && selectedTeamId !== displayActiveAP.current_bid_team_id) {
+      await placeBidForTeam(selectedTeamId, nextAmount);
+      return;
+    }
 
     setActionError(null);
     useAuctionStore.getState().applyBid(
@@ -736,9 +745,8 @@ export default function AuctioneerPage() {
     try {
       await api.patch(`/auction/events/${eid}/bid-edit`, { amount: nextAmount });
     } catch (e: unknown) {
-      if (displayActiveAP.current_bid_team_id) {
-        setActionError(describeError(e).message);
-      }
+      setActionError(describeError(e).message);
+      await syncState().catch(() => {});
     }
   };
 
@@ -1623,7 +1631,7 @@ export default function AuctioneerPage() {
               const maxBidPrice = formatAuctionPrice(maxBid);
               const isLeading = !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
               const isSelected = selectedTeamId === team.id;
-              const cannotAfford = !!displayActiveAP && maxBid < teamBidAmount;
+              const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
               const isFull = team.player_count >= team.max_players;
               const disabled =
                 status !== "active" || !displayActiveAP || isLeading ||
@@ -1633,9 +1641,12 @@ export default function AuctioneerPage() {
                 <div
                   key={team.id}
                   onClick={() => {
-                    if (!disabled) placeBidForTeam(team.id, teamBidAmount);
+                    if (!disabled) {
+                      setSelectedTeamId(team.id);
+                      setActionError(null);
+                    }
                   }}
-                  title={disabled ? team.name : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`}
+                  title={disabled ? team.name : `Select ${team.name} as the bidding team`}
                   className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : isSelected ? "bg-neutral-900 ring-1 ring-inset ring-amber-300" : disabled ? "opacity-75 cursor-default" : "cursor-pointer hover:bg-neutral-900"}`}
                 >
                   <div className="flex items-start gap-2 min-w-0">
