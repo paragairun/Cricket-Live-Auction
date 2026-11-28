@@ -168,6 +168,7 @@ class EventSettingsUpdatePayload(BaseModel):
     rtm_cards_per_team: int | None = Field(default=None, ge=0, le=20)
     exclude_captains_from_auction: bool | None = None
     auto_reauction_unsold: bool | None = None
+    event_details: dict | None = None
 
 
 # ── Users (for assigning an auctioneer) ───────────────────────────────────────
@@ -254,6 +255,7 @@ async def create_practice_copy(
         total_viewers=None,
         logo=source.logo,
         background_image=source.background_image,
+        event_details=dict(source.event_details or {}),
     )
     db.add(practice)
     await db.flush()
