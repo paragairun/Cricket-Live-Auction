@@ -61,6 +61,7 @@ export default function AuctioneerPage() {
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
   const [teamStripPage, setTeamStripPage] = useState(0);
   const [teamStripProgress, setTeamStripProgress] = useState(0);
+  const teamStripProgressRef = useRef(0);
   const teamStripManualPauseUntil = useRef(0);
   const teamStripBidHoldUntil = useRef(0);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -908,8 +909,9 @@ export default function AuctioneerPage() {
     : store.teams.slice(teamStripPage * 6, teamStripPage * 6 + 6);
 
   useEffect(() => {
-    if (store.teams.length <= 6) {
-      setTeamStripPage(0);
+    if (store.teams.length <= 6 || status !== "active") {
+      if (store.teams.length <= 6) setTeamStripPage(0);
+      teamStripProgressRef.current = 0;
       setTeamStripProgress(0);
       return;
     }
@@ -923,28 +925,31 @@ export default function AuctioneerPage() {
         teamStripBidHoldUntil.current
       );
       if (now < pausedUntil) {
+        teamStripProgressRef.current = 0;
         setTeamStripProgress(0);
         return;
       }
 
-      setTeamStripProgress((progress) => {
-        const next = progress + (tickMs / rotationMs) * 100;
-        if (next >= 100) {
-          setTeamStripPage((page) => (page + 1) % teamStripPageCount);
-          return 0;
-        }
-        return next;
-      });
+      const next = teamStripProgressRef.current + (tickMs / rotationMs) * 100;
+      if (next >= 100) {
+        teamStripProgressRef.current = 0;
+        setTeamStripProgress(0);
+        setTeamStripPage((page) => (page + 1) % teamStripPageCount);
+      } else {
+        teamStripProgressRef.current = next;
+        setTeamStripProgress(next);
+      }
     }, tickMs);
 
     return () => window.clearInterval(timer);
-  }, [store.teams.length, teamStripPageCount]);
+  }, [store.teams.length, teamStripPageCount, status]);
 
   useEffect(() => {
     if (!leadingTeam || store.teams.length <= 6) return;
     const teamIndex = store.teams.findIndex((team) => team.id === leadingTeam.id);
     if (teamIndex < 0) return;
     setTeamStripPage(Math.floor(teamIndex / 6));
+    teamStripProgressRef.current = 0;
     setTeamStripProgress(0);
     teamStripBidHoldUntil.current = Date.now() + 15000;
   }, [leadingTeam?.id, displayedCurrentBid, store.teams]);
@@ -952,6 +957,7 @@ export default function AuctioneerPage() {
   const navigateTeamStrip = (direction: -1 | 1) => {
     if (teamStripPageCount <= 1) return;
     setTeamStripPage((page) => (page + direction + teamStripPageCount) % teamStripPageCount);
+    teamStripProgressRef.current = 0;
     setTeamStripProgress(0);
     teamStripManualPauseUntil.current = Date.now() + 15000;
   };
