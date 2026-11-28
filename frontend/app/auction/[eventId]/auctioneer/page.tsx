@@ -59,6 +59,10 @@ export default function AuctioneerPage() {
   >({});
 
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  const [teamStripPage, setTeamStripPage] = useState(0);
+  const [teamStripProgress, setTeamStripProgress] = useState(0);
+  const teamStripManualPauseUntil = useRef(0);
+  const teamStripBidHoldUntil = useRef(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rtmRaiseAmount, setRtmRaiseAmount] = useState("");
   const [autoAdvance, setAutoAdvance] = useState(true);
@@ -898,7 +902,59 @@ export default function AuctioneerPage() {
       ? pendingPlayers
       : pendingPlayers.filter((p) => p.category_id === selectedCategoryFilter);
 
-  const stripTeams = store.teams.slice(0, 6);
+  const teamStripPageCount = Math.max(1, Math.ceil(store.teams.length / 6));
+  const stripTeams = store.teams.length <= 6
+    ? store.teams
+    : store.teams.slice(teamStripPage * 6, teamStripPage * 6 + 6);
+
+  useEffect(() => {
+    if (store.teams.length <= 6) {
+      setTeamStripPage(0);
+      setTeamStripProgress(0);
+      return;
+    }
+
+    const rotationMs = 7000;
+    const tickMs = 100;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      const pausedUntil = Math.max(
+        teamStripManualPauseUntil.current,
+        teamStripBidHoldUntil.current
+      );
+      if (now < pausedUntil) {
+        setTeamStripProgress(Math.min(100, ((rotationMs - Math.max(0, pausedUntil - now)) / rotationMs) * 100));
+        return;
+      }
+
+      setTeamStripProgress((progress) => {
+        const next = progress + (tickMs / rotationMs) * 100;
+        if (next >= 100) {
+          setTeamStripPage((page) => (page + 1) % teamStripPageCount);
+          return 0;
+        }
+        return next;
+      });
+    }, tickMs);
+
+    return () => window.clearInterval(timer);
+  }, [store.teams.length, teamStripPageCount]);
+
+  useEffect(() => {
+    if (!leadingTeam || store.teams.length <= 6) return;
+    const teamIndex = store.teams.findIndex((team) => team.id === leadingTeam.id);
+    if (teamIndex < 0) return;
+    setTeamStripPage(Math.floor(teamIndex / 6));
+    setTeamStripProgress(0);
+    teamStripBidHoldUntil.current = Date.now() + 15000;
+  }, [leadingTeam?.id, displayedCurrentBid, store.teams]);
+
+  const navigateTeamStrip = (direction: -1 | 1) => {
+    if (teamStripPageCount <= 1) return;
+    setTeamStripPage((page) => (page + direction + teamStripPageCount) % teamStripPageCount);
+    setTeamStripProgress(0);
+    teamStripManualPauseUntil.current = Date.now() + 15000;
+  };
 
   const resolvedBgUrl = backgroundImage
     ? backgroundImage.startsWith("http") || backgroundImage.startsWith("/")
@@ -1487,89 +1543,87 @@ export default function AuctioneerPage() {
         </div>
       </main>
 
-      {/* ── BOTTOM TEAM STRIP (6-COLUMN TEAM SUMMARY BAR) ── */}
+      {/* ── ADAPTIVE, AUTO-ROTATING TEAM STRIP ── */}
       <footer className="bg-[#000000] border-t-2 border-[#8b0000]">
-        <div className="mx-auto w-full max-w-[1920px] grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-y sm:divide-y-0 lg:divide-x divide-[#333333]">
-          {stripTeams.map((team) => {
-            const remainingPurse = Math.max(0, team.budget - team.spent);
-            const maxBid = getTeamMaxBid(team);
-            const pursePrice = formatAuctionPrice(remainingPurse);
-            const maxBidPrice = formatAuctionPrice(maxBid);
-            const isLeading =
-              !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
-            const isSelected = selectedTeamId === team.id;
-            const cannotAfford = !!displayActiveAP && maxBid < teamBidAmount;
-            const isFull = team.player_count >= team.max_players;
-            const disabled =
-              status !== "active" ||
-              !displayActiveAP ||
-              isLeading ||
-              cannotAfford ||
-              isFull ||
-              busyAction;
-
-            return (
-              <div
-                key={team.id}
-                onClick={() => {
-                  if (!disabled) placeBidForTeam(team.id, teamBidAmount);
-                }}
-                title={
-                  disabled
-                    ? `${team.name}`
-                    : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`
-                }
-                className={`px-2.5 py-2 flex flex-col justify-between transition ${
-                  isLeading
-                    ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400"
-                    : isSelected
-                    ? "bg-neutral-900 ring-1 ring-inset ring-amber-300"
-                    : disabled
-                    ? "opacity-75 cursor-default"
-                    : "cursor-pointer hover:bg-neutral-900"
-                }`}
-              >
-                <div className="flex items-start gap-2 min-w-0">
-                  <div className="w-8 h-8 shrink-0 flex items-center justify-center overflow-hidden">
-                    {team.logo && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={team.logo}
-                        alt={team.name}
-                        className="w-full h-full object-cover"
-                      />
-                    )}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-white truncate leading-tight">
-                      {team.name}
-                    </div>
-                    <div className="text-[10px] text-white/75 tabular-nums leading-tight mt-0.5">
-                      {team.player_count}/{team.max_players} Players
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5 mt-2 pt-1">
-                  <div>
-                    <div className="text-[9px] text-white/65 leading-none">
-                      Purse
-                    </div>
-                    <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">{"₹"}{pursePrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{pursePrice.unit}</span></div>
-                  </div>
-
-                  <div>
-                    <div className="text-[9px] text-white/65 leading-none">
-                      Max Bid
-                    </div>
-                    <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">{"₹"}{maxBidPrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{maxBidPrice.unit}</span></div>
-                  </div>
-                </div>
+        {store.teams.length > 6 && (
+          <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-3 px-3 pt-1.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-white/65">Teams</span>
+              <span className="text-[10px] font-extrabold tabular-nums text-amber-300">
+                {teamStripPage * 6 + 1}–{Math.min((teamStripPage + 1) * 6, store.teams.length)} of {store.teams.length}
+              </span>
+              <div className="ml-1 flex items-center gap-1" aria-label={`Page ${teamStripPage + 1} of ${teamStripPageCount}`}>
+                {Array.from({ length: teamStripPageCount }, (_, index) => (
+                  <span key={index} className={`h-1.5 w-1.5 rounded-full ${index === teamStripPage ? "bg-amber-400" : "bg-white/25"}`} />
+                ))}
               </div>
-            );
-          })}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="hidden sm:inline text-[9px] text-white/45">AUTO ROTATES</span>
+              <button type="button" onClick={() => navigateTeamStrip(-1)} aria-label="Previous teams" className="flex h-6 w-7 items-center justify-center rounded bg-white/10 text-sm font-bold text-white hover:bg-white/20">‹</button>
+              <button type="button" onClick={() => navigateTeamStrip(1)} aria-label="Next teams" className="flex h-6 w-7 items-center justify-center rounded bg-white/10 text-sm font-bold text-white hover:bg-white/20">›</button>
+            </div>
+          </div>
+        )}
+        <div
+          className="mx-auto grid w-full max-w-[1920px] divide-y sm:divide-y-0 lg:divide-x divide-[#333333] grid-cols-2 sm:grid-cols-3"
+          style={{ gridTemplateColumns: undefined }}
+        >
+          <div className={`contents ${store.teams.length <= 6 ? (store.teams.length === 4 ? "lg:[&>*]:col-span-1" : "") : ""}`}>
+            {stripTeams.map((team) => {
+              const remainingPurse = Math.max(0, team.budget - team.spent);
+              const maxBid = getTeamMaxBid(team);
+              const pursePrice = formatAuctionPrice(remainingPurse);
+              const maxBidPrice = formatAuctionPrice(maxBid);
+              const isLeading = !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
+              const isSelected = selectedTeamId === team.id;
+              const cannotAfford = !!displayActiveAP && maxBid < teamBidAmount;
+              const isFull = team.player_count >= team.max_players;
+              const disabled =
+                status !== "active" || !displayActiveAP || isLeading ||
+                cannotAfford || isFull || busyAction;
+
+              return (
+                <div
+                  key={team.id}
+                  onClick={() => {
+                    if (!disabled) placeBidForTeam(team.id, teamBidAmount);
+                  }}
+                  title={disabled ? team.name : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`}
+                  className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : isSelected ? "bg-neutral-900 ring-1 ring-inset ring-amber-300" : disabled ? "opacity-75 cursor-default" : "cursor-pointer hover:bg-neutral-900"}`}
+                >
+                  <div className="flex items-start gap-2 min-w-0">
+                    <div className="w-8 h-8 shrink-0 flex items-center justify-center overflow-hidden">
+                      {team.logo && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={team.logo} alt={team.name} className="w-full h-full object-cover" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate leading-tight">{team.name}</div>
+                      <div className="text-[10px] text-white/75 tabular-nums leading-tight mt-0.5">{team.player_count}/{team.max_players} Players</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2 pt-1">
+                    <div>
+                      <div className="text-[9px] text-white/65 leading-none">Purse</div>
+                      <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">₹{pursePrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{pursePrice.unit}</span></div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-white/65 leading-none">Max Bid</div>
+                      <div className="text-sm sm:text-base font-extrabold text-white tabular-nums truncate mt-0.5">₹{maxBidPrice.value} <span className="text-[9px] sm:text-[10px] font-bold text-white/75">{maxBidPrice.unit}</span></div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
+        {store.teams.length > 6 && (
+          <div className="h-[2px] w-full bg-white/10">
+            <div className="h-full bg-amber-400/80 transition-[width] duration-100" style={{ width: `${teamStripProgress}%` }} />
+          </div>
+        )}
       </footer>
 
       {/* ── DRAWER FOR SOLD / UNSOLD / AVAILABLE / TEAMS ── */}
