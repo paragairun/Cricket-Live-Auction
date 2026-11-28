@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import api from "@/lib/api";
 
 type Sponsor = { name: string; category: string; logo_url: string; website: string };
 type EventProfile = {
@@ -44,9 +45,10 @@ const DEFAULTS: EventProfile = {
 };
 
 export default function EventProfileEditor({
-  value, onSave, saving,
+  value, onSave, saving, eventId,
 }: {
   value?: Record<string, unknown> | null;
+  eventId: number;
   onSave: (details: EventProfile) => Promise<void>;
   saving: boolean;
 }) {
@@ -60,6 +62,14 @@ export default function EventProfileEditor({
     });
   }, [value]);
 
+  const uploadAsset = async (file: File, type: "sponsor-logo" | "rules-document") => {
+    const data = new FormData();
+    data.append("file", file);
+    const response = await api.post(`/organizer/events/${eventId}/profile-assets/${type}`, data, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return response.data.url as string;
+  };
   const field = (key: keyof EventProfile, label: string, placeholder = "", type = "text") => (
     <label className="block">
       <span className="label">{label}</span>
@@ -71,7 +81,7 @@ export default function EventProfileEditor({
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label className="block"><span className="label">Sponsor name</span><input className="input" value={sponsor.name} onChange={(e) => update({ ...sponsor, name: e.target.value })} placeholder="Company / brand name" /></label>
       {!title && <label className="block"><span className="label">Sponsor category</span><select className="input" value={sponsor.category} onChange={(e) => update({ ...sponsor, category: e.target.value })}><option>Associate Sponsor</option><option>Powered By</option><option>Co-Sponsor</option><option>Official Partner</option><option>Media Partner</option><option>Other</option></select></label>}
-      <label className="block"><span className="label">Logo URL</span><input className="input" value={sponsor.logo_url} onChange={(e) => update({ ...sponsor, logo_url: e.target.value })} placeholder="https://..." /></label>
+      <label className="block"><span className="label">Logo URL</span><input className="input" value={sponsor.logo_url} onChange={(e) => update({ ...sponsor, logo_url: e.target.value })} placeholder="https://..." /><input className="mt-2 block w-full text-xs text-gray-400" type="file" accept="image/*" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { update({ ...sponsor, logo_url: await uploadAsset(file, "sponsor-logo") }); } catch { alert("Could not upload sponsor logo."); } }} /></label>
       <label className="block"><span className="label">Website</span><input className="input" value={sponsor.website} onChange={(e) => update({ ...sponsor, website: e.target.value })} placeholder="https://..." /></label>
     </div>
   );
@@ -115,7 +125,7 @@ export default function EventProfileEditor({
           {sponsorFields(form.title_sponsor, (next) => setForm(f => ({ ...f, title_sponsor: next })), true)}
         </div>
         <div className="flex items-center justify-between"><div><p className="font-semibold">Other Sponsors</p><p className="text-xs text-gray-500">Add associate sponsors, partners and supporting brands.</p></div><button type="button" className="btn-secondary text-sm" onClick={() => setForm(f => ({ ...f, other_sponsors: [...f.other_sponsors, { ...EMPTY_SPONSOR }] }))}>+ Add Sponsor</button></div>
-        {form.other_sponsors.map((s, i) => <div key={i} className="rounded-xl border border-gray-800 p-4 space-y-3"><div className="flex justify-between items-center"><p className="text-sm font-medium">Sponsor {i + 1}</p><button type="button" className="text-xs text-red-400" onClick={() => setForm(f => ({ ...f, other_sponsors: f.other_sponsors.filter((_, n) => n !== i) }))}>Remove</button></div>{sponsorFields(s, (next) => setForm(f => ({ ...f, other_sponsors: f.other_sponsors.map((item, n) => n === i ? next : item) })))}</div>)}
+        {form.other_sponsors.map((s, i) => <div key={i} className="rounded-xl border border-gray-800 p-4 space-y-3"><div className="flex justify-between items-center"><p className="text-sm font-medium">Sponsor {i + 1}</p><div className="flex gap-3"><button type="button" className="text-xs text-gray-400" disabled={i === 0} onClick={() => setForm(f => { const a = [...f.other_sponsors]; [a[i - 1], a[i]] = [a[i], a[i - 1]]; return { ...f, other_sponsors: a }; })}>Move up</button><button type="button" className="text-xs text-gray-400" disabled={i === form.other_sponsors.length - 1} onClick={() => setForm(f => { const a = [...f.other_sponsors]; [a[i + 1], a[i]] = [a[i], a[i + 1]]; return { ...f, other_sponsors: a }; })}>Move down</button><button type="button" className="text-xs text-red-400" onClick={() => setForm(f => ({ ...f, other_sponsors: f.other_sponsors.filter((_, n) => n !== i) }))}>Remove</button></div></div>{sponsorFields(s, (next) => setForm(f => ({ ...f, other_sponsors: f.other_sponsors.map((item, n) => n === i ? next : item) })))}</div>)}
       </section>
       <section className="card space-y-4">
         <h3 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Prizes, rules & contact</h3>
@@ -123,7 +133,7 @@ export default function EventProfileEditor({
           {field("prize_winner", "Winner prize", "₹")}
           {field("prize_runner_up", "Runner-up prize", "₹")}
           {field("player_awards", "Player awards", "MVP, Best Batter, Best Bowler")}
-          {field("rules_document_url", "Tournament rules PDF URL", "https://...")}
+          {field("rules_document_url", "Tournament rules PDF URL", "https://...")}<label className="block"><span className="label">Upload tournament rules (PDF)</span><input className="block w-full text-xs text-gray-400" type="file" accept="application/pdf,.pdf" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { setForm(f => ({ ...f, rules_document_url: await uploadAsset(file, "rules-document") })); } catch { alert("Could not upload rules PDF."); } }} /></label>
           {field("contact_name", "Contact person", "Name")}
           {field("contact_phone", "Contact number", "+91...")}
           {field("contact_email", "Contact email", "name@example.com", "email")}
