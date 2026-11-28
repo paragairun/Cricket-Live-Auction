@@ -74,6 +74,18 @@ export default function AuctioneerPage() {
   const [justSoldPlayerId, setJustSoldPlayerId] = useState<number | null>(null);
   const saleCelebrationUntilRef = useRef(0);
   const saleCelebrationClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saleCelebration, setSaleCelebration] = useState<{
+    playerName: string;
+    playerPhoto?: string | null;
+    playerCategory?: string | null;
+    playerAge?: number | string | null;
+    battingRating?: number | string | null;
+    bowlingRating?: number | string | null;
+    fieldingRating?: number | string | null;
+    teamName: string;
+    teamLogo?: string | null;
+    soldPrice: number;
+  } | null>(null);
   const clearSaleCelebration = () => {
     const remaining = saleCelebrationUntilRef.current - Date.now();
     if (remaining > 0) {
@@ -92,18 +104,6 @@ export default function AuctioneerPage() {
     }
     setSaleCelebration(null);
   };
-  const [saleCelebration, setSaleCelebration] = useState<{
-    playerName: string;
-    playerPhoto?: string | null;
-    playerCategory?: string | null;
-    playerAge?: number | string | null;
-    battingRating?: number | string | null;
-    bowlingRating?: number | string | null;
-    fieldingRating?: number | string | null;
-    teamName: string;
-    teamLogo?: string | null;
-    soldPrice: number;
-  } | null>(null);
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<
