@@ -1975,7 +1975,7 @@ export default function AuctioneerPage() {
                             src={resolveMediaUrl(team.logo)}
                             alt=""
                             aria-hidden="true"
-                            className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-auto w-[min(48vw,560px)] max-h-[70%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.20]"
+                            className="pointer-events-none absolute left-1/2 top-1/2 z-0 h-auto w-[min(48vw,560px)] max-h-[70%] -translate-x-1/2 -translate-y-1/2 object-contain opacity-[0.20]"
                           />
                         )}
                         <div className="relative z-30 mb-2 shrink-0 pr-10 text-xs text-slate-300">
