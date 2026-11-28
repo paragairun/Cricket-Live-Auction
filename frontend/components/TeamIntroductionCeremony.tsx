@@ -38,6 +38,9 @@ export default function TeamIntroductionCeremony({
   const [volume, setVolume] = useState(0.8);
   const [animatedPurse, setAnimatedPurse] = useState(0);
   const onCompleteRef = useRef(onComplete);
+  const openingAudioPlayedRef = useRef(false);
+  const finalAudioPlayedRef = useRef(false);
+  const revealedTeamAudioIdRef = useRef<number | null>(null);
   onCompleteRef.current = onComplete;
 
   // The complete ceremony stays within roughly 10–15 seconds for normal
@@ -46,6 +49,7 @@ export default function TeamIntroductionCeremony({
     () => (teams.length ? Math.max(750, Math.min(2300, Math.floor(10500 / teams.length))) : 750),
     [teams.length]
   );
+  const team = teams[teamIndex];
 
   const finish = () => {
     audio?.stop();
@@ -53,7 +57,10 @@ export default function TeamIntroductionCeremony({
   };
 
   useEffect(() => {
-    audio?.playOpening();
+    if (!openingAudioPlayedRef.current) {
+      openingAudioPlayedRef.current = true;
+      audio?.playOpening();
+    }
     const timer = window.setTimeout(
       () => setPhase(teams.length ? "team" : "final"),
       1200
@@ -62,8 +69,11 @@ export default function TeamIntroductionCeremony({
   }, [audio, teams.length]);
 
   useEffect(() => {
-    if (phase !== "team" || !teams[teamIndex]) return;
-    audio?.playTeamReveal(teamIndex);
+    if (phase !== "team" || !team) return;
+    if (revealedTeamAudioIdRef.current !== team.id) {
+      revealedTeamAudioIdRef.current = team.id;
+      audio?.playTeamReveal(teamIndex);
+    }
     const purseTimer = window.setTimeout(() => audio?.playPurseReveal(), 260);
     const nextTimer = window.setTimeout(() => {
       if (teamIndex + 1 >= teams.length) {
@@ -76,12 +86,18 @@ export default function TeamIntroductionCeremony({
       window.clearTimeout(purseTimer);
       window.clearTimeout(nextTimer);
     };
-  }, [audio, phase, teamDuration, teamIndex, teams.length]);
+  }, [audio, phase, teamDuration, teamIndex, team, teams.length]);
 
   useEffect(() => {
     if (phase !== "final") return;
-    audio?.playFinish();
-    const timer = window.setTimeout(finish, 1550);
+    if (!finalAudioPlayedRef.current) {
+      finalAudioPlayedRef.current = true;
+      audio?.playFinish();
+    }
+    const timer = window.setTimeout(() => {
+      audio?.stop();
+      onCompleteRef.current();
+    }, 1550);
     return () => window.clearTimeout(timer);
   }, [phase, audio]);
 
@@ -112,7 +128,6 @@ export default function TeamIntroductionCeremony({
 
   useEffect(() => () => audio?.stop(), [audio]);
 
-  const team = teams[teamIndex];
   const captain = team?.captain_id != null
     ? playerDetails[Number(team.captain_id)]
     : undefined;
