@@ -35,7 +35,7 @@ export default function TeamIntroductionCeremony({
   const [phase, setPhase] = useState<CeremonyPhase>("opening");
   const [teamIndex, setTeamIndex] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState(1);
   const [animatedPurse, setAnimatedPurse] = useState(0);
   const onCompleteRef = useRef(onComplete);
   const openingAudioPlayedRef = useRef(false);

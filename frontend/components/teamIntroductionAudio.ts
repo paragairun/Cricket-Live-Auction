@@ -25,11 +25,11 @@ export function createTeamIntroAudioController(): TeamIntroAudioController | nul
   }
 
   const master = context.createGain();
-  master.gain.value = 0.55;
+  master.gain.value = 0.8;
   master.connect(context.destination);
 
   const ambience = context.createGain();
-  ambience.gain.value = 0.18;
+  ambience.gain.value = 0.24;
   ambience.connect(master);
 
   const lowPass = context.createBiquadFilter();
@@ -58,7 +58,7 @@ export function createTeamIntroAudioController(): TeamIntroAudioController | nul
 
   const setMaster = () => {
     if (stopped) return;
-    master.gain.setTargetAtTime(muted ? 0 : 0.55 * volume, context.currentTime, 0.06);
+    master.gain.setTargetAtTime(muted ? 0 : 0.8 * volume, context.currentTime, 0.06);
   };
 
   const tone = (
@@ -123,28 +123,28 @@ export function createTeamIntroAudioController(): TeamIntroAudioController | nul
   return {
     playOpening: () => {
       const now = context.currentTime + 0.02;
-      whoosh(now, 0.17);
-      tone(73.42, now + 0.02, 0.85, 0.17, "triangle");
-      tone(220, now + 0.2, 0.75, 0.065, "sine");
+      whoosh(now, 0.24);
+      tone(73.42, now + 0.02, 0.85, 0.24, "triangle");
+      tone(220, now + 0.2, 0.75, 0.09, "sine");
     },
     playTeamReveal: (index: number) => {
       const now = context.currentTime + 0.015;
       const notes = [293.66, 329.63, 392, 440, 392, 349.23];
-      whoosh(now, 0.085);
-      tone(notes[index % notes.length], now + 0.045, 0.32, 0.085, "triangle");
-      tone(notes[index % notes.length] * 2, now + 0.075, 0.22, 0.028, "sine");
+      whoosh(now, 0.13);
+      tone(notes[index % notes.length], now + 0.045, 0.32, 0.13, "triangle");
+      tone(notes[index % notes.length] * 2, now + 0.075, 0.22, 0.045, "sine");
     },
     playPurseReveal: () => {
       const now = context.currentTime + 0.02;
       [523.25, 659.25, 783.99].forEach((note, index) => {
-        tone(note, now + index * 0.075, 0.16, 0.04, "sine");
+        tone(note, now + index * 0.075, 0.16, 0.06, "sine");
       });
     },
     playFinish: () => {
       const now = context.currentTime + 0.02;
-      whoosh(now, 0.18);
+      whoosh(now, 0.25);
       [196, 246.94, 293.66, 392].forEach((note, index) => {
-        tone(note, now + index * 0.025, 1.05, 0.07, "triangle");
+        tone(note, now + index * 0.025, 1.05, 0.1, "triangle");
       });
     },
     setMuted: (nextMuted: boolean) => {
