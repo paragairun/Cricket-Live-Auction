@@ -1065,7 +1065,7 @@ export default function AuctioneerPage() {
   // transition and the live console is only revealed after it completes.
   if (status !== "active" && !showTeamIntroduction) {
     return (
-      <div className="relative min-h-[100dvh] w-full overflow-hidden bg-[#07090e] text-white">
+      <div className="relative h-[100dvh] w-full overflow-hidden bg-[#07090e] text-white">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_38%,rgba(180,112,26,0.22),transparent_55%),linear-gradient(135deg,#080b12_0%,#10151f_55%,#08090d_100%)]" />
         {resolvedBgUrl && (
           <div
@@ -1073,8 +1073,8 @@ export default function AuctioneerPage() {
             style={{ backgroundImage: `url("${resolvedBgUrl}")` }}
           />
         )}
-        <div className="relative z-10 min-h-[100dvh] flex flex-col">
-          <header className="flex items-center justify-between px-5 sm:px-10 py-5 border-b border-white/10">
+        <div className="relative z-10 h-full min-h-0 flex flex-col overflow-hidden">
+          <header className="flex shrink-0 items-center justify-between px-5 sm:px-10 py-3 border-b border-white/10">
             <button
               type="button"
               onClick={() => router.push("/dashboard")}
@@ -1087,9 +1087,9 @@ export default function AuctioneerPage() {
             </div>
           </header>
 
-          <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-10 py-10 sm:py-14 flex flex-col justify-center overflow-y-auto">
+          <main className="flex-1 min-h-0 w-full max-w-6xl mx-auto px-5 sm:px-10 py-3 sm:py-5 flex flex-col justify-evenly overflow-hidden">
             <div className="text-center">
-              <div className="mx-auto mb-8 w-40 h-40 sm:w-52 sm:h-52 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center p-5 sm:p-7">
+              <div className="mx-auto mb-3 w-24 h-24 sm:w-32 sm:h-32 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center p-5 sm:p-7">
                 {eventLogo ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={eventLogo} alt={eventName + " logo"} className="w-full h-full object-contain" />
@@ -1100,23 +1100,23 @@ export default function AuctioneerPage() {
                 )}
               </div>
 
-              <p className="text-[10px] sm:text-xs font-bold uppercase tracking-[0.38em] text-amber-300/80 mb-4">
+              <p className="text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.32em] text-amber-300/80 mb-2">
                 {status === "paused" ? "Auction paused" : status === "completed" ? "Event completed" : "Welcome to the auction"}
               </p>
-              <h1 className="mx-auto max-w-5xl text-4xl sm:text-6xl lg:text-7xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
+              <h1 className="mx-auto max-w-5xl text-3xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
                 {eventName}
               </h1>
               {(eventDescription || eventDetails.tagline) && (
-                <p className="mx-auto mt-5 max-w-2xl text-sm sm:text-base text-white/55 leading-relaxed">
+                <p className="mx-auto mt-2 max-w-2xl text-xs sm:text-sm text-white/55 leading-relaxed">
                   {eventDetails.tagline || eventDescription}
                 </p>
               )}
             </div>
 
-            <div className="mx-auto mt-10 sm:mt-14 w-full max-w-4xl">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-5 text-center">
-                  <div className="text-3xl sm:text-4xl font-black tabular-nums text-amber-300">{store.teams.length}</div>
+            <div className="mx-auto mt-4 sm:mt-5 w-full max-w-4xl">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                <div className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-3 text-center">
+                  <div className="text-2xl sm:text-3xl font-black tabular-nums text-amber-300">{store.teams.length}</div>
                   <div className="mt-1 text-[10px] sm:text-xs font-bold uppercase tracking-[0.18em] text-white/50">Teams</div>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-5 text-center">
@@ -1131,7 +1131,7 @@ export default function AuctioneerPage() {
             </div>
 
             {(eventDetails.venue_name || eventDetails.tournament_type || eventDetails.match_format || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.tournament_start_date || eventDetails.prize_winner || eventDetails.tagline) && (
-              <section className="mx-auto mt-7 w-full max-w-4xl rounded-2xl border border-white/10 bg-white/[0.035] p-5 sm:p-6 space-y-5">
+              <section className="mx-auto mt-3 w-full max-w-4xl max-h-[34dvh] overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] p-3 sm:p-4 space-y-3">
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                   {eventDetails.tournament_type && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Type</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_type}</div></div>}
                   {eventDetails.sport && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Sport</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.sport}</div></div>}
@@ -1145,7 +1145,7 @@ export default function AuctioneerPage() {
                   {eventDetails.season && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Season</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.season}</div></div>}
                   {eventDetails.edition_year && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Edition</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.edition_year}</div></div>}
                 </div>
-                {eventDetails.title_sponsor?.name && <div className="border-t border-white/10 pt-4">
+                {eventDetails.title_sponsor?.name && <div className="border-t border-white/10 pt-2">
                   <div className="text-[10px] uppercase tracking-[0.2em] text-amber-300/70 mb-2">Title Sponsor</div>
                   <div className="flex items-center gap-3">
                     {eventDetails.title_sponsor.logo_url && <img src={eventDetails.title_sponsor.logo_url} alt="" className="h-12 max-w-32 object-contain rounded bg-white p-1" />}
@@ -1177,13 +1177,13 @@ export default function AuctioneerPage() {
               </section>
             )}
             
-            <div className="mt-10 sm:mt-12 flex flex-col-reverse sm:flex-row items-center justify-center gap-4">
+            <div className="mt-3 sm:mt-4 flex flex-col-reverse sm:flex-row items-center justify-center gap-4">
               {status !== "completed" && (
                 <button
                   type="button"
                   onClick={handleResetMock}
                   disabled={busyAction}
-                  className="w-full sm:w-auto min-w-40 rounded-xl border border-white/20 bg-white/[0.04] px-7 py-4 text-xs font-extrabold uppercase tracking-[0.18em] text-white/75 hover:border-amber-300/50 hover:text-white disabled:opacity-50 transition"
+                  className="w-full sm:w-auto min-w-40 rounded-xl border border-white/20 bg-white/[0.04] px-6 py-3 text-[11px] font-extrabold uppercase tracking-[0.18em] text-white/75 hover:border-amber-300/50 hover:text-white disabled:opacity-50 transition"
                 >
                   ↻ &nbsp; Restart
                 </button>
@@ -1193,16 +1193,16 @@ export default function AuctioneerPage() {
                   type="button"
                   onClick={startAuction}
                   disabled={busyAction}
-                  className="w-full sm:w-auto min-w-64 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 px-10 py-4 text-sm font-black uppercase tracking-[0.2em] text-black shadow-[0_12px_45px_rgba(245,158,11,0.22)] hover:brightness-110 disabled:opacity-60 transition"
+                  className="w-full sm:w-auto min-w-64 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 px-8 py-3 text-xs font-black uppercase tracking-[0.2em] text-black shadow-[0_12px_45px_rgba(245,158,11,0.22)] hover:brightness-110 disabled:opacity-60 transition"
                 >
                   {busyAction ? "Preparing..." : status === "paused" ? "▶  Resume Auction" : "▶  Start Auction"}
                 </button>
               ) : status === "draft" ? (
-                <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-8 py-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-amber-200/70">
+                <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-7 py-3 text-center text-[11px] font-bold uppercase tracking-[0.14em] text-amber-200/70">
                   Complete event setup to enable Start
                 </div>
               ) : (
-                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-8 py-4 text-xs font-bold uppercase tracking-[0.18em] text-white/50">
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-7 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white/50">
                   Auction completed
                 </div>
               )}
@@ -1211,7 +1211,7 @@ export default function AuctioneerPage() {
               <p className="mt-5 text-center text-sm text-red-300">{actionError}</p>
             )}
           </main>
-          <footer className="px-5 py-5 text-center text-[10px] uppercase tracking-[0.24em] text-white/25">
+          <footer className="shrink-0 px-5 py-2 text-center text-[9px] uppercase tracking-[0.24em] text-white/25">
             Powered by AUCTION
           </footer>
         </div>
