@@ -168,6 +168,7 @@ class EventSettingsUpdatePayload(BaseModel):
     rtm_cards_per_team: int | None = Field(default=None, ge=0, le=20)
     exclude_captains_from_auction: bool | None = None
     auto_reauction_unsold: bool | None = None
+    event_details: dict | None = None
 
 
 # ── Users (for assigning an auctioneer) ───────────────────────────────────────
@@ -254,6 +255,7 @@ async def create_practice_copy(
         total_viewers=None,
         logo=source.logo,
         background_image=source.background_image,
+        event_details=dict(source.event_details or {}),
     )
     db.add(practice)
     await db.flush()
@@ -1471,3 +1473,22 @@ async def delete_event_background(
     await db.commit()
     await db.refresh(ctx.event)
     return AuctionEventOut.model_validate(ctx.event)
+
+@router.post("/events/{event_id}/profile-assets/{asset_type}")
+async def upload_event_profile_asset(
+    event_id: int,
+    asset_type: str,
+    file: UploadFile = File(...),
+    ctx: EventContext = SetupCtx,
+):
+    """Upload a sponsor logo or tournament rules PDF for the event profile."""
+    allowed_types = {"sponsor-logo", "rules-document"}
+    if asset_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Unsupported profile asset type")
+    content_type = (file.content_type or "").lower()
+    if asset_type == "sponsor-logo" and not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Sponsor logos must be image files")
+    if asset_type == "rules-document" and content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Tournament rules must be a PDF")
+    url = await save_upload(file, folder=f"event-{asset_type}s")
+    return {"url": url}

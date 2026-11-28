@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import api, { describeError } from "@/lib/api";
 import { derivePublishState, isDraftState } from "@/lib/eventStatus";
 import UserSearchInvite from "@/components/UserSearchInvite";
+import EventProfileEditor from "@/components/EventProfileEditor";
 
 /** A roster player plus their state in this event. New in 2.0.0. */
 interface EventPlayer {
@@ -49,6 +50,7 @@ interface EventDetail {
   player_base_price: number;
   logo: string | null;
   background_image?: string | null;
+  event_details?: Record<string, unknown>;
 }
 
 interface Readiness {
@@ -1245,7 +1247,7 @@ export default function OrganizerEventDetailPage() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [bidSlabs, setBidSlabs] = useState<BidSlab[]>([]);
   const [categories, setCategories] = useState<PlayerCategory[]>([]);
-  const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings" | "bid-slabs" | "categories">("players");
+  const [tab, setTab] = useState<"players" | "teams" | "auctioneer" | "settings" | "bid-slabs" | "categories" | "profile">("players");
   const [teamForm, setTeamForm] = useState<{ name: string; color: string; logoFile?: File | null }>({
     name: "",
     color: "#3B82F6",
@@ -1272,6 +1274,7 @@ export default function OrganizerEventDetailPage() {
   const [markingReady, setMarkingReady] = useState(false);
   const [scheduleInput, setScheduleInput] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [creatingSlab, setCreatingSlab] = useState(false);
@@ -1621,6 +1624,7 @@ export default function OrganizerEventDetailPage() {
     { key: "bid-slabs", label: "Bid Slabs", count: bidSlabs.length },
     { key: "categories", label: "Categories", count: categories.length },
     { key: "settings", label: "Settings", count: 0 },
+    { key: "profile", label: "Event Profile", count: 0 },
   ] as const;
 
   return (
@@ -1774,6 +1778,28 @@ export default function OrganizerEventDetailPage() {
                 </button>
               ))}
             </div>
+
+            {/* Complete tournament profile: venue, format, sponsors, prizes and contacts. */}
+            {tab === "profile" && (
+              <EventProfileEditor
+                eventId={eid}
+                value={event?.event_details}
+                saving={savingProfile}
+                onSave={async (details) => {
+                  setSavingProfile(true);
+                  try {
+                    const { data } = await api.patch(`/organizer/events/${eid}/settings`, { event_details: details });
+                    setEvent(data);
+                    showToast("ok", "Event profile saved successfully.");
+                  } catch (err: unknown) {
+                    const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+                    showToast("err", msg || "Failed to save event profile.");
+                  } finally {
+                    setSavingProfile(false);
+                  }
+                }}
+              />
+            )}
 
             {/* Players tab */}
             {tab === "players" && (
