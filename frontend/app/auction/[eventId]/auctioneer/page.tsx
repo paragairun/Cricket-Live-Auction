@@ -53,6 +53,8 @@ export default function AuctioneerPage() {
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [eventName, setEventName] = useState("EVENT NAME");
   const [eventLogo, setEventLogo] = useState<string | null>(null);
+  const [eventScheduledAt, setEventScheduledAt] = useState<string | null>(null);
+  const [eventDescription, setEventDescription] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
   const [showTeamIntroduction, setShowTeamIntroduction] = useState(false);
@@ -198,6 +200,8 @@ export default function AuctioneerPage() {
           name: string;
           logo?: string | null;
           background_image?: string | null;
+          scheduled_at?: string | null;
+          description?: string | null;
           status?: string;
         };
 
@@ -210,12 +214,10 @@ export default function AuctioneerPage() {
           router.replace(`/auction/${eid}/spectate`);
           return;
         }
-        if (event.status === "draft" || event.status === "completed") {
-          router.replace(`/auction/${eid}/spectate`);
-          return;
-        }
         setEventName(event.name || "EVENT NAME");
         setEventLogo(event.logo || null);
+        setEventScheduledAt(event.scheduled_at || null);
+        setEventDescription(event.description || null);
         setBackgroundImage(event.background_image || null);
         setHasAccess(true);
       } catch {
@@ -1043,6 +1045,129 @@ export default function AuctioneerPage() {
       ? backgroundImage
       : `/${backgroundImage}`
     : null;
+
+  const eventDateLabel = eventScheduledAt
+    ? new Date(eventScheduledAt).toLocaleString("en-IN", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "Date to be announced";
+
+  // Before the auction starts and whenever it is paused, keep the operator on
+  // the event's identity screen. The team/captain ceremony remains the START
+  // transition and the live console is only revealed after it completes.
+  if (status !== "active" && !showTeamIntroduction) {
+    return (
+      <div className="relative min-h-[100dvh] w-full overflow-hidden bg-[#07090e] text-white">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_38%,rgba(180,112,26,0.22),transparent_55%),linear-gradient(135deg,#080b12_0%,#10151f_55%,#08090d_100%)]" />
+        {resolvedBgUrl && (
+          <div
+            className="absolute inset-0 opacity-[0.12] bg-cover bg-center"
+            style={{ backgroundImage: `url("${resolvedBgUrl}")` }}
+          />
+        )}
+        <div className="relative z-10 min-h-[100dvh] flex flex-col">
+          <header className="flex items-center justify-between px-5 sm:px-10 py-5 border-b border-white/10">
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard")}
+              className="text-sm text-white/60 hover:text-white transition"
+            >
+              ‹ Back to Events
+            </button>
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-[0.28em] text-amber-300/80">
+              Auction Control
+            </div>
+          </header>
+
+          <main className="flex-1 w-full max-w-6xl mx-auto px-5 sm:px-10 py-10 sm:py-14 flex flex-col justify-center">
+            <div className="text-center">
+              <div className="mx-auto mb-8 w-40 h-40 sm:w-52 sm:h-52 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center p-5 sm:p-7">
+                {eventLogo ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={eventLogo} alt={eventName + " logo"} className="w-full h-full object-contain" />
+                ) : (
+                  <div className="text-5xl sm:text-6xl font-black tracking-tight text-amber-300/80">
+                    {eventName.trim().slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+              </div>
+
+              <p className="text-[10px] sm:text-xs font-bold uppercase tracking-[0.38em] text-amber-300/80 mb-4">
+                {status === "paused" ? "Auction paused" : status === "completed" ? "Event completed" : "Welcome to the auction"}
+              </p>
+              <h1 className="mx-auto max-w-5xl text-4xl sm:text-6xl lg:text-7xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
+                {eventName}
+              </h1>
+              {eventDescription && (
+                <p className="mx-auto mt-5 max-w-2xl text-sm sm:text-base text-white/55 leading-relaxed">
+                  {eventDescription}
+                </p>
+              )}
+            </div>
+
+            <div className="mx-auto mt-10 sm:mt-14 w-full max-w-4xl">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-5 text-center">
+                  <div className="text-3xl sm:text-4xl font-black tabular-nums text-amber-300">{store.teams.length}</div>
+                  <div className="mt-1 text-[10px] sm:text-xs font-bold uppercase tracking-[0.18em] text-white/50">Teams</div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-5 text-center">
+                  <div className="text-3xl sm:text-4xl font-black tabular-nums text-amber-300">{store.players.length}</div>
+                  <div className="mt-1 text-[10px] sm:text-xs font-bold uppercase tracking-[0.18em] text-white/50">Players · incl. captains</div>
+                </div>
+                <div className="col-span-2 sm:col-span-1 rounded-2xl border border-white/10 bg-white/[0.045] px-4 py-5 text-center">
+                  <div className="text-sm sm:text-base font-bold text-white leading-snug">{eventDateLabel}</div>
+                  <div className="mt-1 text-[10px] sm:text-xs font-bold uppercase tracking-[0.18em] text-white/50">Auction date & time</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-10 sm:mt-12 flex flex-col-reverse sm:flex-row items-center justify-center gap-4">
+              {status !== "completed" && (
+                <button
+                  type="button"
+                  onClick={handleResetMock}
+                  disabled={busyAction}
+                  className="w-full sm:w-auto min-w-40 rounded-xl border border-white/20 bg-white/[0.04] px-7 py-4 text-xs font-extrabold uppercase tracking-[0.18em] text-white/75 hover:border-amber-300/50 hover:text-white disabled:opacity-50 transition"
+                >
+                  ↻ &nbsp; Restart
+                </button>
+              )}
+              {status === "ready" || status === "paused" ? (
+                <button
+                  type="button"
+                  onClick={startAuction}
+                  disabled={busyAction}
+                  className="w-full sm:w-auto min-w-64 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 px-10 py-4 text-sm font-black uppercase tracking-[0.2em] text-black shadow-[0_12px_45px_rgba(245,158,11,0.22)] hover:brightness-110 disabled:opacity-60 transition"
+                >
+                  {busyAction ? "Preparing..." : status === "paused" ? "▶  Resume Auction" : "▶  Start Auction"}
+                </button>
+              ) : status === "draft" ? (
+                <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-8 py-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-amber-200/70">
+                  Complete event setup to enable Start
+                </div>
+              ) : (
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] px-8 py-4 text-xs font-bold uppercase tracking-[0.18em] text-white/50">
+                  Auction completed
+                </div>
+              )}
+            </div>
+            {actionError && (
+              <p className="mt-5 text-center text-sm text-red-300">{actionError}</p>
+            )}
+          </main>
+          <footer className="px-5 py-5 text-center text-[10px] uppercase tracking-[0.24em] text-white/25">
+            Powered by AUCTION
+          </footer>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-[100dvh] w-full overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-[#000000] text-white select-none">
