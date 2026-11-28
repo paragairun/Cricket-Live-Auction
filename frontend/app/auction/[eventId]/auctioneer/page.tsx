@@ -55,6 +55,7 @@ export default function AuctioneerPage() {
   const [eventLogo, setEventLogo] = useState<string | null>(null);
   const [eventScheduledAt, setEventScheduledAt] = useState<string | null>(null);
   const [eventDescription, setEventDescription] = useState<string | null>(null);
+  const [eventDetails, setEventDetails] = useState<Record<string, any>>({});
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
   const [showTeamIntroduction, setShowTeamIntroduction] = useState(false);
@@ -202,6 +203,7 @@ export default function AuctioneerPage() {
           background_image?: string | null;
           scheduled_at?: string | null;
           description?: string | null;
+          event_details?: Record<string, any>;
           status?: string;
         };
 
@@ -218,6 +220,7 @@ export default function AuctioneerPage() {
         setEventLogo(event.logo || null);
         setEventScheduledAt(event.scheduled_at || null);
         setEventDescription(event.description || null);
+        setEventDetails(event.event_details || {});
         setBackgroundImage(event.background_image || null);
         setHasAccess(true);
       } catch {
@@ -1127,6 +1130,51 @@ export default function AuctioneerPage() {
               </div>
             </div>
 
+            {(eventDetails.venue_name || eventDetails.tournament_type || eventDetails.match_format || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.tournament_start_date || eventDetails.prize_winner || eventDetails.tagline) && (
+              <section className="mx-auto mt-7 w-full max-w-4xl rounded-2xl border border-white/10 bg-white/[0.035] p-5 sm:p-6 space-y-5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {eventDetails.tournament_type && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Type</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_type}</div></div>}
+                  {eventDetails.sport && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Sport</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.sport}</div></div>}
+                  {eventDetails.venue_name && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Venue</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.venue_name}</div></div>}
+                  {eventDetails.venue_address && <div className="col-span-2 sm:col-span-3"><div className="text-[10px] uppercase tracking-wider text-white/40">Location</div><div className="mt-1 text-sm text-white/75">{eventDetails.venue_address}</div></div>}
+                  {eventDetails.tournament_start_date && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Dates</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_start_date}{eventDetails.tournament_end_date ? " – " + eventDetails.tournament_end_date : ""}</div></div>}
+                  {eventDetails.tournament_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_format}</div></div>}
+                  {eventDetails.match_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Match Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.match_format}</div></div>}
+                  {eventDetails.season && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Season</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.season}</div></div>}
+                  {eventDetails.edition_year && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Edition</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.edition_year}</div></div>}
+                </div>
+                {eventDetails.title_sponsor?.name && <div className="border-t border-white/10 pt-4">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-amber-300/70 mb-2">Title Sponsor</div>
+                  <div className="flex items-center gap-3">
+                    {eventDetails.title_sponsor.logo_url && <img src={eventDetails.title_sponsor.logo_url} alt="" className="h-12 max-w-32 object-contain rounded bg-white p-1" />}
+                    <div className="font-bold text-white">{eventDetails.title_sponsor.name}</div>
+                  </div>
+                </div>}
+                {(eventDetails.other_sponsors || []).some((s: any) => s?.name) && <div className="border-t border-white/10 pt-4">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 mb-3">Other Sponsors & Partners</div>
+                  <div className="flex flex-wrap gap-4">
+                    {(eventDetails.other_sponsors || []).filter((s: any) => s?.name).map((s: any, index: number) => <div key={index} className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-2">
+                      {s.logo_url && <img src={s.logo_url} alt="" className="h-8 max-w-20 object-contain rounded bg-white p-1" />}
+                      <div><div className="text-xs font-semibold text-white">{s.name}</div><div className="text-[10px] text-white/40">{s.category}</div></div>
+                    </div>)}
+                  </div>
+                </div>}
+                {(eventDetails.prize_winner || eventDetails.prize_runner_up || eventDetails.player_awards) && <div className="border-t border-white/10 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {eventDetails.prize_winner && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Winner Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_winner}</div></div>}
+                  {eventDetails.prize_runner_up && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Runner-up Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_runner_up}</div></div>}
+                  {eventDetails.player_awards && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Player Awards</div><div className="text-sm font-semibold text-white">{eventDetails.player_awards}</div></div>}
+                </div>}
+                {(eventDetails.eligibility || eventDetails.playing_xi_rules || eventDetails.rules_document_url || eventDetails.website || eventDetails.contact_name || eventDetails.contact_phone || eventDetails.contact_email) && <div className="border-t border-white/10 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-white/65">
+                  {eventDetails.eligibility && <div><strong className="text-white/85">Eligibility:</strong> {eventDetails.eligibility}</div>}
+                  {eventDetails.playing_xi_rules && <div><strong className="text-white/85">Playing XI:</strong> {eventDetails.playing_xi_rules}</div>}
+                  {eventDetails.rules_document_url && <div><a className="text-amber-300 underline" href={eventDetails.rules_document_url} target="_blank" rel="noreferrer">Tournament rules</a></div>}
+                  {eventDetails.website && <div><a className="text-amber-300 underline" href={eventDetails.website} target="_blank" rel="noreferrer">Tournament website</a></div>}
+                  {(eventDetails.contact_name || eventDetails.contact_phone || eventDetails.contact_email) && <div><strong className="text-white/85">Contact:</strong> {[eventDetails.contact_name, eventDetails.contact_phone, eventDetails.contact_email].filter(Boolean).join(" · ")}</div>}
+                  {eventDetails.social_links && <div><strong className="text-white/85">Social:</strong> {eventDetails.social_links}</div>}
+                </div>}
+              </section>
+            )}
+            
             <div className="mt-10 sm:mt-12 flex flex-col-reverse sm:flex-row items-center justify-center gap-4">
               {status !== "completed" && (
                 <button
