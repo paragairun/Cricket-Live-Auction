@@ -23,6 +23,7 @@ class AuctionEventCreate(BaseModel):
     description: Optional[str] = None
     allowed_domains: list[str] = []
     scheduled_at: Optional[datetime] = None
+    event_details: dict = Field(default_factory=dict)
 
 
 class AuctionEventUpdate(BaseModel):
@@ -48,6 +49,7 @@ class AuctionEventUpdate(BaseModel):
     exclude_captains_from_auction: Optional[bool] = None
     auto_reauction_unsold: Optional[bool] = None
     background_image: Optional[str] = None
+    event_details: Optional[dict] = None
 
 
 class AuctionEventOut(BaseModel):
@@ -76,6 +78,7 @@ class AuctionEventOut(BaseModel):
     auto_reauction_unsold: bool = False
     logo: Optional[str] = None
     background_image: Optional[str] = None
+    event_details: dict = Field(default_factory=dict)
     created_at: datetime
     
 
