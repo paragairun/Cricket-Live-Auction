@@ -3,11 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Image from "next/image";
 import api from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import RolePicker from "@/components/RolePicker";
-import brandLogo from "@/asset/Logo Png (3).png";
 
 type Mode = "password" | "magic";
 
@@ -184,7 +182,14 @@ export default function LoginPage() {
         {/* Header */}
         <div className="text-center mb-6">
           <div className="flex justify-center">
-            <Image src={brandLogo} alt="Auction" className="h-14 w-auto" priority />
+            <div
+              aria-label="Auction"
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-400/30 bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-transparent px-5 py-2.5 shadow-lg shadow-amber-950/20"
+            >
+              <span className="text-3xl font-black tracking-[0.16em] text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-yellow-200 to-orange-400">
+                AUCTION
+              </span>
+            </div>
           </div>
           <h1 className="text-2xl font-bold mt-2">Sign In</h1>
           <p className="text-gray-500 text-sm mt-1">Live Auction Platform</p>
