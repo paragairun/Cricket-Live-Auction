@@ -86,7 +86,7 @@ export default function TeamIntroductionCeremony({
       window.clearTimeout(purseTimer);
       window.clearTimeout(nextTimer);
     };
-  }, [audio, phase, teamDuration, teamIndex, team, teams.length]);
+  }, [audio, phase, teamDuration, teamIndex, team?.id, teams.length]);
 
   useEffect(() => {
     if (phase !== "final") return;
