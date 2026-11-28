@@ -1782,6 +1782,7 @@ export default function OrganizerEventDetailPage() {
             {/* Complete tournament profile: venue, format, sponsors, prizes and contacts. */}
             {tab === "profile" && (
               <EventProfileEditor
+                eventId={eid}
                 value={event?.event_details}
                 saving={savingProfile}
                 onSave={async (details) => {
