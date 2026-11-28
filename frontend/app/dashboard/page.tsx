@@ -6,8 +6,6 @@ import { useAuthStore } from "@/store/auth";
 import api from "@/lib/api";
 import EventCard from "@/components/EventCard";
 import RolePicker from "@/components/RolePicker";
-import Image from "next/image";
-import brandLogo from "@/asset/Logo Png (3).png";
 
 interface EventCardData {
   id: number;
@@ -108,7 +106,7 @@ export default function DashboardPage() {
         <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Image src={brandLogo} alt="Auction" className="h-12 w-auto" />
+              <span className="text-2xl font-black tracking-[0.22em] text-white">AUCTION</span>
             </div>
 
             <div className="flex items-center gap-3">
