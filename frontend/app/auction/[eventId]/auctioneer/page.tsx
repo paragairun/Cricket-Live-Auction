@@ -54,6 +54,9 @@ export default function AuctioneerPage() {
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
   const [playerDetails, setPlayerDetails] = useState<Record<number, PlayerDetail>>({});
+  // Keep the latest player metadata available to the long-lived auction WebSocket handler.
+  const playerDetailsRef = useRef(playerDetails);
+  playerDetailsRef.current = playerDetails;
   const [teamRosters, setTeamRosters] = useState<
     Record<number, { player_id: number; sold_price: number }[]>
   >({});
@@ -69,6 +72,8 @@ export default function AuctioneerPage() {
   const [autoAdvance, setAutoAdvance] = useState(true);
   const advancingRef = useRef(false);
   const [justSoldPlayerId, setJustSoldPlayerId] = useState<number | null>(null);
+  const saleCelebrationUntilRef = useRef(0);
+  const saleCelebrationClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saleCelebration, setSaleCelebration] = useState<{
     playerName: string;
     playerPhoto?: string | null;
@@ -81,6 +86,24 @@ export default function AuctioneerPage() {
     teamLogo?: string | null;
     soldPrice: number;
   } | null>(null);
+  const clearSaleCelebration = () => {
+    const remaining = saleCelebrationUntilRef.current - Date.now();
+    if (remaining > 0) {
+      if (saleCelebrationClearTimerRef.current) {
+        clearTimeout(saleCelebrationClearTimerRef.current);
+      }
+      saleCelebrationClearTimerRef.current = setTimeout(() => {
+        setSaleCelebration(null);
+        saleCelebrationClearTimerRef.current = null;
+      }, remaining);
+      return;
+    }
+    if (saleCelebrationClearTimerRef.current) {
+      clearTimeout(saleCelebrationClearTimerRef.current);
+      saleCelebrationClearTimerRef.current = null;
+    }
+    setSaleCelebration(null);
+  };
   const [showEditBidModal, setShowEditBidModal] = useState(false);
   const [editBidInput, setEditBidInput] = useState("");
   const [activeDrawerTab, setActiveDrawerTab] = useState<
@@ -217,7 +240,7 @@ export default function AuctioneerPage() {
           case "auction_state":
           case "auction_reset":
             setJustSoldPlayerId(null);
-            setSaleCelebration(null);
+            clearSaleCelebration();
             useAuctionStore.getState().setFullState(msg);
             setStatus(msg.status);
             setAutoAdvance(Boolean(msg.auto_advance ?? true));
@@ -270,7 +293,7 @@ export default function AuctioneerPage() {
 
           case "player_up":
             setJustSoldPlayerId(null);
-            setSaleCelebration(null);
+            clearSaleCelebration();
             if (msg.player_id) {
               setPlayerDetails((prev) => {
                 const existing = prev[msg.player_id];
@@ -303,7 +326,7 @@ export default function AuctioneerPage() {
 
           case "sale_reversed":
             setJustSoldPlayerId(null);
-            setSaleCelebration(null);
+            clearSaleCelebration();
             // The following auction_state snapshot refreshes the purse, roster,
             // and active player for every connected client.
             break;
@@ -317,17 +340,29 @@ export default function AuctioneerPage() {
               (team) => team.id === msg.sold_to_team_id
             );
             const soldPlayerInfo = soldPlayer
-              ? playerDetails[soldPlayer.player_id]
+              ? playerDetailsRef.current[soldPlayer.player_id]
               : undefined;
             const soldPlayerCategory = currentAuctionState.categories.find(
               (category) => category.id === soldPlayer?.category_id
             );
+            if (saleCelebrationClearTimerRef.current) {
+              clearTimeout(saleCelebrationClearTimerRef.current);
+              saleCelebrationClearTimerRef.current = null;
+            }
+            // Keep the sold celebration visible for at least three seconds,
+            // even if the next player event arrives immediately.
+            saleCelebrationUntilRef.current = Date.now() + 3000;
             setSaleCelebration({
               playerName:
                 msg.player_name ||
                 soldPlayer?.name ||
                 `Player #${soldPlayer?.player_id ?? msg.player_id ?? "—"}`,
-              playerPhoto: soldPlayerInfo?.profile_photo || null,
+              // Prefer the latest players-info record, then fall back to the photo
+              // already carried by the active auction-player snapshot.
+              playerPhoto:
+                soldPlayerInfo?.profile_photo ||
+                soldPlayer?.profile_photo ||
+                null,
               playerCategory: soldPlayerCategory?.name || "EMERALD",
               playerAge: soldPlayerInfo?.age ?? null,
               battingRating: soldPlayerInfo?.batting_rating ?? null,
@@ -356,14 +391,14 @@ export default function AuctioneerPage() {
 
           case "player_unsold":
             setJustSoldPlayerId(null);
-            setSaleCelebration(null);
+            clearSaleCelebration();
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
             break;
 
           case "player_pulled":
             setJustSoldPlayerId(null);
-            setSaleCelebration(null);
+            clearSaleCelebration();
             useAuctionStore.getState().markPlayerUnsold(msg.auction_player_id);
             setSelectedTeamId(null);
             break;
