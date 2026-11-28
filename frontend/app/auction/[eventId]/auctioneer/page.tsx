@@ -684,34 +684,6 @@ export default function AuctioneerPage() {
     }
   };
 
-  const placeBidForTeam = async (teamId: number, amount: number) => {
-    if (!displayActiveAP) return;
-    setBusyAction(true);
-    setActionError(null);
-    try {
-      await api.post(`/auction/events/${eid}/bid`, {
-        team_id: teamId,
-        amount,
-        expected_version: displayActiveAP.version,
-        idempotency_key: newIdempotencyKey(),
-      });
-      setSelectedTeamId(teamId);
-      useAuctionStore
-        .getState()
-        .applyBid(displayActiveAP.id, amount, teamId, displayActiveAP.version + 1);
-    } catch (e: unknown) {
-      const info = describeError(e);
-      setActionError(
-        info.conflict
-          ? `${info.message} (the other console bid first — price refreshed)`
-          : info.message
-      );
-      if (info.conflict) await syncState().catch(() => {});
-    } finally {
-      setBusyAction(false);
-    }
-  };
-
   const handleBidUp = async () => {
     if (!displayActiveAP) return;
     const isOpening = !displayActiveAP.current_bid_team_id;
@@ -1632,11 +1604,8 @@ export default function AuctioneerPage() {
               return (
                 <div
                   key={team.id}
-                  onClick={() => {
-                    if (!disabled) placeBidForTeam(team.id, teamBidAmount);
-                  }}
-                  title={disabled ? team.name : `Click to bid ₹${formatMoney(nextBidAmount)} for ${team.name}`}
-                  className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : isSelected ? "bg-neutral-900 ring-1 ring-inset ring-amber-300" : disabled ? "opacity-75 cursor-default" : "cursor-pointer hover:bg-neutral-900"}`}
+                  title={team.name}
+                  className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : isSelected ? "bg-neutral-900 ring-1 ring-inset ring-amber-300" : disabled ? "opacity-75" : ""}`}
                 >
                   <div className="flex items-start gap-2 min-w-0">
                     <div className="w-8 h-8 shrink-0 flex items-center justify-center overflow-hidden">
