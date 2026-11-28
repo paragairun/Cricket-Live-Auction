@@ -884,13 +884,6 @@ export default function AuctioneerPage() {
       : displayActiveAP.current_bid + currentIncrement
     : 0;
 
-  const nextBidAmount = displayActiveAP
-    ? isOpeningBid && displayActiveAP.current_bid < activeBasePrice
-      ? activeBasePrice
-      : (isOpeningBid ? activeBasePrice : displayActiveAP.current_bid) +
-        currentIncrement
-    : 0;
-
   const leadingTeam = displayActiveAP?.current_bid_team_id
     ? store.teams.find((t) => t.id === displayActiveAP.current_bid_team_id)
     : undefined;
