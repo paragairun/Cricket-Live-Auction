@@ -857,16 +857,6 @@ export default function AuctioneerPage() {
     displayActiveAP?.player_id,
   ]);
 
-  if (checkingAccess) {
-    return (
-      <div className="h-[100dvh] w-full bg-[#000000] flex items-center justify-center text-amber-300 font-bold tracking-wider uppercase text-sm">
-        Loading Auctioneer Console...
-      </div>
-    );
-  }
-
-  if (!hasAccess) return null;
-
   const isOpeningBid = !!displayActiveAP && !displayActiveAP.current_bid_team_id;
   const activeBasePrice = displayActiveAP
     ? getEffectiveBasePrice(displayActiveAP)
@@ -961,6 +951,16 @@ export default function AuctioneerPage() {
     setTeamStripProgress(0);
     teamStripManualPauseUntil.current = Date.now() + 15000;
   };
+
+  if (checkingAccess) {
+    return (
+      <div className="h-[100dvh] w-full bg-[#000000] flex items-center justify-center text-amber-300 font-bold tracking-wider uppercase text-sm">
+        Loading Auctioneer Console...
+      </div>
+    );
+  }
+
+  if (!hasAccess) return null;
 
   const resolvedBgUrl = backgroundImage
     ? backgroundImage.startsWith("http") || backgroundImage.startsWith("/")
