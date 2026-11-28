@@ -1138,7 +1138,7 @@ export default function AuctioneerPage() {
                   ↻ &nbsp; Restart
                 </button>
               )}
-              {status !== "completed" ? (
+              {status === "ready" || status === "paused" ? (
                 <button
                   type="button"
                   onClick={startAuction}
@@ -1147,6 +1147,10 @@ export default function AuctioneerPage() {
                 >
                   {busyAction ? "Preparing..." : status === "paused" ? "▶  Resume Auction" : "▶  Start Auction"}
                 </button>
+              ) : status === "draft" ? (
+                <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-8 py-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-amber-200/70">
+                  Complete event setup to enable Start
+                </div>
               ) : (
                 <div className="rounded-xl border border-white/10 bg-white/[0.04] px-8 py-4 text-xs font-bold uppercase tracking-[0.18em] text-white/50">
                   Auction completed
