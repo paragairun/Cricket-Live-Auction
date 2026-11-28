@@ -1060,6 +1060,13 @@ export default function AuctioneerPage() {
       })
     : "Date to be announced";
 
+  const tournamentDateLabel = [eventDetails.tournament_start_date, eventDetails.tournament_end_date]
+    .filter(Boolean)
+    .map((date: string) => new Date(`${date.slice(0, 10)}T00:00:00`).toLocaleDateString("en-IN", {
+      day: "numeric", month: "short", year: "numeric",
+    }))
+    .join(" – ");
+
   // Before the auction starts and whenever it is paused, keep the operator on
   // the event's identity screen. The team/captain ceremony remains the START
   // transition and the live console is only revealed after it completes.
@@ -1103,11 +1110,11 @@ export default function AuctioneerPage() {
               <p className="text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.32em] text-amber-300/80 mb-2">
                 {status === "paused" ? "Auction paused" : status === "completed" ? "Event completed" : "Welcome to the auction"}
               </p>
-              <h1 className="mx-auto max-w-5xl text-3xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
+              <h1 className="mx-auto max-w-5xl text-2xl sm:text-4xl lg:text-5xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
                 {eventName}
               </h1>
               {(eventDescription || eventDetails.tagline) && (
-                <p className="mx-auto mt-2 max-w-2xl text-xs sm:text-sm text-white/55 leading-relaxed">
+                <p className="mx-auto mt-2 max-w-3xl text-base sm:text-lg lg:text-xl font-semibold text-amber-200 leading-snug [text-shadow:0_3px_18px_rgba(0,0,0,0.55)]">
                   {eventDetails.tagline || eventDescription}
                 </p>
               )}
@@ -1130,10 +1137,10 @@ export default function AuctioneerPage() {
               </div>
             </div>
 
-            {(eventDetails.venue_name || eventDetails.tournament_type || eventDetails.match_format || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.tournament_start_date || eventDetails.prize_winner || eventDetails.tagline) && (
-              <section className="mx-auto mt-3 w-full max-w-4xl max-h-[34dvh] overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] p-3 sm:p-4 space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {eventDetails.tournament_type && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Type</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_type}</div></div>}
+            {(eventDetails.sport || eventDetails.venue_name || eventDetails.venue_address || eventDetails.tournament_start_date || eventDetails.tournament_format || eventDetails.match_format || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.prize_winner || eventDetails.prize_runner_up || eventDetails.player_awards || eventDetails.eligibility || eventDetails.captain_selection || eventDetails.overseas_player_limit || eventDetails.playing_xi_rules || eventDetails.season || eventDetails.edition_year || eventDetails.rules_document_url || eventDetails.website || eventDetails.contact_name || eventDetails.contact_phone || eventDetails.contact_email || eventDetails.social_links) && (
+              <section className="mx-auto mt-3 w-full max-w-4xl max-h-[36dvh] overflow-y-auto overscroll-contain rounded-xl border border-white/10 bg-white/[0.035] p-3 sm:p-4 space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {tournamentDateLabel && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Date</div><div className="mt-1 text-sm font-semibold text-white">{tournamentDateLabel}</div></div>}
                   {eventDetails.sport && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Sport</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.sport}</div></div>}
                   {eventDetails.venue_name && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Venue</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.venue_name}</div></div>}
                   {eventDetails.venue_address && <div className="col-span-2 sm:col-span-3"><div className="text-[10px] uppercase tracking-wider text-white/40">Location</div><div className="mt-1 text-sm text-white/75">{eventDetails.venue_address}</div></div>}
