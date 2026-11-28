@@ -1149,7 +1149,7 @@ export default function AuctioneerPage() {
                   <div className="text-[10px] uppercase tracking-[0.2em] text-amber-300/70 mb-2">Title Sponsor</div>
                   <div className="flex items-center gap-3">
                     {eventDetails.title_sponsor.logo_url && <img src={eventDetails.title_sponsor.logo_url} alt="" className="h-12 max-w-32 object-contain rounded bg-white p-1" />}
-                    <div className="font-bold text-white">{eventDetails.title_sponsor.name}</div>
+                    <div><div className="font-bold text-white">{eventDetails.title_sponsor.name}</div>{eventDetails.title_sponsor.website && <a className="text-[10px] text-amber-300 underline" href={eventDetails.title_sponsor.website} target="_blank" rel="noreferrer">Sponsor website</a>}</div>
                   </div>
                 </div>}
                 {(eventDetails.other_sponsors || []).some((s: any) => s?.name) && <div className="border-t border-white/10 pt-4">
@@ -1157,7 +1157,7 @@ export default function AuctioneerPage() {
                   <div className="flex flex-wrap gap-4">
                     {(eventDetails.other_sponsors || []).filter((s: any) => s?.name).map((s: any, index: number) => <div key={index} className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-2">
                       {s.logo_url && <img src={s.logo_url} alt="" className="h-8 max-w-20 object-contain rounded bg-white p-1" />}
-                      <div><div className="text-xs font-semibold text-white">{s.name}</div><div className="text-[10px] text-white/40">{s.category}</div></div>
+                      <div><div className="text-xs font-semibold text-white">{s.name}</div><div className="text-[10px] text-white/40">{s.category}</div>{s.website && <a className="text-[10px] text-amber-300 underline" href={s.website} target="_blank" rel="noreferrer">Website</a>}</div>
                     </div>)}
                   </div>
                 </div>}
