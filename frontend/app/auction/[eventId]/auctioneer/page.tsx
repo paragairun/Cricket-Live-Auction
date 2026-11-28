@@ -1106,9 +1106,9 @@ export default function AuctioneerPage() {
               <h1 className="mx-auto max-w-5xl text-3xl sm:text-5xl lg:text-6xl font-black uppercase tracking-tight leading-[0.98] text-white [text-shadow:0_8px_35px_rgba(0,0,0,0.55)]">
                 {eventName}
               </h1>
-              {(eventDescription || eventDetails.tagline) && (
-                <p className="mx-auto mt-2 max-w-2xl text-xs sm:text-sm text-white/55 leading-relaxed">
-                  {eventDetails.tagline || eventDescription}
+              {(eventDetails.tagline || eventDescription) && (
+                <p className="mx-auto mt-2 max-w-3xl text-sm sm:text-base font-semibold italic tracking-wide text-amber-200/90 leading-snug">
+                  “{eventDetails.tagline || eventDescription}”
                 </p>
               )}
             </div>
@@ -1130,20 +1130,20 @@ export default function AuctioneerPage() {
               </div>
             </div>
 
-            {(eventDetails.venue_name || eventDetails.tournament_type || eventDetails.match_format || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.tournament_start_date || eventDetails.prize_winner || eventDetails.tagline) && (
-              <section className="mx-auto mt-3 w-full max-w-4xl max-h-[34dvh] overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] p-3 sm:p-4 space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {eventDetails.tournament_type && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Type</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_type}</div></div>}
-                  {eventDetails.sport && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Sport</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.sport}</div></div>}
-                  {eventDetails.venue_name && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Venue</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.venue_name}</div></div>}
-                  {eventDetails.venue_address && <div className="col-span-2 sm:col-span-3"><div className="text-[10px] uppercase tracking-wider text-white/40">Location</div><div className="mt-1 text-sm text-white/75">{eventDetails.venue_address}</div></div>}
-                  {eventDetails.tournament_start_date && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Dates</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_start_date}{eventDetails.tournament_end_date ? " – " + eventDetails.tournament_end_date : ""}</div></div>}
-                  {eventDetails.tournament_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Tournament Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.tournament_format}</div></div>}
-                  {eventDetails.match_format && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Match Format</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.match_format}</div></div>}
-                  {eventDetails.captain_selection && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Captain Selection</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.captain_selection}</div></div>}
-                  {eventDetails.overseas_player_limit && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Overseas Player Limit</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.overseas_player_limit}</div></div>}
-                  {eventDetails.season && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Season</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.season}</div></div>}
-                  {eventDetails.edition_year && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Edition</div><div className="mt-1 text-sm font-semibold text-white">{eventDetails.edition_year}</div></div>}
+            {(eventDetails.sport || eventDetails.venue_name || eventDetails.venue_address || eventDetails.tournament_start_date || eventDetails.tournament_end_date || eventDetails.tournament_format || eventDetails.match_format || eventDetails.captain_selection || eventDetails.overseas_player_limit || eventDetails.season || eventDetails.edition_year || eventDetails.title_sponsor?.name || (eventDetails.other_sponsors || []).length > 0 || eventDetails.prize_winner || eventDetails.prize_runner_up || eventDetails.player_awards || eventDetails.eligibility || eventDetails.playing_xi_rules || eventDetails.rules_document_url || eventDetails.website || eventDetails.contact_name || eventDetails.contact_phone || eventDetails.contact_email || eventDetails.social_links) && (
+              <section className="mx-auto mt-3 w-full max-w-5xl max-h-[38dvh] overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] p-3 sm:p-4 space-y-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+                  {(eventDetails.tournament_start_date || eventDetails.tournament_end_date) && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Tournament Date</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.tournament_start_date || "TBA"}{eventDetails.tournament_end_date ? " – " + eventDetails.tournament_end_date : ""}</div></div>}
+                  {eventDetails.sport && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Sport</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.sport}</div></div>}
+                  {eventDetails.venue_name && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Venue</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.venue_name}</div></div>}
+                  {eventDetails.venue_address && <div className="col-span-2 sm:col-span-3"><div className="text-[9px] uppercase tracking-wider text-white/40">Location</div><div className="mt-0.5 text-xs text-white/75">{eventDetails.venue_address}</div></div>}
+                  
+                  {eventDetails.tournament_format && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Tournament Format</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.tournament_format}</div></div>}
+                  {eventDetails.match_format && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Match Format</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.match_format}</div></div>}
+                  {eventDetails.captain_selection && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Captain Selection</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.captain_selection}</div></div>}
+                  {eventDetails.overseas_player_limit && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Overseas Player Limit</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.overseas_player_limit}</div></div>}
+                  {eventDetails.season && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Season</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.season}</div></div>}
+                  {eventDetails.edition_year && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Edition</div><div className="mt-0.5 text-xs font-semibold text-white">{eventDetails.edition_year}</div></div>}
                 </div>
                 {eventDetails.title_sponsor?.name && <div className="border-t border-white/10 pt-2">
                   <div className="text-[10px] uppercase tracking-[0.2em] text-amber-300/70 mb-2">Title Sponsor</div>
@@ -1162,9 +1162,9 @@ export default function AuctioneerPage() {
                   </div>
                 </div>}
                 {(eventDetails.prize_winner || eventDetails.prize_runner_up || eventDetails.player_awards) && <div className="border-t border-white/10 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {eventDetails.prize_winner && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Winner Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_winner}</div></div>}
-                  {eventDetails.prize_runner_up && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Runner-up Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_runner_up}</div></div>}
-                  {eventDetails.player_awards && <div><div className="text-[10px] uppercase tracking-wider text-white/40">Player Awards</div><div className="text-sm font-semibold text-white">{eventDetails.player_awards}</div></div>}
+                  {eventDetails.prize_winner && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Winner Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_winner}</div></div>}
+                  {eventDetails.prize_runner_up && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Runner-up Prize</div><div className="text-sm font-semibold text-white">{eventDetails.prize_runner_up}</div></div>}
+                  {eventDetails.player_awards && <div><div className="text-[9px] uppercase tracking-wider text-white/40">Player Awards</div><div className="text-sm font-semibold text-white">{eventDetails.player_awards}</div></div>}
                 </div>}
                 {(eventDetails.eligibility || eventDetails.playing_xi_rules || eventDetails.rules_document_url || eventDetails.website || eventDetails.contact_name || eventDetails.contact_phone || eventDetails.contact_email) && <div className="border-t border-white/10 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-white/65">
                   {eventDetails.eligibility && <div><strong className="text-white/85">Eligibility:</strong> {eventDetails.eligibility}</div>}
