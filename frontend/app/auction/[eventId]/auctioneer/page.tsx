@@ -1096,7 +1096,7 @@ export default function AuctioneerPage() {
 
           <main className="flex-1 min-h-0 w-full max-w-6xl mx-auto px-5 sm:px-10 py-3 sm:py-5 flex flex-col justify-evenly overflow-hidden">
             <div className="text-center">
-              <div className="mx-auto mb-3 w-24 h-24 sm:w-32 sm:h-32 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center p-5 sm:p-7">
+              <div className="mx-auto mb-3 w-24 h-24 sm:w-32 sm:h-32 rounded-3xl border border-amber-300/25 bg-black/35 shadow-[0_20px_80px_rgba(0,0,0,0.45)] flex items-center justify-center overflow-hidden">
                 {eventLogo ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={eventLogo} alt={eventName + " logo"} className="w-full h-full object-contain" />
