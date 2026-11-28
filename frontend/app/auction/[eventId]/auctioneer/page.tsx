@@ -880,10 +880,7 @@ export default function AuctioneerPage() {
       // The hammer response is authoritative. Do not use a potentially stale
       // client snapshot to decide which team receives the player.
       const hammerResponse = await api.post(`/auction/events/${eid}/hammer`);
-      const soldTeamId =
-        hammerResponse.data?.sold_to_team_id ??
-        displayActiveAP.current_bid_team_id ??
-        null;
+      const soldTeamId = hammerResponse.data?.sold_to_team_id ?? null;
       const soldPrice =
         hammerResponse.data?.sold_price ?? displayActiveAP.current_bid;
       setSelectedTeamId(null);
