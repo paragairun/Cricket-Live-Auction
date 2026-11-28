@@ -715,7 +715,7 @@ export default function AuctioneerPage() {
   const handleBidUp = async () => {
     if (!displayActiveAP) return;
     const isOpening = !displayActiveAP.current_bid_team_id;
-    if (isOpening && !selectedTeamId) {
+    if (selectedTeamId == null && isOpening) {
       setActionError("Select a team before increasing the bid.");
       return;
     }
@@ -729,7 +729,7 @@ export default function AuctioneerPage() {
     const increment = getBidIncrement(referenceBid);
     const nextAmount = referenceBid + increment;
 
-    if (isOpening && selectedTeamId) {
+    if (selectedTeamId != null && selectedTeamId !== displayActiveAP.current_bid_team_id) {
       await placeBidForTeam(selectedTeamId, nextAmount);
       return;
     }
@@ -1631,7 +1631,7 @@ export default function AuctioneerPage() {
               const maxBidPrice = formatAuctionPrice(maxBid);
               const isLeading = !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
               const isSelected = selectedTeamId === team.id;
-              const cannotAfford = !!displayActiveAP && maxBid < teamBidAmount;
+              const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
               const isFull = team.player_count >= team.max_players;
               const disabled =
                 status !== "active" || !displayActiveAP || isLeading ||
