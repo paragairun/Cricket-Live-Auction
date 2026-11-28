@@ -723,10 +723,12 @@ export default function AuctioneerPage() {
         expected_version: displayActiveAP.version,
         idempotency_key: newIdempotencyKey(),
       });
-      setSelectedTeamId(teamId);
       useAuctionStore
         .getState()
         .applyBid(displayActiveAP.id, amount, teamId, displayActiveAP.version + 1);
+      // The accepted bid is now the source of truth; remove the temporary
+      // selection so only the actual leading team remains highlighted.
+      setSelectedTeamId(null);
     } catch (e: unknown) {
       const info = describeError(e);
       setActionError(
@@ -868,9 +870,12 @@ export default function AuctioneerPage() {
     if (!displayActiveAP?.current_bid_team_id) return;
     setBusyAction(true);
     try {
-      const soldTeamId = displayActiveAP.current_bid_team_id ?? null;
-      const soldPrice = displayActiveAP.current_bid;
-      await api.post(`/auction/events/${eid}/hammer`);
+      // The hammer response is authoritative. Do not use a potentially stale
+      // client snapshot to decide which team receives the player.
+      const hammerResponse = await api.post(`/auction/events/${eid}/hammer`);
+      const soldTeamId = hammerResponse.data?.sold_to_team_id ?? null;
+      const soldPrice =
+        hammerResponse.data?.sold_price ?? displayActiveAP.current_bid;
       setSelectedTeamId(null);
       if (soldTeamId) {
         setJustSoldPlayerId(displayActiveAP.id);
@@ -1669,8 +1674,14 @@ export default function AuctioneerPage() {
               const pursePrice = formatAuctionPrice(remainingPurse);
               const maxBidPrice = formatAuctionPrice(maxBid);
               const isLeading = !!displayActiveAP && displayActiveAP.current_bid_team_id === team.id;
-              const isSelected = selectedTeamId === team.id;
-              const cannotAfford = !!displayActiveAP && maxBid < nextBidAmount;
+              // Clicking a team immediately places the next valid bid for it.
+              // On the opening bid, use the player's base price.
+              const teamClickBid = displayActiveAP
+                ? displayActiveAP.current_bid_team_id
+                  ? displayActiveAP.current_bid
+                  : getEffectiveBasePrice(displayActiveAP)
+                : 0;
+              const cannotAfford = !!displayActiveAP && maxBid < teamClickBid;
               const isFull = team.player_count >= team.max_players;
               const disabled =
                 status !== "active" || !displayActiveAP || isLeading ||
@@ -1681,12 +1692,11 @@ export default function AuctioneerPage() {
                   key={team.id}
                   onClick={() => {
                     if (!disabled) {
-                      setSelectedTeamId(team.id);
-                      setActionError(null);
+                      void placeBidForTeam(team.id, teamClickBid);
                     }
                   }}
-                  title={disabled ? team.name : `Select ${team.name} as the bidding team`}
-                  className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : isSelected ? "bg-neutral-900 ring-1 ring-inset ring-amber-300" : disabled ? "opacity-75 cursor-default" : "cursor-pointer hover:bg-neutral-900"}`}
+                  title={disabled ? team.name : `Bid ₹${formatMoney(teamClickBid)} for ${team.name}`}
+                  className={`px-2.5 py-2 flex flex-col justify-between transition lg:col-span-1 ${isLeading ? "bg-amber-950/50 ring-1 ring-inset ring-amber-400" : disabled ? "opacity-75 cursor-default" : "cursor-pointer hover:bg-neutral-900"}`}
                 >
                   <div className="flex items-start gap-2 min-w-0">
                     <div className="w-8 h-8 shrink-0 flex items-center justify-center overflow-hidden">
@@ -1698,6 +1708,11 @@ export default function AuctioneerPage() {
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-white truncate leading-tight">{team.name}</div>
                       <div className="text-[10px] text-white/75 tabular-nums leading-tight mt-0.5">{team.player_count}/{team.max_players} Players</div>
+                      {isLeading && (
+                        <div className="mt-0.5 text-[9px] font-black uppercase tracking-wider text-amber-300">
+                          Leading Bid
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 mt-2 pt-1">

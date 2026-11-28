@@ -82,6 +82,7 @@ def validate_bid(
     team_max_players: int,
     min_squad: int,
     event_base_price: int,
+    allow_same_price: bool = False,
 ) -> str | None:
     """Return an error message, or None when the bid is legal.
 
@@ -98,18 +99,19 @@ def validate_bid(
         if amount < base_price:
             return f"Bid must be at least the base price ({base_price})"
     else:
-        if amount <= current_bid:
+        if amount < current_bid or (amount == current_bid and not allow_same_price):
             return f"Bid must be higher than the current bid ({current_bid})"
-        step = increment_for(slabs, current_bid)
-        increase = amount - current_bid
-        if increase < step:
-            return f"Minimum increment at this price is {step}"
-        if increase % step != 0:
-            return f"Bid increment must be a multiple of {step}"
+        if amount > current_bid:
+            step = increment_for(slabs, current_bid)
+            increase = amount - current_bid
+            if increase < step:
+                return f"Minimum increment at this price is {step}"
+            if increase % step != 0:
+                return f"Bid increment must be a multiple of {step}"
 
-        ceiling = max_allowed_bid(current_bid, team_budget)
-        if amount > ceiling:
-            return f"Single-bid ceiling is {ceiling} — check for a mistyped digit"
+            ceiling = max_allowed_bid(current_bid, team_budget)
+            if amount > ceiling:
+                return f"Single-bid ceiling is {ceiling} — check for a mistyped digit"
 
     remaining = team_budget - team_spent
     if amount > remaining:
