@@ -93,6 +93,7 @@ async def create_event(
         admin_id=current_user.id,
         allowed_domains=payload.allowed_domains,
         scheduled_at=payload.scheduled_at,
+        event_details=payload.event_details,
     )
     db.add(event)
     await db.commit()
