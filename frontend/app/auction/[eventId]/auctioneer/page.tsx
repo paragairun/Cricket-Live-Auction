@@ -915,7 +915,7 @@ export default function AuctioneerPage() {
     }
 
     const rotationMs = 7000;
-    const tickMs = 100;
+    const tickMs = 250;
     const timer = window.setInterval(() => {
       const now = Date.now();
       const pausedUntil = Math.max(
@@ -923,7 +923,7 @@ export default function AuctioneerPage() {
         teamStripBidHoldUntil.current
       );
       if (now < pausedUntil) {
-        setTeamStripProgress(Math.min(100, ((rotationMs - Math.max(0, pausedUntil - now)) / rotationMs) * 100));
+        setTeamStripProgress(0);
         return;
       }
 
@@ -1566,8 +1566,13 @@ export default function AuctioneerPage() {
           </div>
         )}
         <div
-          className="mx-auto grid w-full max-w-[1920px] divide-y sm:divide-y-0 lg:divide-x divide-[#333333] grid-cols-2 sm:grid-cols-3"
-          style={{ gridTemplateColumns: undefined }}
+          className={`mx-auto grid w-full max-w-[1920px] divide-y sm:divide-y-0 lg:divide-x divide-[#333333] grid-cols-2 sm:grid-cols-3 ${
+            store.teams.length <= 1 ? "lg:grid-cols-1" :
+            store.teams.length === 2 ? "lg:grid-cols-2" :
+            store.teams.length === 3 ? "lg:grid-cols-3" :
+            store.teams.length === 4 ? "lg:grid-cols-4" :
+            store.teams.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-6"
+          }`}
         >
           <div className={`contents ${store.teams.length <= 6 ? (store.teams.length === 4 ? "lg:[&>*]:col-span-1" : "") : ""}`}>
             {stripTeams.map((team) => {
