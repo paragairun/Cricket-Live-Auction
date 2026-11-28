@@ -1048,6 +1048,7 @@ async def place_bid(
         team_max_players=team.max_players,
         min_squad=event.team_min_players,
         event_base_price=event.player_base_price,
+        allow_same_price=ap.current_bid_team_id is not None and amount == ap.current_bid,
     )
     if error:
         raise AuctionError(error)
