@@ -1137,52 +1137,7 @@ export default function AuctioneerPage() {
         <div className="relative z-10 mx-auto h-full w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-2.5 px-5 py-3">
           {/* LEFT ZONE: Player Showcase Card (Photo Placeholder) */}
           <div className="lg:col-span-6 min-h-0 flex flex-col justify-center">
-            {saleCelebration ? (
-                <div className="relative isolate flex min-h-[280px] max-h-full w-full max-w-[520px] mx-auto lg:mx-0 flex-col items-center justify-center overflow-hidden border border-amber-300/50 bg-gradient-to-br from-[#17100a]/95 via-[#35120d]/95 to-[#101827]/95 px-5 py-6 text-center shadow-[0_0_55px_rgba(251,191,36,0.22)]">
-                  <style>{`
-                    @keyframes sold-pop { 0% { opacity: 0; transform: scale(.45) rotate(-12deg); } 65% { opacity: 1; transform: scale(1.12) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
-                    @keyframes sold-rise { 0% { opacity: 0; transform: translateY(22px); } 100% { opacity: 1; transform: translateY(0); } }
-                    @keyframes sold-firework { 0% { opacity: 0; transform: scale(.2) rotate(-20deg); } 35% { opacity: 1; transform: scale(1.25) rotate(12deg); } 100% { opacity: 0; transform: scale(1.65) rotate(28deg); } }
-                    @keyframes sold-confetti { 0% { opacity: 0; transform: translateY(-18px) rotate(0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(230px) rotate(540deg); } }
-                    .sold-pop { animation: sold-pop .65s cubic-bezier(.2,.9,.25,1.3) both; }
-                    .sold-rise { animation: sold-rise .55s ease-out both; }
-                    .sold-firework { animation: sold-firework 1.6s ease-out infinite; }
-                    .sold-confetti { animation: sold-confetti 2.8s linear infinite; }
-                    @media (prefers-reduced-motion: reduce) { .sold-pop, .sold-rise, .sold-firework, .sold-confetti { animation: none !important; } }
-                  `}</style>
-                  <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-                    <span className="sold-firework absolute left-[7%] top-[12%] text-4xl">🎆</span>
-                    <span className="sold-firework absolute right-[8%] top-[10%] text-5xl" style={{ animationDelay: ".45s" }}>🎇</span>
-                    <span className="sold-firework absolute left-[18%] bottom-[12%] text-3xl" style={{ animationDelay: ".8s" }}>🎆</span>
-                    <span className="sold-firework absolute right-[18%] bottom-[12%] text-4xl" style={{ animationDelay: ".25s" }}>🎇</span>
-                    <span className="sold-confetti absolute left-[28%] top-0 text-xl" style={{ animationDelay: ".1s" }}>🎊</span>
-                    <span className="sold-confetti absolute left-[48%] top-0 text-xl" style={{ animationDelay: ".7s" }}>✨</span>
-                    <span className="sold-confetti absolute right-[30%] top-0 text-xl" style={{ animationDelay: "1.1s" }}>🎉</span>
-                    <span className="sold-confetti absolute right-[12%] top-0 text-lg" style={{ animationDelay: ".4s" }}>✨</span>
-                  </div>
-                  <div className="relative z-10 flex flex-col items-center">
-                    <div className="sold-pop mb-1 text-5xl sm:text-6xl" aria-hidden="true">🎉</div>
-                    <p className="sold-pop text-4xl sm:text-5xl font-black uppercase italic tracking-wider text-amber-300 drop-shadow-[0_3px_0_#7c2d12]">SOLD!</p>
-                    <p className="sold-rise mt-2 text-xs sm:text-sm font-bold uppercase tracking-[0.28em] text-white/75">Congratulations</p>
-                    <p className="sold-rise mt-2 max-w-full truncate text-xl sm:text-2xl font-black uppercase tracking-tight text-white">{saleCelebration.playerName}</p>
-                    <div className="sold-rise mt-3 flex items-center justify-center gap-3 rounded-xl border border-white/15 bg-black/35 px-4 py-2.5">
-                      {saleCelebration.teamLogo ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={resolveMediaUrl(saleCelebration.teamLogo)} alt="" className="h-12 w-12 object-contain" />
-                      ) : (
-                        <span className="text-3xl" aria-hidden="true">🏆</span>
-                      )}
-                      <div className="text-left">
-                        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-200/80">Sold to</p>
-                        <p className="max-w-[240px] truncate text-base sm:text-lg font-black uppercase text-white">{saleCelebration.teamName}</p>
-                      </div>
-                    </div>
-                    <p className="sold-rise mt-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">Winning bid</p>
-                    <p className="sold-rise text-2xl sm:text-3xl font-black tabular-nums text-emerald-300 drop-shadow-lg">₹{formatMoney(saleCelebration.soldPrice)}</p>
-                    <p className="mt-3 text-[9px] font-bold uppercase tracking-[0.22em] text-white/55">Next player coming up...</p>
-                  </div>
-                </div>
-              ) : displayActiveAP ? (
+            {displayActiveAP ? (
               <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
                 {/* Player photo placeholder */}
                 <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
@@ -1360,70 +1315,132 @@ export default function AuctioneerPage() {
               </div>
             </div>
 
-            {/* Two-tier banner: Gold BID FOR / SOLD FOR + Black TEAM NAME / BIDDING TEAM / WINNING TEAM */}
-            <div className="flex-1 min-h-0 flex flex-col justify-end">
-              <div className="w-full shadow-2xl overflow-hidden">
-                {/* Upper tier: Mustard/Gold (#B8860B) */}
-                <div className="relative bg-[#b8860b] px-4 py-2.5 text-white">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-white/90">
-                    {isPlayerSold ? "SOLD FOR" : "BID FOR"}
-                  </div>
-
-                  <div className="mt-1 flex items-baseline gap-2">
-                    {(() => {
-                      const formattedPrice = displayActiveAP
-                        ? formatAuctionPrice(displayedCurrentBid)
-                        : { value: "XX", unit: "" };
-                      return (
-                        <>
-                          <span className="text-3xl sm:text-5xl font-black tracking-tight tabular-nums leading-none">
-                            {formattedPrice.value}
-                          </span>
-                          {formattedPrice.unit && (
-                            <span className="text-sm sm:text-lg font-extrabold uppercase tracking-wide">
-                              {formattedPrice.unit}
-                            </span>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleOpenEditBid}
-                    disabled={!displayActiveAP}
-                    title="Edit bid amount manually"
-                    className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-xs text-white"
-                  >
-                    <span className="inline-block -scale-x-100">✎</span>
-                  </button>
+            {saleCelebration ? (
+              <div className="relative isolate flex flex-1 min-h-0 w-full flex-col items-center justify-center overflow-hidden py-2 text-center">
+                <style>{`
+                  @keyframes sold-banner-pop { 0% { opacity: 0; transform: translateY(18px) scale(.72) rotate(-3deg); } 70% { opacity: 1; transform: translateY(-3px) scale(1.04) rotate(1deg); } 100% { opacity: 1; transform: translateY(0) scale(1) rotate(0); } }
+                  @keyframes sold-panel-rise { 0% { opacity: 0; transform: translateY(24px); } 100% { opacity: 1; transform: translateY(0); } }
+                  @keyframes sold-firework-burst { 0% { opacity: 0; transform: scale(.25) rotate(-18deg); } 35% { opacity: 1; transform: scale(1.15) rotate(8deg); } 100% { opacity: 0; transform: scale(1.65) rotate(24deg); } }
+                  @keyframes sold-confetti-fall { 0% { opacity: 0; transform: translateY(-24px) rotate(0); } 18% { opacity: 1; } 100% { opacity: 0; transform: translateY(430px) rotate(560deg); } }
+                  .sold-banner-pop { animation: sold-banner-pop .7s cubic-bezier(.2,.9,.25,1.2) both; }
+                  .sold-panel-rise { animation: sold-panel-rise .55s ease-out both; }
+                  .sold-firework-burst { animation: sold-firework-burst 1.8s ease-out infinite; }
+                  .sold-confetti-fall { animation: sold-confetti-fall 3.2s linear infinite; }
+                  @media (prefers-reduced-motion: reduce) { .sold-banner-pop, .sold-panel-rise, .sold-firework-burst, .sold-confetti-fall { animation: none !important; } }
+                `}</style>
+                <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+                  <span className="sold-firework-burst absolute left-[3%] top-[8%] text-4xl">🎆</span>
+                  <span className="sold-firework-burst absolute right-[4%] top-[7%] text-5xl" style={{ animationDelay: ".45s" }}>🎇</span>
+                  <span className="sold-firework-burst absolute left-[18%] bottom-[14%] text-3xl" style={{ animationDelay: ".9s" }}>🎆</span>
+                  <span className="sold-firework-burst absolute right-[17%] bottom-[12%] text-4xl" style={{ animationDelay: ".2s" }}>🎇</span>
+                  <span className="sold-confetti-fall absolute left-[13%] top-0 text-xl" style={{ animationDelay: ".1s" }}>🎊</span>
+                  <span className="sold-confetti-fall absolute left-[39%] top-0 text-xl" style={{ animationDelay: ".75s" }}>✨</span>
+                  <span className="sold-confetti-fall absolute right-[34%] top-0 text-xl" style={{ animationDelay: "1.15s" }}>🎉</span>
+                  <span className="sold-confetti-fall absolute right-[9%] top-0 text-xl" style={{ animationDelay: ".5s" }}>✨</span>
                 </div>
+                <div className="relative z-10 flex w-full max-w-[620px] flex-col items-center">
+                  <div className="sold-banner-pop mb-2 w-full rounded-t-[48%] rounded-b-xl border-y-4 border-amber-200 bg-gradient-to-b from-yellow-300 via-amber-400 to-yellow-600 px-4 py-2 shadow-[0_8px_30px_rgba(255,190,0,0.5)]">
+                    <p className="text-4xl sm:text-6xl font-black italic uppercase tracking-wider text-red-700 drop-shadow-[0_3px_0_rgba(255,255,255,0.55)]">SOLD!</p>
+                  </div>
+                  <div className="sold-panel-rise grid w-full grid-cols-[1fr_auto_1.35fr] items-center gap-3 rounded-xl border border-amber-200/80 bg-gradient-to-r from-[#a66d00] via-[#d6a500] to-[#a66d00] px-4 py-4 text-left shadow-[0_0_30px_rgba(255,193,7,0.45)]">
+                    <div className="min-w-0">
+                      <p className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-white/90">BID FOR</p>
+                      <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-white">
+                        <span className="text-4xl sm:text-5xl font-black leading-none tabular-nums">{formatAuctionPrice(saleCelebration.soldPrice).value}</span>
+                        <span className="text-sm sm:text-lg font-extrabold uppercase">{formatAuctionPrice(saleCelebration.soldPrice).unit}</span>
+                      </p>
+                    </div>
+                    <div aria-hidden="true" className="h-16 w-px bg-white/75" />
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-black/20 p-1">
+                        {saleCelebration.teamLogo ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={resolveMediaUrl(saleCelebration.teamLogo)} alt="" className="h-full w-full object-contain" />
+                        ) : (
+                          <span className="flex h-full items-center justify-center text-4xl" aria-hidden="true">🏆</span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-white/90">BIDDING TEAM</p>
+                        <p className="mt-1 text-base sm:text-xl font-black uppercase leading-tight text-white break-words">{saleCelebration.teamName}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="sold-panel-rise mt-5 flex items-center justify-center gap-3 text-center" style={{ animationDelay: ".15s" }}>
+                    <span className="text-4xl sm:text-5xl" aria-hidden="true">🏆</span>
+                    <p className="text-xl sm:text-2xl font-black text-white drop-shadow-lg">Congratulations on the signing!</p>
+                  </div>
+                  <div className="sold-panel-rise mt-4 rounded-full border border-amber-300/60 bg-black/45 px-7 py-2 text-[10px] sm:text-xs font-black uppercase tracking-[0.25em] text-white shadow-lg" style={{ animationDelay: ".25s" }}>
+                    NEXT PLAYER COMING UP...
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-1 min-h-0 flex-col justify-center py-2">
+                {/* Two-tier banner: Gold BID FOR / SOLD FOR + Black TEAM NAME / BIDDING TEAM / WINNING TEAM */}
+                <div className="w-full shadow-2xl overflow-hidden">
+                  {/* Upper tier: Mustard/Gold (#B8860B) */}
+                  <div className="relative bg-[#b8860b] px-4 py-2.5 text-white">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/90">
+                      {isPlayerSold ? "SOLD FOR" : "BID FOR"}
+                    </div>
 
-                {/* Lower tier: Solid Black (#000000) */}
-                <div className="bg-[#000000] px-4 py-2.5 flex items-center gap-3.5">
-                  <div className="w-11 h-11 shrink-0 flex items-center justify-center overflow-hidden">
-                    {leadingTeam?.logo && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={leadingTeam.logo}
-                        alt={leadingTeam.name}
-                        className="w-full h-full object-cover"
-                      />
-                    )}
+                    <div className="mt-1 flex items-baseline gap-2">
+                      {(() => {
+                        const formattedPrice = displayActiveAP
+                          ? formatAuctionPrice(displayedCurrentBid)
+                          : { value: "XX", unit: "" };
+                        return (
+                          <>
+                            <span className="text-3xl sm:text-5xl font-black tracking-tight tabular-nums leading-none">
+                              {formattedPrice.value}
+                            </span>
+                            {formattedPrice.unit && (
+                              <span className="text-sm sm:text-lg font-extrabold uppercase tracking-wide">
+                                {formattedPrice.unit}
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleOpenEditBid}
+                      disabled={!displayActiveAP}
+                      title="Edit bid amount manually"
+                      className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-xs text-white"
+                    >
+                      <span className="inline-block -scale-x-100">✎</span>
+                    </button>
                   </div>
 
-                  <div className="min-w-0 flex-1">
-                    <div className="text-lg sm:text-2xl font-black uppercase tracking-tight text-white truncate leading-tight">
-                      {leadingTeam ? leadingTeam.name : "TEAM NAME"}
+                  {/* Lower tier: Solid Black (#000000) */}
+                  <div className="bg-[#000000] px-4 py-2.5 flex items-center gap-3.5">
+                    <div className="w-11 h-11 shrink-0 flex items-center justify-center overflow-hidden">
+                      {leadingTeam?.logo && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={leadingTeam.logo}
+                          alt={leadingTeam.name}
+                          className="w-full h-full object-cover"
+                        />
+                      )}
                     </div>
-                    <div className="border-t border-[#333333] mt-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wider text-white/75">
-                      {isPlayerSold ? "WINNING TEAM" : "BIDDING TEAM"}
+
+                    <div className="min-w-0 flex-1">
+                      <div className="text-lg sm:text-2xl font-black uppercase tracking-tight text-white truncate leading-tight">
+                        {leadingTeam ? leadingTeam.name : "TEAM NAME"}
+                      </div>
+                      <div className="border-t border-[#333333] mt-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wider text-white/75">
+                        {isPlayerSold ? "WINNING TEAM" : "BIDDING TEAM"}
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </main>
