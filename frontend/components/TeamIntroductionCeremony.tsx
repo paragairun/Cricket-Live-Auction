@@ -119,7 +119,7 @@ export default function TeamIntroductionCeremony({
   const captainName = captain?.name || team?.captain_name || "Captain";
   const hasCaptain = team?.captain_id != null;
   const teamInitials = (team?.name || "TEAM")
-    .split(/\\s+/)
+    .split(/\s+/)
     .map((part) => part[0])
     .join("")
     .slice(0, 3)
