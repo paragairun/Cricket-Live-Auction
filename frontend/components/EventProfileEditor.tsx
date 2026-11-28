@@ -70,7 +70,7 @@ export default function EventProfileEditor({
     });
     return response.data.url as string;
   };
-  const field = (key: keyof EventProfile, label: string, placeholder = "", type = "text") => (
+  const field = (key: Exclude<keyof EventProfile, "title_sponsor" | "other_sponsors">, label: string, placeholder = "", type = "text") => (
     <label className="block">
       <span className="label">{label}</span>
       <input className="input" type={type} value={String(form[key] ?? "")}
@@ -133,7 +133,7 @@ export default function EventProfileEditor({
           {field("prize_winner", "Winner prize", "₹")}
           {field("prize_runner_up", "Runner-up prize", "₹")}
           {field("player_awards", "Player awards", "MVP, Best Batter, Best Bowler")}
-          {field("rules_document_url", "Tournament rules PDF URL", "https://...")}<label className="block"><span className="label">Upload tournament rules (PDF)</span><input className="block w-full text-xs text-gray-400" type="file" accept="application/pdf,.pdf" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { setForm(f => ({ ...f, rules_document_url: await uploadAsset(file, "rules-document") })); } catch { alert("Could not upload rules PDF."); } }} /></label>
+          {field("rules_document_url", "Tournament rules PDF URL", "https://...")}<label className="block"><span className="label">Upload tournament rules (PDF)</span><input className="block w-full text-xs text-gray-400" type="file" accept="application/pdf,.pdf" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const url = await uploadAsset(file, "rules-document"); setForm(f => ({ ...f, rules_document_url: url })); } catch { alert("Could not upload rules PDF."); } }} /></label>
           {field("contact_name", "Contact person", "Name")}
           {field("contact_phone", "Contact number", "+91...")}
           {field("contact_email", "Contact email", "name@example.com", "email")}
