@@ -14,6 +14,8 @@ import { useFitText } from "@/lib/useFitText";
 import { incrementFor } from "@/lib/bidRules";
 import { formatAuctionPrice } from "@/lib/formatAuctionPrice";
 import { getMinimumAuctionBasePrice, getRemainingAuctionReserveSlots } from "@/lib/auctionPurse";
+import TeamIntroductionCeremony from "@/components/TeamIntroductionCeremony";
+import { createTeamIntroAudioController, type TeamIntroAudioController } from "@/components/teamIntroductionAudio";
 
 interface PlayerDetail {
   player_id: number;
@@ -53,6 +55,8 @@ export default function AuctioneerPage() {
   const [eventLogo, setEventLogo] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
   const [status, setStatus] = useState("draft");
+  const [showTeamIntroduction, setShowTeamIntroduction] = useState(false);
+  const [teamIntroAudio, setTeamIntroAudio] = useState<TeamIntroAudioController | null>(null);
   const [playerDetails, setPlayerDetails] = useState<Record<number, PlayerDetail>>({});
   // Keep the latest player metadata available to the long-lived auction WebSocket handler.
   const playerDetailsRef = useRef(playerDetails);
@@ -600,12 +604,36 @@ export default function AuctioneerPage() {
   const startAuction = async () => {
     setBusyAction(true);
     setActionError(null);
+    // START always plays the team introduction. RESUME never does.
+    // Create audio synchronously in the click handler for browser playback permission.
+    const shouldIntroduceTeams = status !== "paused";
+    const introAudio = shouldIntroduceTeams ? createTeamIntroAudioController() : null;
+    if (shouldIntroduceTeams) setTeamIntroAudio(introAudio);
     try {
+      const captainPhotoMissing = store.teams.some(
+        (team) =>
+          team.captain_id != null &&
+          !playerDetails[Number(team.captain_id)]?.profile_photo
+      );
+      if (shouldIntroduceTeams && captainPhotoMissing) {
+        const playerInfoResponse = await api
+          .get(`/auction/events/${eid}/players-info`)
+          .catch(() => null);
+        if (playerInfoResponse?.data) {
+          const refreshedDetails: Record<number, PlayerDetail> = {};
+          playerInfoResponse.data.forEach((row: PlayerDetail) => {
+            refreshedDetails[row.player_id] = row;
+          });
+          setPlayerDetails(refreshedDetails);
+        }
+      }
       await api.post(`/auction/events/${eid}/start`);
-      // The connected WebSocket already owns the current snapshot and receives
-      // player_up / auction_started events. Avoid a duplicate full roster fetch.
+      // The connected WebSocket owns the live snapshot and player_up events.
       setStatus("active");
+      if (shouldIntroduceTeams) setShowTeamIntroduction(true);
     } catch (e: unknown) {
+      introAudio?.stop();
+      if (shouldIntroduceTeams) setTeamIntroAudio(null);
       setActionError(describeError(e).message || "Failed to start auction");
     } finally {
       setBusyAction(false);
@@ -1005,6 +1033,17 @@ export default function AuctioneerPage() {
 
   return (
     <div className="h-[100dvh] w-full overflow-hidden grid grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-[#000000] text-white select-none">
+      {showTeamIntroduction && (
+        <TeamIntroductionCeremony
+          teams={store.teams}
+          playerDetails={playerDetails}
+          audio={teamIntroAudio}
+          onComplete={() => {
+            setShowTeamIntroduction(false);
+            setTeamIntroAudio(null);
+          }}
+        />
+      )}
       {/* ── TOP HEADER BAR ── */}
       <header className="bg-[#000000] border-b border-[#262626] px-4 py-2">
         <div className="mx-auto w-full max-w-[1920px] grid grid-cols-1 md:grid-cols-3 items-center gap-2">
@@ -1252,7 +1291,31 @@ export default function AuctioneerPage() {
         <div className="relative z-10 mx-auto h-full w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-2.5 px-5 py-3">
           {/* LEFT ZONE: Player Showcase Card (Photo Placeholder) */}
           <div className="lg:col-span-6 min-h-0 flex flex-col justify-center">
-            {displayActiveAP ? (
+            {saleCelebration ? (
+              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
+                <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
+                  {saleCelebration.playerPhoto && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={saleCelebration.playerPhoto} alt={saleCelebration.playerName} className="w-full h-full object-cover object-top" />
+                  )}
+                </div>
+                <div className="px-3.5 pt-2 pb-1.5 flex items-end gap-3 border-b border-neutral-300">
+                  <div className="shrink-0 flex flex-col items-center gap-0.5 pb-0.5">
+                    <span className="bg-[#f59e0b] text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">{saleCelebration.playerCategory || "EMERALD"}</span>
+                    <span className="text-[10px] font-bold text-neutral-600">SOLD</span>
+                  </div>
+                  <div className="min-w-0 flex-1 h-10 flex items-center">
+                    <h2 className="w-full font-black uppercase tracking-tight text-[#111111] leading-none truncate">{saleCelebration.playerName}</h2>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 px-3.5 py-2 text-center bg-[#f4f4f2]">
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">AGE</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.playerAge ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BAT</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.battingRating ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BALL</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.bowlingRating ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">FIELD</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.fieldingRating ?? "—"}</div></div>
+                </div>
+              </div>
+            ) : displayActiveAP ? (
               <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
                 {/* Player photo placeholder */}
                 <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
@@ -1321,30 +1384,6 @@ export default function AuctioneerPage() {
                       {activeInfo?.fielding_rating ?? "7.5"}
                     </div>
                   </div>
-                </div>
-              </div>
-            ) : saleCelebration ? (
-              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
-                <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
-                  {saleCelebration.playerPhoto && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={saleCelebration.playerPhoto} alt={saleCelebration.playerName} className="w-full h-full object-cover object-top" />
-                  )}
-                </div>
-                <div className="px-3.5 pt-2 pb-1.5 flex items-end gap-3 border-b border-neutral-300">
-                  <div className="shrink-0 flex flex-col items-center gap-0.5 pb-0.5">
-                    <span className="bg-[#f59e0b] text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">{saleCelebration.playerCategory || "EMERALD"}</span>
-                    <span className="text-[10px] font-bold text-neutral-600">SOLD</span>
-                  </div>
-                  <div className="min-w-0 flex-1 h-10 flex items-center">
-                    <h2 className="w-full font-black uppercase tracking-tight text-[#111111] leading-none truncate">{saleCelebration.playerName}</h2>
-                  </div>
-                </div>
-                <div className="grid grid-cols-4 px-3.5 py-2 text-center bg-[#f4f4f2]">
-                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">AGE</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.playerAge ?? "—"}</div></div>
-                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BAT</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.battingRating ?? "—"}</div></div>
-                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BALL</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.bowlingRating ?? "—"}</div></div>
-                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">FIELD</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.fieldingRating ?? "—"}</div></div>
                 </div>
               </div>
             ) : (
