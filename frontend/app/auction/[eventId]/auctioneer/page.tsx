@@ -66,6 +66,12 @@ export default function AuctioneerPage() {
   const [justSoldPlayerId, setJustSoldPlayerId] = useState<number | null>(null);
   const [saleCelebration, setSaleCelebration] = useState<{
     playerName: string;
+    playerPhoto?: string | null;
+    playerCategory?: string | null;
+    playerAge?: number | string | null;
+    battingRating?: number | string | null;
+    bowlingRating?: number | string | null;
+    fieldingRating?: number | string | null;
     teamName: string;
     teamLogo?: string | null;
     soldPrice: number;
@@ -305,11 +311,23 @@ export default function AuctioneerPage() {
             const winningTeam = currentAuctionState.teams.find(
               (team) => team.id === msg.sold_to_team_id
             );
+            const soldPlayerInfo = soldPlayer
+              ? playerDetails[soldPlayer.player_id]
+              : undefined;
+            const soldPlayerCategory = currentAuctionState.categories.find(
+              (category) => category.id === soldPlayer?.category_id
+            );
             setSaleCelebration({
               playerName:
                 msg.player_name ||
                 soldPlayer?.name ||
                 `Player #${soldPlayer?.player_id ?? msg.player_id ?? "—"}`,
+              playerPhoto: soldPlayerInfo?.profile_photo || null,
+              playerCategory: soldPlayerCategory?.name || "EMERALD",
+              playerAge: soldPlayerInfo?.age ?? null,
+              battingRating: soldPlayerInfo?.batting_rating ?? null,
+              bowlingRating: soldPlayerInfo?.bowling_rating ?? null,
+              fieldingRating: soldPlayerInfo?.fielding_rating ?? null,
               teamName: msg.sold_to_team_name || winningTeam?.name || "Winning Team",
               teamLogo: winningTeam?.logo || null,
               soldPrice: Number(msg.sold_price || 0),
@@ -1206,6 +1224,30 @@ export default function AuctioneerPage() {
                       {activeInfo?.fielding_rating ?? "7.5"}
                     </div>
                   </div>
+                </div>
+              </div>
+            ) : saleCelebration ? (
+              <div className="bg-[#f4f4f2] text-[#111111] shadow-2xl overflow-hidden flex flex-col max-h-full w-full max-w-[460px] mx-auto lg:mx-0">
+                <div className="relative flex-1 min-h-0 bg-[#dcdcd8] overflow-hidden">
+                  {saleCelebration.playerPhoto && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={saleCelebration.playerPhoto} alt={saleCelebration.playerName} className="w-full h-full object-cover object-top" />
+                  )}
+                </div>
+                <div className="px-3.5 pt-2 pb-1.5 flex items-end gap-3 border-b border-neutral-300">
+                  <div className="shrink-0 flex flex-col items-center gap-0.5 pb-0.5">
+                    <span className="bg-[#f59e0b] text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">{saleCelebration.playerCategory || "EMERALD"}</span>
+                    <span className="text-[10px] font-bold text-neutral-600">SOLD</span>
+                  </div>
+                  <div className="min-w-0 flex-1 h-10 flex items-center">
+                    <h2 className="w-full font-black uppercase tracking-tight text-[#111111] leading-none truncate">{saleCelebration.playerName}</h2>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 px-3.5 py-2 text-center bg-[#f4f4f2]">
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">AGE</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.playerAge ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BAT</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.battingRating ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">BALL</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.bowlingRating ?? "—"}</div></div>
+                  <div><div className="text-[9px] font-bold uppercase tracking-wider text-neutral-600">FIELD</div><div className="text-sm font-black text-[#111111] tabular-nums">{saleCelebration.fieldingRating ?? "—"}</div></div>
                 </div>
               </div>
             ) : (
