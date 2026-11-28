@@ -76,7 +76,7 @@ export default function TeamIntroductionCeremony({
       window.clearTimeout(purseTimer);
       window.clearTimeout(nextTimer);
     };
-  }, [audio, phase, teamDuration, teamIndex, teams]);
+  }, [audio, phase, teamDuration, teamIndex, teams.length]);
 
   useEffect(() => {
     if (phase !== "final") return;
@@ -108,7 +108,7 @@ export default function TeamIntroductionCeremony({
     };
     frame = window.requestAnimationFrame(animate);
     return () => window.cancelAnimationFrame(frame);
-  }, [phase, team, teamDuration]);
+  }, [phase, team?.id, team?.budget, teamDuration]);
 
   useEffect(() => () => audio?.stop(), [audio]);
 
