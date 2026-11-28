@@ -90,7 +90,7 @@ export default function AuctioneerPage() {
       clearTimeout(saleCelebrationClearTimerRef.current);
       saleCelebrationClearTimerRef.current = null;
     }
-    clearSaleCelebration();
+    setSaleCelebration(null);
   };
   const [saleCelebration, setSaleCelebration] = useState<{
     playerName: string;
